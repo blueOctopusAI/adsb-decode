@@ -14,8 +14,10 @@ Plugs into an RTL-SDR USB dongle, tunes to 1090 MHz, and decodes ADS-B broadcast
 |----------|-------------|
 | Real-time only | Historical database — query what flew last week |
 | No military detection | ICAO block analysis + callsign pattern filters |
-| No anomaly detection | Emergency squawks, rapid descent, circling, geofence |
+| No anomaly detection | Emergency squawks, rapid descent, circling, holding patterns, proximity alerts, geofence |
 | No export | CSV, JSON, KML (Google Earth flight paths), GeoJSON |
+| Single receiver | Multi-receiver network (hub-and-spoke, feeder agents) |
+| No enrichment | Aircraft type classification, 3,642 airports, operator lookup |
 | C, hard to modify | Python, readable, documented |
 | "Just works" | "Decoded blind, explained every step" |
 
@@ -98,9 +100,44 @@ This isn't just a radio scanner. It's an intelligence tool.
 
 - **Military aircraft detection** — ICAO address block analysis identifies military-registered aircraft. Callsign pattern matching catches military flights (RCH = C-17 Globemaster, DUKE = Army, REACH = Air Mobility Command).
 - **Emergency monitoring** — Squawk 7500 (hijack), 7600 (radio failure), 7700 (general emergency) trigger immediate alerts.
-- **Anomaly detection** — Rapid descent (>5000 ft/min), unusual circling patterns, low-altitude operations.
+- **Circling/loitering detection** — Cumulative heading change analysis over 5-minute windows. Catches surveillance, search patterns, training flights.
+- **Holding pattern detection** — Stable altitude + reciprocal headings identified via heading histogram analysis.
+- **Proximity alerts** — Flags when two aircraft are within configurable distance (default 5nm horizontal, 1,000 ft vertical).
+- **Unusual altitude** — Fast aircraft (>250 kts) at low altitude (< 3,000 ft) far from airports.
 - **Geofence alerts** — Configure a lat/lon/radius zone and get notified when aircraft enter it.
-- **Historical queries** — SQLite database stores every position report. Ask questions about past traffic patterns.
+- **Aircraft type enrichment** — Speed/altitude profile classifies aircraft as jet, prop, turboprop, helicopter, military, or cargo. Airline operator lookup from callsign prefix.
+- **Airport awareness** — 3,642 US airports bundled. Nearest airport lookup, flight phase classification (approaching, departing, overflying).
+- **Historical queries** — SQLite database stores every position report. Query builder with preset and custom filters.
+
+## Web Dashboard
+
+Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
+
+- **Live map** — Aircraft icons with heading rotation, altitude-colored trail lines (green→yellow→red), stats overlay, altitude legend
+- **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links.
+- **Heatmap** — Position density visualization toggle
+- **Events dashboard** — Color-coded events with type filters
+- **Query builder** — Preset queries (military, low altitude, fast) + custom filters with map visualization
+- **Historical replay** — Time slider with play/pause, adjustable speed (1x–60x)
+- **Receiver management** — Connected feeders with coverage circles
+- **Table view** — Sortable aircraft list with detail pages
+
+## Multi-Receiver Network
+
+Hub-and-spoke architecture for distributed coverage:
+
+```
+[Pi + Dongle] --HTTP POST--> [Central Server] <--Browser-- [Dashboard]
+[Pi + Dongle] --HTTP POST-->      ↑
+[Mac + Dongle] --HTTP POST-->     |
+                            Flask API + SQLite
+```
+
+- **Feeder agent** (`adsb feeder`) runs on each receiver node
+- Bearer token authentication for frame ingestion
+- Heartbeat monitoring with online/offline status
+- ~$60/node (Pi + dongle + antenna)
+- Production deployment: Caddy + Gunicorn + systemd
 
 ## Why This Exists
 
@@ -114,22 +151,28 @@ Two reasons:
 
 ```
 src/
-├── capture.py       # IQ file reader, hex frame reader, live RTL-SDR capture
+├── capture.py       # IQ file reader, hex frame reader, native demod + fallback live capture
 ├── demodulator.py   # Raw IQ → magnitude → preamble detection → PPM bit recovery
 ├── frame_parser.py  # Bitstream → ModeFrame, downlink format classification
 ├── crc.py           # CRC-24 validation (ICAO polynomial)
 ├── decoder.py       # ModeFrame → typed messages (identification, position, velocity)
 ├── cpr.py           # Compact Position Reporting — global + local decode
 ├── icao.py          # Country lookup, military detection, N-number conversion
-├── tracker.py       # Per-aircraft state machine with CPR frame pairing
-├── database.py      # SQLite with WAL mode, multi-receiver schema
-├── filters.py       # Military, emergency, rapid descent, low altitude, geofence
+├── tracker.py       # Per-aircraft state machine with CPR frame pairing, history buffers
+├── database.py      # SQLite with WAL mode, multi-receiver schema (6 tables)
+├── filters.py       # Military, emergency, circling, holding, proximity, unusual altitude, geofence
+├── enrichment.py    # Aircraft type classification, operator lookup, 3,642 airports
 ├── exporters.py     # CSV, JSON, KML (Google Earth), GeoJSON
+├── feeder.py        # Remote receiver agent — captures + forwards to central server
 ├── cli.py           # Click CLI — decode, track, stats, history, export, serve
-└── web/             # Flask + Leaflet.js dashboard with 2-second polling
+└── web/
+    ├── app.py       # Flask app factory
+    ├── ingest.py    # Frame ingestion API for remote feeders
+    ├── routes.py    # 14 REST API endpoints + 9 page routes
+    └── templates/   # Map, table, detail, events, query, replay, receivers, stats
 ```
 
-**278 tests** covering every module. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
+**289 tests** covering every module. 19 Python modules, 9 HTML templates, ~5,800 lines. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
 
 ## License
 

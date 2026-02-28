@@ -246,31 +246,53 @@ A single-receiver deployment works identically — it just has one row in the re
 
 ---
 
-## Stage 7: Intelligence (`filters.py`)
+## Stage 7: Intelligence (`filters.py`, `enrichment.py`)
 
 What makes this more than a radio scanner:
 
 - **Military detection**: ICAO address in military allocation block, or callsign matches military patterns (e.g., RCH*, DOOM*, JAKE*)
 - **Emergency squawks**: 7500 (hijack), 7600 (radio failure), 7700 (emergency)
-- **Anomaly detection**: Rapid altitude changes (>5000 ft/min descent), circling patterns, unusually low altitude
+- **Rapid descent**: Vertical rate exceeding -5,000 ft/min
+- **Low altitude**: Aircraft below 500 ft AGL (excludes ground)
+- **Circling/loitering**: Cumulative heading change >360° within 5 minutes, handles wraparound
+- **Holding patterns**: Stable altitude (±500 ft) + reciprocal headings (180°±30°) detected via 10° heading bins
+- **Proximity alerts**: Two aircraft within configurable distance (default 5nm horizontal, 1,000 ft vertical). Sorted pair key prevents duplicate alerts.
+- **Unusual altitude**: Fast aircraft (>250 kts) below 3,000 ft with no airport within 15nm
 - **Geofence alerts**: Aircraft entering a configured lat/lon/radius zone
+- **Aircraft type enrichment**: Speed/altitude profile classification (jet, prop, turboprop, helicopter, military, cargo). Airline ICAO prefix → operator name lookup.
+- **Airport awareness**: 3,642 US airports from OurAirports dataset. Nearest airport lookup, flight phase classification (approaching, departing, overflying).
 
 ---
 
 ## Stage 8: Display (`web/`, `cli.py`, `exporters.py`)
 
 ### Web Dashboard (`web/`)
-- Flask app with Leaflet.js map
-- Aircraft icons with heading rotation and altitude-based coloring
-- Trail lines showing recent flight path
+- Flask app with Leaflet.js map (dark CARTO tiles)
+- Aircraft icons with heading rotation, color-coded (green=civilian, red=military)
+- Altitude-colored trail lines (green→yellow→red gradient, fading opacity for older segments)
+- Click-to-detail popups with callsign, registration, country, altitude, speed, heading, vertical rate
+- Stats overlay: aircraft count, positions, events, uptime
+- Altitude legend (color bar with labeled scale 0–40,000 ft)
+- Heatmap layer toggle (Leaflet.heat plugin for position density)
+- Airport overlay: 3,642 US airports with Major/Medium/Small toggles, viewport-filtered rendering. Click for popup with elevation, coords, AirNav + SkyVector links.
+- Dynamic map centering from receiver location via `/api/stats`
+- Events dashboard with type filter buttons (military, emergency, anomaly)
+- Query builder with preset filters (military, low altitude, fast, recent) and custom parameters
+- Historical replay with time slider, play/pause, adjustable speed (1x–60x)
+- Receiver management page with coverage circles
 - Table view with sort/filter
-- Single aircraft detail page with full history
-- 2-second polling for real-time updates
+- Single aircraft detail page with position history
+- 1-second polling for real-time updates
 - Dark theme (avionics tradition)
+
+### Multi-Receiver Network (`feeder.py`, `web/ingest.py`)
+- **Feeder agent**: Runs on remote Pi/machine with dongle. Captures frames via native demodulator (pyrtlsdr) or rtl_adsb fallback. Batches and POSTs hex frames to central server every N seconds.
+- **Ingest API**: `POST /api/v1/frames` accepts batched frames with receiver metadata. Bearer token auth. Heartbeat endpoint for status. `GET /api/v1/receivers` lists all connected receivers with online/offline status.
+- **Architecture**: Hub-and-spoke. Multiple feeders → one central server → one dashboard.
 
 ### CLI (`cli.py`)
 - Rich-formatted tables in the terminal
-- Real-time scrolling display
+- Real-time scrolling display with live proximity checks
 - Stats summary (aircraft count, position count, military detections)
 
 ### Export (`exporters.py`)
@@ -279,6 +301,31 @@ What makes this more than a radio scanner:
 - **KML**: Google Earth flight paths with altitude
 - **GeoJSON**: Map-ready feature collections
 
+### Deployment (`deploy/`)
+- Caddy (auto-HTTPS reverse proxy) + Gunicorn + Flask + SQLite
+- systemd service with auto-restart
+- Server provisioning script (Ubuntu: UFW, fail2ban, Python, unattended-upgrades)
+- One-command deploy: `bash deploy/deploy.sh`
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/aircraft` | All tracked aircraft (optional `?military=true`) |
+| GET | `/api/aircraft/<icao>` | Single aircraft detail + positions + events |
+| GET | `/api/positions` | Most recent position per aircraft |
+| GET | `/api/positions/all` | All positions ordered by time (for replay) |
+| GET | `/api/trails` | Position trails per aircraft (for polylines) |
+| GET | `/api/query` | Filtered positions (min/max alt, ICAO, military, limit) |
+| GET | `/api/airports` | 3,642 US airports with type classification |
+| GET | `/api/events` | Recent events (optional `?type=` filter) |
+| GET | `/api/stats` | Database stats, receiver info, capture start time |
+| POST | `/api/v1/frames` | Ingest frames from remote feeder (auth required) |
+| POST | `/api/v1/heartbeat` | Feeder status heartbeat |
+| GET | `/api/v1/receivers` | List connected receivers |
+
 ---
 
 ## File Map
@@ -286,16 +333,20 @@ What makes this more than a radio scanner:
 | File | Lines | Purpose |
 |------|-------|---------|
 | `src/crc.py` | ~40 | CRC-24 polynomial validation |
-| `src/capture.py` | ~120 | IQ file reader, frame reader, live capture |
+| `src/capture.py` | ~360 | IQ file reader, frame reader, native demod + fallback live capture |
 | `src/demodulator.py` | ~200 | IQ→magnitude, preamble detection, bit recovery |
 | `src/frame_parser.py` | ~150 | Bit→ModeFrame, DF classification |
 | `src/decoder.py` | ~400 | Frame→typed messages, all DF/TC types |
 | `src/cpr.py` | ~180 | Compact Position Reporting math |
 | `src/icao.py` | ~200 | Country lookup, military blocks, N-number |
-| `src/tracker.py` | ~200 | Per-aircraft state machine |
+| `src/tracker.py` | ~330 | Per-aircraft state machine, heading/position history |
 | `src/database.py` | ~250 | SQLite schema, queries, WAL mode |
-| `src/filters.py` | ~150 | Military, emergency, anomaly, geofence |
+| `src/filters.py` | ~405 | Military, emergency, circling, holding, proximity, unusual alt, geofence |
+| `src/enrichment.py` | ~310 | Aircraft type classification, operator lookup, 3,642 airports |
 | `src/exporters.py` | ~150 | CSV, JSON, KML, GeoJSON output |
-| `src/cli.py` | ~200 | Click CLI entry points |
+| `src/feeder.py` | ~190 | Remote receiver agent |
+| `src/cli.py` | ~280 | Click CLI entry points |
 | `src/web/app.py` | ~50 | Flask app factory |
-| `src/web/routes.py` | ~200 | REST API + page routes |
+| `src/web/ingest.py` | ~185 | Frame ingestion API for remote feeders |
+| `src/web/routes.py` | ~340 | REST API + page routes (14 endpoints, 9 pages) |
+| `data/airports.csv` | 3,643 | OurAirports US airport database |
