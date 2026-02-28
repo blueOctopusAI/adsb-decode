@@ -26,6 +26,7 @@ EVENT_RAPID_DESCENT = "rapid_descent"
 EVENT_LOW_ALTITUDE = "low_altitude"
 EVENT_GEOFENCE = "geofence_entry"
 EVENT_CIRCLING = "circling"
+EVENT_HOLDING = "holding_pattern"
 EVENT_PROXIMITY = "proximity"
 
 
@@ -115,6 +116,7 @@ class FilterEngine:
         events.extend(self._check_low_altitude(ac))
         events.extend(self._check_geofences(ac))
         events.extend(self._check_circling(ac))
+        events.extend(self._check_holding(ac))
 
         return events
 
@@ -274,6 +276,65 @@ class FilterEngine:
             description=(
                 f"Circling detected: {ac.callsign or ac.icao} — "
                 f"{total_change:.0f}° heading change in {CIRCLING_WINDOW_SEC}s"
+            ),
+            lat=ac.lat,
+            lon=ac.lon,
+            altitude_ft=ac.altitude_ft,
+            timestamp=ac.last_seen,
+        ))
+        return [event] if event else []
+
+    def _check_holding(self, ac: AircraftState) -> list[Event]:
+        """Detect holding patterns — stable altitude, consistent speed, racetrack headings."""
+        if len(ac.position_history) < 8:
+            return []
+
+        now = ac.last_seen
+        cutoff = now - 120  # Last 2 minutes
+        recent = [(t, lat, lon, alt) for t, lat, lon, alt in ac.position_history if t >= cutoff]
+        if len(recent) < 8:
+            return []
+
+        # Check altitude stability (±500 ft)
+        alts = [alt for _, _, _, alt in recent if alt is not None]
+        if len(alts) < 4:
+            return []
+        alt_range = max(alts) - min(alts)
+        if alt_range > 500:
+            return []
+
+        # Check speed stability (need heading history too)
+        recent_hdg = [(t, h) for t, h in ac.heading_history if t >= cutoff]
+        if len(recent_hdg) < 8:
+            return []
+
+        # Holding = reciprocal headings (two roughly opposite directions)
+        headings = [h for _, h in recent_hdg]
+        # Bucket headings into 36 bins (10° each)
+        bins = [0] * 36
+        for h in headings:
+            bins[int(h / 10) % 36] += 1
+
+        # Find the two most common heading groups
+        sorted_bins = sorted(enumerate(bins), key=lambda x: x[1], reverse=True)
+        if sorted_bins[0][1] < 2 or sorted_bins[1][1] < 2:
+            return []
+
+        # Check if top two bins are roughly reciprocal (±30°)
+        bin1, bin2 = sorted_bins[0][0], sorted_bins[1][0]
+        separation = abs(bin1 - bin2)
+        if separation > 18:
+            separation = 36 - separation
+        # Reciprocal = 18 bins apart (180°), allow ±3 bins (30°)
+        if abs(separation - 18) > 3:
+            return []
+
+        event = self._emit(Event(
+            icao=ac.icao,
+            event_type=EVENT_HOLDING,
+            description=(
+                f"Holding pattern: {ac.callsign or ac.icao} — "
+                f"stable at {int(sum(alts)/len(alts))} ft, reciprocal headings"
             ),
             lat=ac.lat,
             lon=ac.lon,

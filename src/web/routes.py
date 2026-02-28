@@ -101,6 +101,34 @@ def recent_positions():
     return jsonify({"positions": positions, "count": len(positions)})
 
 
+@api.route("/positions/all")
+def all_positions():
+    """All positions in the database, ordered by timestamp.
+
+    Used by the replay page. Returns all position records with aircraft info.
+    """
+    db = _db()
+    limit = int(request.args.get("limit", 10000))
+
+    rows = db.conn.execute("""
+        SELECT p.*, a.registration, a.country, a.is_military,
+               s.callsign
+        FROM positions p
+        JOIN aircraft a ON p.icao = a.icao
+        LEFT JOIN sightings s ON s.icao = p.icao
+        ORDER BY p.timestamp ASC
+        LIMIT ?
+    """, (limit,)).fetchall()
+
+    positions = []
+    for row in rows:
+        p = dict(row)
+        p["is_military"] = bool(p.get("is_military", 0))
+        positions.append(p)
+
+    return jsonify({"positions": positions, "count": len(positions)})
+
+
 @api.route("/trails")
 def get_trails():
     """Position trails for all active aircraft (last N positions each).
@@ -200,6 +228,12 @@ def aircraft_detail(icao: str):
         return "Aircraft not found", 404
     positions = db.get_positions(icao, limit=200)
     return render_template("detail.html", aircraft=ac, positions=positions)
+
+
+@pages.route("/replay")
+def replay_page():
+    """Historical replay page."""
+    return render_template("replay.html")
 
 
 @pages.route("/events")

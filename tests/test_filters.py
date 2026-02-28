@@ -12,6 +12,7 @@ from src.filters import (
     EVENT_LOW_ALTITUDE,
     EVENT_GEOFENCE,
     EVENT_CIRCLING,
+    EVENT_HOLDING,
     EVENT_PROXIMITY,
     EMERGENCY_SQUAWKS,
     _haversine_nm,
@@ -279,6 +280,56 @@ class TestCirclingFilter:
         # Should not count the 350->0 wrap as 350 degrees — it's 10 degrees
         # Total change: ~210 degrees, not enough for circling
         assert not any(e.event_type == EVENT_CIRCLING for e in events)
+
+
+class TestHoldingFilter:
+    def test_holding_detected(self, engine):
+        """Reciprocal headings at stable altitude triggers holding."""
+        ac = _make_ac(lat=35.0, lon=-83.0, altitude_ft=10000)
+        base_t = 1000.0
+        # Simulate racetrack: alternating 90° and 270° headings
+        for i in range(16):
+            t = base_t + i * 8  # 8 seconds apart, 128 seconds total
+            hdg = 90 if i % 4 < 2 else 270
+            ac.heading_history.append((t, hdg))
+            ac.position_history.append((t, 35.0 + i * 0.001, -83.0, 10000 + (i % 2) * 100))
+        ac.last_seen = base_t + 15 * 8
+        events = engine.check(ac)
+        assert any(e.event_type == EVENT_HOLDING for e in events)
+
+    def test_changing_altitude_not_holding(self, engine):
+        """Large altitude changes should not trigger holding."""
+        ac = _make_ac(lat=35.0, lon=-83.0, altitude_ft=10000)
+        base_t = 1000.0
+        for i in range(16):
+            t = base_t + i * 8
+            hdg = 90 if i % 4 < 2 else 270
+            alt = 5000 + i * 500  # Climbing 500ft each report
+            ac.heading_history.append((t, hdg))
+            ac.position_history.append((t, 35.0, -83.0, alt))
+        ac.last_seen = base_t + 15 * 8
+        events = engine.check(ac)
+        assert not any(e.event_type == EVENT_HOLDING for e in events)
+
+    def test_straight_flight_not_holding(self, engine):
+        """Constant heading should not trigger holding."""
+        ac = _make_ac(lat=35.0, lon=-83.0, altitude_ft=10000)
+        base_t = 1000.0
+        for i in range(16):
+            t = base_t + i * 8
+            ac.heading_history.append((t, 90))  # Always 90°
+            ac.position_history.append((t, 35.0, -83.0, 10000))
+        ac.last_seen = base_t + 15 * 8
+        events = engine.check(ac)
+        assert not any(e.event_type == EVENT_HOLDING for e in events)
+
+    def test_too_few_points_ignored(self, engine):
+        ac = _make_ac(lat=35.0, lon=-83.0, altitude_ft=10000)
+        ac.heading_history = [(1000.0, 90), (1008.0, 270)]
+        ac.position_history = [(1000.0, 35.0, -83.0, 10000), (1008.0, 35.0, -83.0, 10000)]
+        ac.last_seen = 1008.0
+        events = engine.check(ac)
+        assert not any(e.event_type == EVENT_HOLDING for e in events)
 
 
 class TestProximityFilter:

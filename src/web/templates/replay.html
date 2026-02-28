@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}adsb-decode — Replay{% endblock %}
+
+{% block extra_style %}
+#replay-map { width: 100%; height: calc(100vh - 120px); }
+#controls {
+    background: #111;
+    border-top: 1px solid #333;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    height: 79px;
+}
+#time-slider { flex: 1; accent-color: #00ff88; }
+#time-display { color: #00ff88; font-size: 14px; font-weight: bold; min-width: 200px; }
+.ctrl-btn {
+    background: #222;
+    color: #00ff88;
+    border: 1px solid #333;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-family: 'Courier New', monospace;
+    border-radius: 3px;
+}
+.ctrl-btn:hover { border-color: #00ff88; }
+.ctrl-btn.active { background: #00ff88; color: #000; }
+#speed-label { color: #888; font-size: 12px; }
+.leaflet-container { background: #0a0a0a; }
+{% endblock %}
+
+{% block content %}
+<div id="replay-map"></div>
+<div id="controls">
+    <button class="ctrl-btn" id="play-btn">Play</button>
+    <input type="range" id="time-slider" min="0" max="100" value="0">
+    <span id="time-display">Loading...</span>
+    <span id="speed-label">1x</span>
+    <button class="ctrl-btn" id="speed-btn">2x</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('replay-map', { zoomControl: true });
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OSM &copy; CARTO', maxZoom: 19,
+}).addTo(map);
+
+// Load all position data
+let allPositions = [];
+let timeMin = 0, timeMax = 0;
+let playing = false;
+let currentTime = 0;
+let playSpeed = 1;
+const speeds = [1, 2, 5, 10, 30, 60];
+let speedIdx = 0;
+const markers = {};
+const trails = {};
+
+function altColor(alt) {
+    if (alt == null) return '#888';
+    const t = Math.min(Math.max(alt / 40000, 0), 1);
+    if (t < 0.5) {
+        const s = t * 2;
+        return `rgb(${Math.round(s * 255)},255,0)`;
+    } else {
+        const s = (t - 0.5) * 2;
+        return `rgb(255,${Math.round((1 - s) * 255)},0)`;
+    }
+}
+
+function acIcon(heading, isMilitary) {
+    const color = isMilitary ? '#ff4444' : '#00ff88';
+    const rotation = heading || 0;
+    return L.divIcon({
+        className: '',
+        html: `<svg width="20" height="20" viewBox="0 0 24 24" style="transform:rotate(${rotation}deg)">
+            <polygon points="12,1 15,9 22,10 15,15 16,22 12,18 8,22 9,15 2,10 9,9" fill="${color}" opacity="0.9" stroke="#000" stroke-width="0.5"/>
+        </svg>`,
+        iconSize: [20, 20],
+        iconAnchor: [10, 10],
+    });
+}
+
+// Fetch all positions from database
+fetch('/api/positions/all')
+    .then(r => r.json())
+    .then(data => {
+        allPositions = data.positions;
+        if (allPositions.length === 0) {
+            document.getElementById('time-display').textContent = 'No position data';
+            return;
+        }
+        timeMin = allPositions[0].timestamp;
+        timeMax = allPositions[allPositions.length - 1].timestamp;
+        currentTime = timeMin;
+
+        // Center on first position
+        map.setView([allPositions[0].lat, allPositions[0].lon], 8);
+        updateDisplay();
+    })
+    .catch(err => {
+        document.getElementById('time-display').textContent = 'Load failed';
+        console.error(err);
+    });
+
+function updateDisplay() {
+    const slider = document.getElementById('time-slider');
+    const pct = ((currentTime - timeMin) / (timeMax - timeMin)) * 100;
+    slider.value = pct;
+
+    const d = new Date(currentTime * 1000);
+    document.getElementById('time-display').textContent =
+        d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+
+    // Find positions at or before currentTime, most recent per aircraft
+    const latest = {};
+    const trailPoints = {};
+    for (const p of allPositions) {
+        if (p.timestamp > currentTime) break;
+        latest[p.icao] = p;
+        if (!trailPoints[p.icao]) trailPoints[p.icao] = [];
+        trailPoints[p.icao].push(p);
+    }
+
+    const seen = new Set();
+    Object.entries(latest).forEach(([icao, p]) => {
+        seen.add(icao);
+        if (markers[icao]) {
+            markers[icao].setLatLng([p.lat, p.lon]);
+            markers[icao].setIcon(acIcon(p.heading_deg, p.is_military));
+        } else {
+            markers[icao] = L.marker([p.lat, p.lon], {
+                icon: acIcon(p.heading_deg, p.is_military),
+            }).addTo(map);
+        }
+        const label = p.callsign || p.registration || p.icao;
+        markers[icao].bindTooltip(label, { permanent: false, direction: 'right' });
+
+        // Draw trail
+        if (trails[icao]) { trails[icao].forEach(s => map.removeLayer(s)); }
+        trails[icao] = [];
+        const pts = trailPoints[icao] || [];
+        for (let i = 1; i < pts.length; i++) {
+            const seg = L.polyline(
+                [[pts[i-1].lat, pts[i-1].lon], [pts[i].lat, pts[i].lon]],
+                { color: altColor(pts[i].altitude_ft), weight: 2, opacity: 0.6 }
+            ).addTo(map);
+            trails[icao].push(seg);
+        }
+    });
+
+    // Remove aircraft not in current timeframe
+    Object.keys(markers).forEach(k => {
+        if (!seen.has(k)) {
+            map.removeLayer(markers[k]);
+            delete markers[k];
+            if (trails[k]) { trails[k].forEach(s => map.removeLayer(s)); delete trails[k]; }
+        }
+    });
+}
+
+// Play/pause
+document.getElementById('play-btn').addEventListener('click', function() {
+    playing = !playing;
+    this.textContent = playing ? 'Pause' : 'Play';
+    this.classList.toggle('active', playing);
+});
+
+// Speed control
+document.getElementById('speed-btn').addEventListener('click', function() {
+    speedIdx = (speedIdx + 1) % speeds.length;
+    playSpeed = speeds[speedIdx];
+    document.getElementById('speed-label').textContent = playSpeed + 'x';
+    this.textContent = speeds[(speedIdx + 1) % speeds.length] + 'x';
+});
+
+// Slider manual control
+document.getElementById('time-slider').addEventListener('input', function() {
+    const pct = this.value / 100;
+    currentTime = timeMin + pct * (timeMax - timeMin);
+    updateDisplay();
+});
+
+// Animation loop
+setInterval(() => {
+    if (!playing || timeMax <= timeMin) return;
+    currentTime += playSpeed;
+    if (currentTime > timeMax) {
+        currentTime = timeMin;
+    }
+    updateDisplay();
+}, 100);
+</script>
+{% endblock %}

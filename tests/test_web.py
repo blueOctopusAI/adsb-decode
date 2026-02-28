@@ -171,11 +171,37 @@ class TestStatsReceiver:
         assert "capture_start" in data
 
 
+class TestAllPositions:
+    def test_all_positions(self, client):
+        resp = client.get("/api/positions/all")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "positions" in data
+        assert data["count"] == 2
+        # Ordered by timestamp ascending
+        assert data["positions"][0]["timestamp"] <= data["positions"][1]["timestamp"]
+
+    def test_all_positions_limit(self, client):
+        resp = client.get("/api/positions/all?limit=1")
+        data = resp.get_json()
+        assert data["count"] == 1
+
+
 class TestEventsPage:
     def test_events_page(self, client):
         resp = client.get("/events")
         assert resp.status_code == 200
         assert b"Events" in resp.data
+
+    def test_replay_page(self, client):
+        resp = client.get("/replay")
+        assert resp.status_code == 200
+        assert b"Replay" in resp.data
+
+    def test_receivers_page(self, client):
+        resp = client.get("/receivers")
+        assert resp.status_code == 200
+        assert b"Receivers" in resp.data
 
 
 class TestCORS:
