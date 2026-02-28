@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}adsb-decode — Map{% endblock %}
+
+{% block extra_style %}
+#map { width: 100%; height: calc(100vh - 41px); }
+#sidebar {
+    position: absolute;
+    top: 49px;
+    right: 0;
+    width: 360px;
+    height: calc(100vh - 41px);
+    background: rgba(10,10,10,0.92);
+    border-left: 1px solid #333;
+    overflow-y: auto;
+    z-index: 1000;
+    font-size: 12px;
+    padding: 8px;
+}
+#sidebar h3 { color: #00ff88; margin: 8px 0 4px; font-size: 13px; }
+#sidebar table { width: 100%; }
+#sidebar td { padding: 3px 6px; }
+#count-badge {
+    position: absolute;
+    top: 56px;
+    left: 56px;
+    background: rgba(0,0,0,0.8);
+    color: #00ff88;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    z-index: 1000;
+    border: 1px solid #333;
+}
+.leaflet-container { background: #0a0a0a; }
+{% endblock %}
+
+{% block content %}
+<div id="map"></div>
+<div id="count-badge">Aircraft: <span id="ac-count">0</span></div>
+<div id="sidebar">
+    <h3>Aircraft List</h3>
+    <table id="ac-table">
+        <thead>
+            <tr><th>ICAO</th><th>Call</th><th>Alt</th><th>Spd</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map', {
+    center: [39.8, -98.5],
+    zoom: 5,
+    zoomControl: true,
+});
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OSM &copy; CARTO',
+    maxZoom: 19,
+}).addTo(map);
+
+const markers = {};
+const trails = {};
+
+function acIcon(heading, isMilitary) {
+    const color = isMilitary ? '#ff4444' : '#00ff88';
+    const rotation = heading || 0;
+    return L.divIcon({
+        className: '',
+        html: `<svg width="20" height="20" viewBox="0 0 20 20" style="transform:rotate(${rotation}deg)">
+            <polygon points="10,2 14,18 10,14 6,18" fill="${color}" opacity="0.9"/>
+        </svg>`,
+        iconSize: [20, 20],
+        iconAnchor: [10, 10],
+    });
+}
+
+function updateMap() {
+    fetch('/api/positions')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('ac-count').textContent = data.count;
+            const tbody = document.querySelector('#ac-table tbody');
+            tbody.innerHTML = '';
+
+            data.positions.forEach(p => {
+                const key = p.icao;
+
+                // Update or create marker
+                if (markers[key]) {
+                    markers[key].setLatLng([p.lat, p.lon]);
+                    markers[key].setIcon(acIcon(p.heading_deg, p.is_military));
+                } else {
+                    markers[key] = L.marker([p.lat, p.lon], {
+                        icon: acIcon(p.heading_deg, p.is_military),
+                    }).addTo(map);
+                }
+
+                const label = p.registration || p.icao;
+                markers[key].bindTooltip(label, {
+                    permanent: false,
+                    direction: 'right',
+                    className: 'dark-tooltip',
+                });
+
+                // Sidebar row
+                const cls = p.is_military ? 'mil' : '';
+                tbody.innerHTML += `<tr>
+                    <td><a href="/aircraft/${p.icao}" class="${cls}">${p.icao}</a></td>
+                    <td>${p.registration || '-'}</td>
+                    <td>${p.altitude_ft || '-'}</td>
+                    <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
+                </tr>`;
+            });
+        })
+        .catch(err => console.error('Update failed:', err));
+}
+
+updateMap();
+setInterval(updateMap, 2000);
+</script>
+{% endblock %}

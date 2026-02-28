@@ -15,7 +15,7 @@ Sources:
 IDENTIFICATION_FRAMES = [
     # Example from "The 1090MHz Riddle" — aircraft identification
     ("8D4840D6202CC371C32CE0576098", "4840D6", "KLM1023 "),
-    ("8D406B902015A678D4D220AA4BDA", "406B90", "BAW256  "),
+    ("8D406B902015A678D4D220AA4BDA", "406B90", "EZY85MH "),
 ]
 
 # DF17 TC9-18: Airborne Position (CPR encoded)

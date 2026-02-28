@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}adsb-decode — {{ aircraft.icao }}{% endblock %}
+
+{% block extra_style %}
+#detail-map { width: 100%; height: 400px; margin: 16px 0; border: 1px solid #333; }
+.info-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin: 12px 0; }
+.info-item { background: #111; padding: 8px 12px; border: 1px solid #222; }
+.info-item .label { color: #888; font-size: 11px; }
+.info-item .value { color: #00ff88; font-size: 16px; font-weight: bold; }
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2 style="color:#00ff88;">
+        {{ aircraft.icao }}
+        {% if aircraft.registration %} — {{ aircraft.registration }}{% endif %}
+        {% if aircraft.is_military %}<span class="mil"> MIL</span>{% endif %}
+    </h2>
+
+    <div class="info-grid">
+        <div class="info-item">
+            <div class="label">Country</div>
+            <div class="value">{{ aircraft.country or 'Unknown' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="label">Registration</div>
+            <div class="value">{{ aircraft.registration or 'Unknown' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="label">Positions</div>
+            <div class="value">{{ positions|length }}</div>
+        </div>
+    </div>
+
+    {% if positions %}
+    <div id="detail-map"></div>
+
+    <h3 style="color:#00ff88; margin:16px 0 8px;">Position History</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Lat</th><th>Lon</th><th>Alt (ft)</th>
+                <th>Speed (kts)</th><th>Heading</th><th>VRate</th><th>Time</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in positions %}
+            <tr>
+                <td>{{ "%.4f"|format(p.lat) }}</td>
+                <td>{{ "%.4f"|format(p.lon) }}</td>
+                <td>{{ p.altitude_ft or '-' }}</td>
+                <td>{{ "%.0f"|format(p.speed_kts) if p.speed_kts else '-' }}</td>
+                <td>{{ "%.0f"|format(p.heading_deg) if p.heading_deg else '-' }}</td>
+                <td>{{ p.vertical_rate_fpm or '-' }}</td>
+                <td>{{ p.timestamp }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No positions recorded for this aircraft.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if positions %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const positions = {{ positions|tojson }};
+if (positions.length > 0) {
+    const map = L.map('detail-map', { zoomControl: true });
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OSM &copy; CARTO', maxZoom: 19,
+    }).addTo(map);
+
+    const coords = positions.map(p => [p.lat, p.lon]).reverse();
+    const line = L.polyline(coords, { color: '#00ff88', weight: 2 }).addTo(map);
+
+    // Mark first and last position
+    L.circleMarker(coords[0], { radius: 5, color: '#00aaff', fillOpacity: 0.8 })
+        .bindTooltip('Start').addTo(map);
+    L.circleMarker(coords[coords.length - 1], { radius: 5, color: '#ff4444', fillOpacity: 0.8 })
+        .bindTooltip('Latest').addTo(map);
+
+    map.fitBounds(line.getBounds().pad(0.1));
+}
+</script>
+{% endif %}
+{% endblock %}

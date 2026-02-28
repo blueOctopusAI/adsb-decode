@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}adsb-decode — Aircraft Table{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2 style="color:#00ff88; margin-bottom:12px;">Aircraft ({{ aircraft|length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ICAO</th>
+                <th>Registration</th>
+                <th>Country</th>
+                <th>Military</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ac in aircraft %}
+            <tr>
+                <td><a href="/aircraft/{{ ac.icao }}">{{ ac.icao }}</a></td>
+                <td>{{ ac.registration or '-' }}</td>
+                <td>{{ ac.country or '-' }}</td>
+                <td>{% if ac.is_military %}<span class="mil">MIL</span>{% else %}-{% endif %}</td>
+                <td>{{ ac.first_seen }}</td>
+                <td>{{ ac.last_seen }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
