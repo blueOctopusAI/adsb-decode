@@ -52,8 +52,8 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const map = L.map('map', {
-    center: [39.8, -98.5],
-    zoom: 5,
+    center: [35.18, -83.38],
+    zoom: 7,
     zoomControl: true,
 });
 
@@ -86,8 +86,10 @@ function updateMap() {
             const tbody = document.querySelector('#ac-table tbody');
             tbody.innerHTML = '';
 
+            const seen = new Set();
             data.positions.forEach(p => {
                 const key = p.icao;
+                seen.add(key);
 
                 // Update or create marker
                 if (markers[key]) {
@@ -99,7 +101,7 @@ function updateMap() {
                     }).addTo(map);
                 }
 
-                const label = p.registration || p.icao;
+                const label = p.registration || p.callsign || p.icao;
                 markers[key].bindTooltip(label, {
                     permanent: false,
                     direction: 'right',
@@ -110,16 +112,24 @@ function updateMap() {
                 const cls = p.is_military ? 'mil' : '';
                 tbody.innerHTML += `<tr>
                     <td><a href="/aircraft/${p.icao}" class="${cls}">${p.icao}</a></td>
-                    <td>${p.registration || '-'}</td>
+                    <td>${p.registration || p.callsign || '-'}</td>
                     <td>${p.altitude_ft || '-'}</td>
                     <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
                 </tr>`;
+            });
+
+            // Remove markers for aircraft no longer in response
+            Object.keys(markers).forEach(key => {
+                if (!seen.has(key)) {
+                    map.removeLayer(markers[key]);
+                    delete markers[key];
+                }
             });
         })
         .catch(err => console.error('Update failed:', err));
 }
 
 updateMap();
-setInterval(updateMap, 2000);
+setInterval(updateMap, 250);
 </script>
 {% endblock %}
