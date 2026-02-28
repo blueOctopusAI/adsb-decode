@@ -35,8 +35,9 @@
     <button class="ctrl-btn" id="play-btn">Play</button>
     <input type="range" id="time-slider" min="0" max="100" value="0">
     <span id="time-display">Loading...</span>
-    <span id="speed-label">1x</span>
-    <button class="ctrl-btn" id="speed-btn">2x</button>
+    <button class="ctrl-btn" id="speed-down">-</button>
+    <span id="speed-label" style="min-width:40px;text-align:center;">1x</span>
+    <button class="ctrl-btn" id="speed-up">+</button>
 </div>
 {% endblock %}
 
@@ -54,7 +55,7 @@ let timeMin = 0, timeMax = 0;
 let playing = false;
 let currentTime = 0;
 let playSpeed = 1;
-const speeds = [1, 2, 5, 10, 30, 60];
+const speeds = [1, 2, 5, 10, 30, 60, 120, 300, 600];
 let speedIdx = 0;
 const markers = {};
 const trails = {};
@@ -170,11 +171,18 @@ document.getElementById('play-btn').addEventListener('click', function() {
 });
 
 // Speed control
-document.getElementById('speed-btn').addEventListener('click', function() {
-    speedIdx = (speedIdx + 1) % speeds.length;
-    playSpeed = speeds[speedIdx];
-    document.getElementById('speed-label').textContent = playSpeed + 'x';
-    this.textContent = speeds[(speedIdx + 1) % speeds.length] + 'x';
+function updateSpeedLabel() {
+    const s = speeds[speedIdx];
+    document.getElementById('speed-label').textContent = (s >= 60 ? (s/60) + 'm' : s) + 'x';
+    playSpeed = s;
+}
+document.getElementById('speed-up').addEventListener('click', function() {
+    if (speedIdx < speeds.length - 1) speedIdx++;
+    updateSpeedLabel();
+});
+document.getElementById('speed-down').addEventListener('click', function() {
+    if (speedIdx > 0) speedIdx--;
+    updateSpeedLabel();
 });
 
 // Slider manual control

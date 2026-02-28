@@ -98,8 +98,9 @@
     <div><span class="stat-label">Events:</span> <span class="stat-value" id="so-events">0</span></div>
     <div><span class="stat-label">Uptime:</span> <span class="stat-value" id="so-uptime">--</span></div>
     <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;">
-        <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
-        <label style="cursor:pointer;font-size:11px;margin-left:10px;"><input type="checkbox" id="apt-large"> Major</label>
+        <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="trail-toggle" checked> Trails</label>
+        <label style="cursor:pointer;font-size:11px;margin-left:8px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
+        <label style="cursor:pointer;font-size:11px;margin-left:8px;"><input type="checkbox" id="apt-large"> Major</label>
         <label style="cursor:pointer;font-size:11px;margin-left:6px;"><input type="checkbox" id="apt-medium"> Medium</label>
         <label style="cursor:pointer;font-size:11px;margin-left:6px;"><input type="checkbox" id="apt-small"> Small</label>
     </div>
@@ -208,6 +209,7 @@ function drawTrail(icao, points) {
     }
     trailLines[icao] = [];
 
+    if (!trailsEnabled) return;
     if (points.length < 2) return;
 
     for (let i = 1; i < points.length; i++) {
@@ -453,7 +455,64 @@ function updateHeatmap() {
         .catch(() => {});
 }
 
+// --- Trail toggle ---
+let trailsEnabled = true;
+const trailToggle = document.getElementById('trail-toggle');
+trailToggle.addEventListener('change', function() {
+    trailsEnabled = this.checked;
+    if (!trailsEnabled) {
+        Object.keys(trailLines).forEach(k => {
+            trailLines[k].forEach(seg => map.removeLayer(seg));
+        });
+    }
+    saveState();
+});
+
+// --- Persist checkbox state in localStorage ---
+const STATE_KEY = 'adsb-map-state';
+function saveState() {
+    const state = {
+        trails: document.getElementById('trail-toggle').checked,
+        heatmap: document.getElementById('heatmap-toggle').checked,
+        aptLarge: document.getElementById('apt-large').checked,
+        aptMedium: document.getElementById('apt-medium').checked,
+        aptSmall: document.getElementById('apt-small').checked,
+        zoom: map.getZoom(),
+        center: [map.getCenter().lat, map.getCenter().lng],
+    };
+    localStorage.setItem(STATE_KEY, JSON.stringify(state));
+}
+function restoreState() {
+    try {
+        const raw = localStorage.getItem(STATE_KEY);
+        if (!raw) return;
+        const s = JSON.parse(raw);
+        if (s.trails !== undefined) { trailToggle.checked = s.trails; trailsEnabled = s.trails; }
+        if (s.heatmap) { document.getElementById('heatmap-toggle').checked = true; heatmapEnabled = true; }
+        if (s.aptLarge) document.getElementById('apt-large').checked = true;
+        if (s.aptMedium) document.getElementById('apt-medium').checked = true;
+        if (s.aptSmall) document.getElementById('apt-small').checked = true;
+        if (s.center && s.zoom) { map.setView(s.center, s.zoom); mapCentered = true; }
+        // Trigger airport + heatmap load if restored
+        if (s.aptLarge || s.aptMedium || s.aptSmall) {
+            if (!allAirports) {
+                fetch('/api/airports').then(r => r.json()).then(data => {
+                    allAirports = data.airports;
+                    renderVisibleAirports();
+                });
+            }
+        }
+        if (s.heatmap) updateHeatmap();
+    } catch(e) {}
+}
+// Save on map move and checkbox changes
+map.on('moveend', saveState);
+['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small'].forEach(id => {
+    document.getElementById(id).addEventListener('change', saveState);
+});
+
 // --- Initialize ---
+restoreState();
 centerOnReceiver();
 updateMap();
 updateStats();
