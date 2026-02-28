@@ -387,7 +387,7 @@ class TestUnusualAltitudeFilter:
     def test_fast_low_no_airport(self, engine):
         """Fast aircraft below 3000ft far from any airport triggers alert."""
         ac = _make_ac(
-            lat=34.0, lon=-82.0,  # Not near any bundled airport
+            lat=30.0, lon=-75.0,  # Middle of Atlantic, no airports
             altitude_ft=2000, speed_kts=400,
         )
         events = engine.check(ac)

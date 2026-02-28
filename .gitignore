@@ -3,6 +3,7 @@ data/*.iq
 data/*.bin
 data/*.raw
 data/*.csv
+!data/airports.csv
 data/*.json
 data/*.kml
 data/*.geojson

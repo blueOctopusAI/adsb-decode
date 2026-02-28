@@ -177,7 +177,7 @@ class TestAirports:
         assert resp.status_code == 200
         data = resp.get_json()
         assert "airports" in data
-        assert data["count"] == 20  # 20 bundled airports
+        assert data["count"] >= 20  # 3,642 from CSV, fallback is 4
         apt = data["airports"][0]
         assert "icao" in apt
         assert "name" in apt

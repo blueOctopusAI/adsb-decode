@@ -201,32 +201,48 @@ class AircraftTypeDB:
 
 # --- Airport Awareness ---
 
-# Bundled airports within typical ADS-B range of western NC
-# Format: (ICAO, name, lat, lon, elevation_ft)
-AIRPORTS: list[tuple[str, str, float, float, int]] = [
-    ("KATL", "Atlanta Hartsfield-Jackson", 33.6367, -84.4281, 1026),
-    ("KCLT", "Charlotte Douglas", 35.2140, -80.9431, 748),
-    ("KAVL", "Asheville Regional", 35.4362, -82.5418, 2165),
-    ("KGSP", "Greenville-Spartanburg", 34.8957, -82.2189, 964),
-    ("KTYS", "Knoxville McGhee Tyson", 35.8110, -83.9940, 981),
-    ("KCHA", "Chattanooga Metropolitan", 35.0353, -85.2038, 683),
-    ("KBNA", "Nashville International", 36.1246, -86.6782, 599),
-    ("KRDU", "Raleigh-Durham", 35.8776, -78.7875, 435),
-    ("KGSO", "Piedmont Triad", 36.0978, -79.9373, 925),
-    ("KJFK", "New York JFK", 40.6413, -73.7781, 13),
-    ("KORD", "Chicago O'Hare", 41.9742, -87.9073, 672),
-    ("KDFW", "Dallas/Fort Worth", 32.8998, -97.0403, 607),
-    ("KMIA", "Miami International", 25.7959, -80.2870, 8),
-    ("KIAD", "Washington Dulles", 38.9531, -77.4565, 312),
-    ("KDCA", "Reagan National", 38.8512, -77.0402, 15),
-    ("KPHL", "Philadelphia", 39.8721, -75.2408, 36),
-    ("KPIT", "Pittsburgh", 40.4915, -80.2329, 1203),
-    ("KCVG", "Cincinnati/Northern KY", 39.0488, -84.6678, 896),
-    ("KMCO", "Orlando International", 28.4294, -81.3090, 96),
-    ("KTPA", "Tampa International", 27.9755, -82.5332, 26),
-]
-
 import math
+
+# Load airports from bundled CSV (3,642 US airports from OurAirports)
+# Format: (ICAO, name, lat, lon, elevation_ft)
+_AIRPORT_TYPES: dict[str, str] = {}
+
+
+def _load_airports() -> list[tuple[str, str, float, float, int]]:
+    """Load airports from data/airports.csv, falling back to minimal built-in list."""
+    airports_csv = Path(__file__).parent.parent / "data" / "airports.csv"
+    if airports_csv.exists():
+        result = []
+        with open(airports_csv, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    icao = row["icao"]
+                    result.append((
+                        icao,
+                        row["name"],
+                        float(row["lat"]),
+                        float(row["lon"]),
+                        int(row.get("elevation_ft", 0) or 0),
+                    ))
+                    _AIRPORT_TYPES[icao] = row.get("type", "small_airport")
+                except (ValueError, KeyError):
+                    continue
+        if result:
+            return result
+
+    # Fallback: minimal set if CSV is missing
+    for code in ("KATL", "KCLT", "KAVL", "KTYS"):
+        _AIRPORT_TYPES[code] = "large_airport"
+    return [
+        ("KATL", "Atlanta Hartsfield-Jackson", 33.6367, -84.4281, 1026),
+        ("KCLT", "Charlotte Douglas", 35.2140, -80.9431, 748),
+        ("KAVL", "Asheville Regional", 35.4362, -82.5418, 2165),
+        ("KTYS", "Knoxville McGhee Tyson", 35.8110, -83.9940, 981),
+    ]
+
+
+AIRPORTS = _load_airports()
 
 
 def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

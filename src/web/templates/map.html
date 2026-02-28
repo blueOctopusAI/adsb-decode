@@ -41,6 +41,43 @@
 
 .leaflet-container { background: #0a0a0a; }
 
+/* Altitude legend */
+#alt-legend {
+    position: absolute;
+    bottom: 24px;
+    left: 12px;
+    background: rgba(0,0,0,0.85);
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 8px 12px 8px 10px;
+    z-index: 1000;
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+#alt-legend .legend-title { color: #888; margin-bottom: 6px; font-size: 10px; text-transform: uppercase; }
+#alt-legend .legend-body { display: flex; align-items: stretch; }
+#alt-legend .legend-bar {
+    width: 14px;
+    height: 120px;
+    background: linear-gradient(to top, #00ff00, #ffff00 50%, #ff0000);
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+#alt-legend .legend-labels {
+    margin-left: 6px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 120px;
+}
+#alt-legend .legend-labels span {
+    color: #aaa;
+    white-space: nowrap;
+    line-height: 1;
+}
+
 /* Popup styling */
 .ac-popup { font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.5; }
 .ac-popup .popup-title { color: #00ff88; font-weight: bold; font-size: 14px; margin-bottom: 4px; }
@@ -62,7 +99,22 @@
     <div><span class="stat-label">Uptime:</span> <span class="stat-value" id="so-uptime">--</span></div>
     <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;">
         <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
-        <label style="cursor:pointer;font-size:11px;margin-left:10px;"><input type="checkbox" id="airport-toggle"> Airports</label>
+        <label style="cursor:pointer;font-size:11px;margin-left:10px;"><input type="checkbox" id="apt-large"> Major</label>
+        <label style="cursor:pointer;font-size:11px;margin-left:6px;"><input type="checkbox" id="apt-medium"> Medium</label>
+        <label style="cursor:pointer;font-size:11px;margin-left:6px;"><input type="checkbox" id="apt-small"> Small</label>
+    </div>
+</div>
+<div id="alt-legend">
+    <div class="legend-title">Altitude</div>
+    <div class="legend-body">
+        <div class="legend-bar"></div>
+        <div class="legend-labels">
+            <span>40,000 ft</span>
+            <span>30,000 ft</span>
+            <span>20,000 ft</span>
+            <span>10,000 ft</span>
+            <span>0 ft</span>
+        </div>
     </div>
 </div>
 <div id="sidebar">
@@ -281,51 +333,90 @@ function updateMap() {
 }
 
 // --- Airport layer ---
-let airportMarkers = [];
-let airportsLoaded = false;
+let airportLayer = L.layerGroup().addTo(map);
+let allAirports = null;
 
-document.getElementById('airport-toggle').addEventListener('change', function() {
-    if (this.checked) {
-        loadAirports();
-    } else {
-        airportMarkers.forEach(m => map.removeLayer(m));
-        airportMarkers = [];
-    }
+const aptIcons = {
+    large_airport: L.divIcon({
+        className: '',
+        html: `<svg width="18" height="18" viewBox="0 0 18 18">
+            <rect x="3" y="8" width="12" height="2.5" rx="1" fill="#ffaa00" opacity="0.9"/>
+            <rect x="7.5" y="2" width="2.5" height="14" rx="1" fill="#ffaa00" opacity="0.9"/>
+        </svg>`,
+        iconSize: [18, 18], iconAnchor: [9, 9],
+    }),
+    medium_airport: L.divIcon({
+        className: '',
+        html: `<svg width="14" height="14" viewBox="0 0 14 14">
+            <rect x="2" y="6" width="10" height="2" rx="1" fill="#cc8800" opacity="0.8"/>
+            <rect x="6" y="1" width="2" height="12" rx="1" fill="#cc8800" opacity="0.8"/>
+        </svg>`,
+        iconSize: [14, 14], iconAnchor: [7, 7],
+    }),
+    small_airport: L.divIcon({
+        className: '',
+        html: `<svg width="10" height="10" viewBox="0 0 10 10">
+            <circle cx="5" cy="5" r="3" fill="#997700" opacity="0.7"/>
+        </svg>`,
+        iconSize: [10, 10], iconAnchor: [5, 5],
+    }),
+};
+
+function getAptFilters() {
+    return {
+        large_airport: document.getElementById('apt-large').checked,
+        medium_airport: document.getElementById('apt-medium').checked,
+        small_airport: document.getElementById('apt-small').checked,
+    };
+}
+
+['apt-large', 'apt-medium', 'apt-small'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => {
+        if (!allAirports) {
+            fetch('/api/airports').then(r => r.json()).then(data => {
+                allAirports = data.airports;
+                renderVisibleAirports();
+            });
+        } else {
+            renderVisibleAirports();
+        }
+    });
 });
 
-function loadAirports() {
-    if (airportsLoaded && airportMarkers.length > 0) {
-        airportMarkers.forEach(m => m.addTo(map));
-        return;
-    }
-    fetch('/api/airports')
-        .then(r => r.json())
-        .then(data => {
-            airportMarkers.forEach(m => map.removeLayer(m));
-            airportMarkers = [];
-            data.airports.forEach(apt => {
-                // Airport icon: runway symbol
-                const icon = L.divIcon({
-                    className: '',
-                    html: `<svg width="16" height="16" viewBox="0 0 16 16">
-                        <rect x="3" y="7" width="10" height="2" rx="1" fill="#ffaa00" opacity="0.9"/>
-                        <rect x="7" y="2" width="2" height="12" rx="1" fill="#ffaa00" opacity="0.9"/>
-                    </svg>`,
-                    iconSize: [16, 16],
-                    iconAnchor: [8, 8],
-                });
-                const m = L.marker([apt.lat, apt.lon], { icon: icon, interactive: true })
-                    .bindTooltip(`${apt.icao} — ${apt.name}`, {
-                        permanent: false, direction: 'right',
-                        className: 'dark-tooltip',
-                    })
-                    .addTo(map);
-                airportMarkers.push(m);
-            });
-            airportsLoaded = true;
-        })
-        .catch(() => {});
+function renderVisibleAirports() {
+    airportLayer.clearLayers();
+    if (!allAirports) return;
+    const filters = getAptFilters();
+    if (!filters.large_airport && !filters.medium_airport && !filters.small_airport) return;
+    const bounds = map.getBounds();
+    allAirports.forEach(apt => {
+        if (!filters[apt.type]) return;
+        if (!bounds.contains([apt.lat, apt.lon])) return;
+        const icon = aptIcons[apt.type] || aptIcons.small_airport;
+        const typeLabel = apt.type === 'large_airport' ? 'Major' : apt.type === 'medium_airport' ? 'Medium' : 'Small';
+        const popupContent = `<div class="ac-popup">
+            <div class="popup-title" style="color:#ffaa00;">${apt.icao}</div>
+            <div class="popup-row"><span class="popup-label">Name</span><span class="popup-value">${apt.name}</span></div>
+            <div class="popup-row"><span class="popup-label">Type</span><span class="popup-value">${typeLabel}</span></div>
+            <div class="popup-row"><span class="popup-label">Elevation</span><span class="popup-value">${apt.elevation_ft.toLocaleString()} ft</span></div>
+            <div class="popup-row"><span class="popup-label">Coords</span><span class="popup-value">${apt.lat.toFixed(4)}, ${apt.lon.toFixed(4)}</span></div>
+            <div style="margin-top:6px;">
+                <a href="https://www.airnav.com/airport/${apt.icao}" target="_blank">AirNav &rarr;</a>
+                &nbsp;
+                <a href="https://skyvector.com/airport/${apt.icao}" target="_blank">SkyVector &rarr;</a>
+            </div>
+        </div>`;
+        L.marker([apt.lat, apt.lon], { icon, interactive: true })
+            .bindTooltip(`${apt.icao} — ${apt.name}`, {
+                permanent: false, direction: 'right',
+                className: 'dark-tooltip',
+            })
+            .bindPopup(popupContent, { maxWidth: 280 })
+            .addTo(airportLayer);
+    });
 }
+
+map.on('moveend', renderVisibleAirports);
 
 // --- Heatmap layer ---
 let heatLayer = null;

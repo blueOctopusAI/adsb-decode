@@ -162,8 +162,10 @@ def query_positions():
 @api.route("/airports")
 def list_airports():
     """List all known airports for map overlay."""
+    from ..enrichment import _AIRPORT_TYPES
     airports = [
-        {"icao": code, "name": name, "lat": lat, "lon": lon, "elevation_ft": elev}
+        {"icao": code, "name": name, "lat": lat, "lon": lon,
+         "elevation_ft": elev, "type": _AIRPORT_TYPES.get(code, "small_airport")}
         for code, name, lat, lon, elev in AIRPORTS
     ]
     return jsonify({"airports": airports, "count": len(airports)})
