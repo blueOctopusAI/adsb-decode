@@ -60,6 +60,9 @@
     <div><span class="stat-label">Positions:</span> <span class="stat-value" id="so-positions">0</span></div>
     <div><span class="stat-label">Events:</span> <span class="stat-value" id="so-events">0</span></div>
     <div><span class="stat-label">Uptime:</span> <span class="stat-value" id="so-uptime">--</span></div>
+    <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;">
+        <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
+    </div>
 </div>
 <div id="sidebar">
     <h3>Aircraft (<span id="ac-count">0</span>)</h3>
@@ -74,6 +77,7 @@
 
 {% block scripts %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <script>
 // --- Map initialization ---
 const map = L.map('map', {
@@ -275,11 +279,47 @@ function updateMap() {
     }).catch(err => console.error('Update failed:', err));
 }
 
+// --- Heatmap layer ---
+let heatLayer = null;
+let heatmapEnabled = false;
+
+document.getElementById('heatmap-toggle').addEventListener('change', function() {
+    heatmapEnabled = this.checked;
+    if (!heatmapEnabled && heatLayer) {
+        map.removeLayer(heatLayer);
+        heatLayer = null;
+    }
+    if (heatmapEnabled) updateHeatmap();
+});
+
+function updateHeatmap() {
+    if (!heatmapEnabled) return;
+    fetch('/api/trails?limit=200')
+        .then(r => r.json())
+        .then(data => {
+            const points = [];
+            Object.values(data.trails).forEach(trail => {
+                trail.forEach(p => {
+                    points.push([p[0], p[1], 0.5]);  // lat, lon, intensity
+                });
+            });
+            if (heatLayer) map.removeLayer(heatLayer);
+            if (points.length > 0) {
+                heatLayer = L.heatLayer(points, {
+                    radius: 15, blur: 20, maxZoom: 12,
+                    gradient: {0.2: '#0000ff', 0.4: '#00ff88', 0.6: '#ffff00', 0.8: '#ff8800', 1.0: '#ff0000'},
+                }).addTo(map);
+            }
+        })
+        .catch(() => {});
+}
+
 // --- Initialize ---
 centerOnReceiver();
 updateMap();
 updateStats();
 setInterval(updateMap, 1000);
 setInterval(updateStats, 10000);
+setInterval(updateHeatmap, 15000);
 </script>
 {% endblock %}

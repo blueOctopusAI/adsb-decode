@@ -208,6 +208,12 @@ def events_page():
     return render_template("events.html")
 
 
+@pages.route("/receivers")
+def receivers_page():
+    """Receiver management page."""
+    return render_template("receivers.html")
+
+
 @pages.route("/stats")
 def stats_page():
     """Statistics dashboard page."""

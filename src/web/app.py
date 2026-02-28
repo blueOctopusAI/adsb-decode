@@ -12,6 +12,7 @@ from __future__ import annotations
 from flask import Flask
 
 from ..database import Database
+from .ingest import ingest
 from .routes import register_routes
 
 
@@ -47,4 +48,5 @@ def create_app(db_path: str = "data/adsb.db") -> Flask:
         return response
 
     register_routes(app)
+    app.register_blueprint(ingest)
     return app

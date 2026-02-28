@@ -1,0 +1,14 @@
+# Caddyfile for adsb-decode dashboard
+# Replace adsb.example.com with your domain
+# Caddy handles automatic HTTPS via Let's Encrypt
+
+adsb.example.com {
+    reverse_proxy 127.0.0.1:8000
+
+    # Security headers
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+}

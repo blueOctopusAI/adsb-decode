@@ -1,0 +1,17 @@
+[Unit]
+Description=adsb-decode dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=adsb
+WorkingDirectory=/opt/adsb-decode
+ExecStart=/opt/adsb-decode/venv/bin/gunicorn -c deploy/gunicorn.conf.py deploy.wsgi:app
+Restart=always
+RestartSec=5
+
+Environment=ADSB_DB_PATH=/opt/adsb-decode/data/adsb.db
+Environment=ADSB_INGEST_KEY=CHANGE_ME
+
+[Install]
+WantedBy=multi-user.target

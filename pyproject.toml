@@ -24,6 +24,12 @@ dev = [
 rtlsdr = [
     "pyrtlsdr>=0.3.0",
 ]
+feeder = [
+    "requests>=2.28",
+]
+web = [
+    "gunicorn>=21.0",
+]
 
 [project.scripts]
 adsb = "src.cli:cli"

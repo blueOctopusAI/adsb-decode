@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}adsb-decode — Receivers{% endblock %}
+
+{% block extra_style %}
+#rx-map { width: 100%; height: 300px; margin: 16px 0; border: 1px solid #333; }
+.rx-card {
+    display: inline-block;
+    background: #111;
+    border: 1px solid #333;
+    padding: 16px;
+    margin: 8px;
+    border-radius: 4px;
+    min-width: 250px;
+    vertical-align: top;
+}
+.rx-name { font-size: 16px; font-weight: bold; margin-bottom: 8px; }
+.rx-online { color: #00ff88; }
+.rx-offline { color: #ff4444; }
+.rx-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+.rx-label { color: #888; }
+.rx-value { color: #e0e0e0; }
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2 style="color:#00ff88; margin-bottom:12px;">Receivers</h2>
+    <div id="rx-map"></div>
+    <div id="rx-cards"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const rxMap = L.map('rx-map', { zoomControl: true });
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OSM &copy; CARTO', maxZoom: 19,
+}).addTo(rxMap);
+
+function loadReceivers() {
+    fetch('/api/v1/receivers')
+        .then(r => r.json())
+        .then(data => {
+            const cards = document.getElementById('rx-cards');
+            cards.innerHTML = '';
+            const bounds = [];
+
+            data.receivers.forEach(rx => {
+                const status = rx.online ? '<span class="rx-online">ONLINE</span>' : '<span class="rx-offline">OFFLINE</span>';
+                const heartbeat = rx.last_heartbeat ? new Date(rx.last_heartbeat * 1000).toLocaleTimeString() : 'Never';
+                cards.innerHTML += `<div class="rx-card">
+                    <div class="rx-name">${rx.name} ${status}</div>
+                    <div class="rx-row"><span class="rx-label">Location</span><span class="rx-value">${rx.lat ? rx.lat.toFixed(4) + ', ' + rx.lon.toFixed(4) : 'Unknown'}</span></div>
+                    <div class="rx-row"><span class="rx-label">Last Heartbeat</span><span class="rx-value">${heartbeat}</span></div>
+                    <div class="rx-row"><span class="rx-label">Active Aircraft</span><span class="rx-value">${rx.active_aircraft || 0}</span></div>
+                </div>`;
+
+                if (rx.lat && rx.lon) {
+                    bounds.push([rx.lat, rx.lon]);
+                    const color = rx.online ? '#00ff88' : '#ff4444';
+                    L.circleMarker([rx.lat, rx.lon], {
+                        radius: 8, color: color, fillColor: color, fillOpacity: 0.8, weight: 1,
+                    }).addTo(rxMap).bindTooltip(rx.name, { permanent: true, direction: 'right' });
+
+                    // Estimated coverage circle (~100nm = ~185km)
+                    L.circle([rx.lat, rx.lon], {
+                        radius: 185000, color: color, fillOpacity: 0.05, weight: 1, dashArray: '4 4',
+                    }).addTo(rxMap);
+                }
+            });
+
+            if (bounds.length > 0) {
+                rxMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 8 });
+            } else {
+                rxMap.setView([35.18, -83.38], 6);
+            }
+        })
+        .catch(err => console.error('Failed to load receivers:', err));
+}
+
+loadReceivers();
+setInterval(loadReceivers, 30000);
+</script>
+{% endblock %}
