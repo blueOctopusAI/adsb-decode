@@ -3,7 +3,7 @@
 ## Voice
 
 Technical but accessible. This project bridges two audiences:
-- **Engineers** (Daniel, defense contractors) who want to see the signal processing rigor
+- **Engineers** who want to see the signal processing rigor
 - **Non-engineers** (portfolio visitors) who want to understand what it does and why it matters
 
 Default to the engineering voice. Switch to plain language in README.md and user-facing output.

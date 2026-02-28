@@ -110,7 +110,7 @@ SQLite with WAL mode, foreign keys enabled, indexed queries. Test fixtures use t
 
 ## Division of Labor
 
-**Jason does:** Plug in RTL-SDR, position antenna, run capture scripts, validate against FlightAware, demo to Daniel.
+**Human does:** Plug in RTL-SDR, position antenna, run capture scripts, validate against FlightAware.
 
 **Claude does:** All code, tests, documentation, CLI, web dashboard, DSP, protocol decode, CPR math.
 

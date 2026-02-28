@@ -10,12 +10,12 @@ Provides:
 import pytest
 
 
-# Asheville, NC — default receiver location for tests
-RECEIVER_LAT = 35.5951
-RECEIVER_LON = -82.5515
+# Default receiver location for tests (Western North Carolina)
+RECEIVER_LAT = 35.1826
+RECEIVER_LON = -83.3813
 
 
 @pytest.fixture
 def receiver_location():
-    """Default receiver coordinates (Asheville, NC)."""
+    """Default receiver coordinates (Western NC)."""
     return (RECEIVER_LAT, RECEIVER_LON)
