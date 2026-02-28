@@ -132,7 +132,8 @@ class TestPageRoutes:
 
 class TestAPITrails:
     def test_trails_endpoint(self, client):
-        resp = client.get("/api/trails")
+        # Use large minutes window since test data has old timestamps
+        resp = client.get("/api/trails?minutes=999999999")
         assert resp.status_code == 200
         data = resp.get_json()
         assert "trails" in data
@@ -144,18 +145,24 @@ class TestAPITrails:
         assert len(trail[0]) == 5
 
     def test_trails_limit(self, client):
-        resp = client.get("/api/trails?limit=1")
+        resp = client.get("/api/trails?limit=1&minutes=999999999")
         data = resp.get_json()
         trail = data["trails"]["A00001"]
         assert len(trail) == 1
 
     def test_trails_ordered_oldest_first(self, client):
-        resp = client.get("/api/trails")
+        resp = client.get("/api/trails?minutes=999999999")
         data = resp.get_json()
         trail = data["trails"]["A00001"]
         # Oldest first (timestamp 1000 has alt 38000, timestamp 1001 has 37500)
         assert trail[0][2] == 38000
         assert trail[1][2] == 37500
+
+    def test_trails_default_filters_old_data(self, client):
+        """Default 60-min window excludes ancient test timestamps."""
+        resp = client.get("/api/trails")
+        data = resp.get_json()
+        assert data["trails"] == {}
 
 
 class TestStatsReceiver:

@@ -2,89 +2,453 @@
 {% block title %}adsb-decode — {{ aircraft.icao }}{% endblock %}
 
 {% block extra_style %}
-#detail-map { width: 100%; height: 400px; margin: 16px 0; border: 1px solid #333; }
-.info-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin: 12px 0; }
-.info-item { background: #111; padding: 8px 12px; border: 1px solid #222; }
-.info-item .label { color: #888; font-size: 11px; }
-.info-item .value { color: #00ff88; font-size: 16px; font-weight: bold; }
+#detail-split {
+    display: flex;
+    height: calc(100vh - 41px);
+    overflow: hidden;
+}
+/* Left panel: our data */
+#left-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    border-right: 1px solid #333;
+    min-width: 0;
+}
+/* Right panel: external intel */
+#right-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    min-width: 0;
+}
+#detail-map {
+    width: 100%;
+    height: 300px;
+    border: 1px solid #333;
+    border-radius: 4px;
+    margin: 12px 0;
+}
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 6px;
+    margin: 10px 0;
+}
+.info-item {
+    background: #111;
+    padding: 8px 10px;
+    border: 1px solid #222;
+    border-radius: 3px;
+}
+.info-item .label { color: #888; font-size: 10px; text-transform: uppercase; }
+.info-item .value { color: #00ff88; font-size: 15px; font-weight: bold; }
+.info-item .value.mil { color: #ff4444; }
+
+/* Section headers */
+.section-hdr {
+    color: #00ff88;
+    font-size: 14px;
+    margin: 16px 0 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #222;
+}
+/* Events list */
+.event-item {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 3px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+.event-item .event-type {
+    font-weight: bold;
+    text-transform: uppercase;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 2px;
+    display: inline-block;
+    margin-bottom: 4px;
+}
+.event-type.military { background: #442222; color: #ff6666; }
+.event-type.emergency { background: #442200; color: #ffaa44; }
+.event-type.anomaly { background: #333300; color: #ffff66; }
+
+/* External links grid */
+.ext-links {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 10px 0;
+}
+.ext-link {
+    display: block;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 12px;
+    text-decoration: none;
+    color: #e0e0e0;
+    transition: border-color 0.2s;
+}
+.ext-link:hover { border-color: #00ff88; }
+.ext-link .ext-name { color: #00aaff; font-weight: bold; font-size: 13px; }
+.ext-link .ext-desc { color: #888; font-size: 11px; margin-top: 4px; }
+
+/* Position table compact */
+#pos-table { font-size: 11px; margin-top: 8px; }
+#pos-table th { position: sticky; top: 0; background: #0a0a0a; }
+
+.leaflet-container { background: #0a0a0a; }
 {% endblock %}
 
 {% block content %}
-<div class="container">
-    <h2 style="color:#00ff88;">
-        {{ aircraft.icao }}
-        {% if aircraft.registration %} — {{ aircraft.registration }}{% endif %}
-        {% if aircraft.is_military %}<span class="mil"> MIL</span>{% endif %}
-    </h2>
+<div id="detail-split">
+    <!-- LEFT: Our captured data -->
+    <div id="left-panel">
+        <h2 style="color:#00ff88; margin:0 0 8px; font-size:18px;">
+            {{ aircraft.icao }}
+            {% if aircraft.registration %} — {{ aircraft.registration }}{% endif %}
+            {% if aircraft.is_military %}<span style="color:#ff4444;"> [MIL]</span>{% endif %}
+        </h2>
 
-    <div class="info-grid">
-        <div class="info-item">
-            <div class="label">Country</div>
-            <div class="value">{{ aircraft.country or 'Unknown' }}</div>
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="label">Country</div>
+                <div class="value">{{ aircraft.country or '—' }}</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Registration</div>
+                <div class="value">{{ aircraft.registration or '—' }}</div>
+            </div>
+            {% if sighting.callsign %}
+            <div class="info-item">
+                <div class="label">Callsign</div>
+                <div class="value">{{ sighting.callsign }}</div>
+            </div>
+            {% endif %}
+            {% if sighting.squawk %}
+            <div class="info-item">
+                <div class="label">Squawk</div>
+                <div class="value">{{ sighting.squawk }}</div>
+            </div>
+            {% endif %}
+            <div class="info-item">
+                <div class="label">Positions</div>
+                <div class="value">{{ positions|length }}</div>
+            </div>
+            <div class="info-item">
+                <div class="label">First Seen</div>
+                <div class="value" id="first-seen">—</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Last Seen</div>
+                <div class="value" id="last-seen">—</div>
+            </div>
+            {% if positions %}
+            <div class="info-item">
+                <div class="label">Last Altitude</div>
+                <div class="value">{{ positions[0].altitude_ft|default('—', true) }} ft</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Last Speed</div>
+                <div class="value">{{ "%.0f"|format(positions[0].speed_kts) if positions[0].speed_kts else '—' }} kts</div>
+            </div>
+            <div class="info-item">
+                <div class="label">Last Heading</div>
+                <div class="value">{{ "%.0f"|format(positions[0].heading_deg) if positions[0].heading_deg else '—' }}&deg;</div>
+            </div>
+            {% endif %}
         </div>
-        <div class="info-item">
-            <div class="label">Registration</div>
-            <div class="value">{{ aircraft.registration or 'Unknown' }}</div>
+
+        {% if positions %}
+        <div id="detail-map"></div>
+        {% endif %}
+
+        {% if events %}
+        <div class="section-hdr">Events ({{ events|length }})</div>
+        {% for e in events[:10] %}
+        <div class="event-item">
+            <span class="event-type {% if 'military' in e.event_type %}military{% elif 'emergency' in e.event_type %}emergency{% else %}anomaly{% endif %}">{{ e.event_type }}</span>
+            <div style="color:#ccc;">{{ e.description }}</div>
+            <div style="color:#666;font-size:10px;" class="event-ts" data-ts="{{ e.timestamp }}"></div>
         </div>
-        <div class="info-item">
-            <div class="label">Positions</div>
-            <div class="value">{{ positions|length }}</div>
+        {% endfor %}
+        {% if events|length > 10 %}
+        <div style="color:#666;font-size:11px;">+ {{ events|length - 10 }} more events</div>
+        {% endif %}
+        {% endif %}
+
+        {% if positions %}
+        <div class="section-hdr">Position History</div>
+        <div style="max-height:300px;overflow-y:auto;">
+        <table id="pos-table">
+            <thead>
+                <tr><th>Time</th><th>Lat</th><th>Lon</th><th>Alt</th><th>Spd</th><th>Hdg</th><th>VRate</th></tr>
+            </thead>
+            <tbody>
+                {% for p in positions %}
+                <tr>
+                    <td class="ts-cell" data-ts="{{ p.timestamp }}"></td>
+                    <td>{{ "%.4f"|format(p.lat) }}</td>
+                    <td>{{ "%.4f"|format(p.lon) }}</td>
+                    <td>{{ p.altitude_ft or '—' }}</td>
+                    <td>{{ "%.0f"|format(p.speed_kts) if p.speed_kts else '—' }}</td>
+                    <td>{{ "%.0f"|format(p.heading_deg) if p.heading_deg else '—' }}&deg;</td>
+                    <td>{{ p.vertical_rate_fpm or '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         </div>
+        {% endif %}
     </div>
 
-    {% if positions %}
-    <div id="detail-map"></div>
+    <!-- RIGHT: External intelligence -->
+    <div id="right-panel">
+        <div class="section-hdr">Aircraft Database Lookup</div>
+        <div id="lookup-status" style="color:#888;font-size:12px;margin:8px 0;">Loading external data...</div>
+        <div id="lookup-data" style="display:none;">
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="label">Manufacturer</div>
+                    <div class="value" id="lu-manufacturer">—</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Aircraft Type</div>
+                    <div class="value" id="lu-type">—</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Type Code</div>
+                    <div class="value" id="lu-typecode">—</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Registered Owner</div>
+                    <div class="value" id="lu-owner">—</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Registration</div>
+                    <div class="value" id="lu-reg">—</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Source</div>
+                    <div class="value" id="lu-source" style="font-size:11px;">—</div>
+                </div>
+            </div>
+        </div>
 
-    <h3 style="color:#00ff88; margin:16px 0 8px;">Position History</h3>
-    <table>
-        <thead>
-            <tr>
-                <th>Lat</th><th>Lon</th><th>Alt (ft)</th>
-                <th>Speed (kts)</th><th>Heading</th><th>VRate</th><th>Time</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for p in positions %}
-            <tr>
-                <td>{{ "%.4f"|format(p.lat) }}</td>
-                <td>{{ "%.4f"|format(p.lon) }}</td>
-                <td>{{ p.altitude_ft or '-' }}</td>
-                <td>{{ "%.0f"|format(p.speed_kts) if p.speed_kts else '-' }}</td>
-                <td>{{ "%.0f"|format(p.heading_deg) if p.heading_deg else '-' }}</td>
-                <td>{{ p.vertical_rate_fpm or '-' }}</td>
-                <td>{{ p.timestamp }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <p>No positions recorded for this aircraft.</p>
-    {% endif %}
+        <div class="section-hdr" style="margin-top:20px;">Look Up On</div>
+        <div class="ext-links">
+            <a class="ext-link" href="https://globe.adsbexchange.com/?icao={{ aircraft.icao }}" target="_blank" rel="noopener">
+                <div class="ext-name">ADSBExchange</div>
+                <div class="ext-desc">Live global tracking, full history</div>
+            </a>
+            {% if aircraft.registration %}
+            <a class="ext-link" href="https://www.planespotters.net/search?q={{ aircraft.registration }}" target="_blank" rel="noopener">
+                <div class="ext-name">Planespotters</div>
+                <div class="ext-desc">Aircraft photos & fleet info</div>
+            </a>
+            <a class="ext-link" href="https://flightaware.com/live/flight/{{ aircraft.registration }}" target="_blank" rel="noopener">
+                <div class="ext-name">FlightAware</div>
+                <div class="ext-desc">Flight tracking & history</div>
+            </a>
+            <a class="ext-link" href="https://www.flightradar24.com/data/aircraft/{{ aircraft.registration|lower }}" target="_blank" rel="noopener">
+                <div class="ext-name">FlightRadar24</div>
+                <div class="ext-desc">Real-time tracking</div>
+            </a>
+            {% else %}
+            <a class="ext-link" href="https://www.planespotters.net/hex/{{ aircraft.icao }}" target="_blank" rel="noopener">
+                <div class="ext-name">Planespotters</div>
+                <div class="ext-desc">Aircraft photos by hex</div>
+            </a>
+            <a class="ext-link" href="https://flightaware.com/live/modes/{{ aircraft.icao }}" target="_blank" rel="noopener">
+                <div class="ext-name">FlightAware</div>
+                <div class="ext-desc">Flight tracking by hex</div>
+            </a>
+            <a class="ext-link" href="https://www.flightradar24.com" target="_blank" rel="noopener">
+                <div class="ext-name">FlightRadar24</div>
+                <div class="ext-desc">Real-time tracking</div>
+            </a>
+            {% endif %}
+            {% if aircraft.country == 'United States' and aircraft.registration %}
+            <a class="ext-link" href="https://registry.faa.gov/AircraftInquiry/Search/NNumberResult?nNumberTxt={{ aircraft.registration[1:] }}" target="_blank" rel="noopener">
+                <div class="ext-name">FAA Registry</div>
+                <div class="ext-desc">Official registration, owner, type</div>
+            </a>
+            {% endif %}
+            <a class="ext-link" href="https://opensky-network.org/aircraft-profile?icao24={{ aircraft.icao|lower }}" target="_blank" rel="noopener">
+                <div class="ext-name">OpenSky Network</div>
+                <div class="ext-desc">Aircraft metadata database</div>
+            </a>
+            <a class="ext-link" href="https://www.airframes.org/{{ aircraft.registration|default('', true)|lower }}" target="_blank" rel="noopener">
+                <div class="ext-name">Airframes.org</div>
+                <div class="ext-desc">Detailed aircraft history</div>
+            </a>
+        </div>
+
+        {% if positions %}
+        <div class="section-hdr" style="margin-top:20px;">Flight Profile</div>
+        <canvas id="alt-chart" style="width:100%;height:200px;background:#111;border:1px solid #222;border-radius:4px;"></canvas>
+        {% endif %}
+    </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-{% if positions %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+// Format timestamps
+document.querySelectorAll('.ts-cell, .event-ts, #first-seen, #last-seen').forEach(el => {
+    const ts = el.dataset.ts;
+    if (ts) {
+        const d = new Date(parseFloat(ts) * 1000);
+        el.textContent = d.toLocaleTimeString();
+    }
+});
+
+// First/last seen from positions
 const positions = {{ positions|tojson }};
 if (positions.length > 0) {
+    const first = positions[positions.length - 1];
+    const last = positions[0];
+    const fmt = ts => {
+        const d = new Date(ts * 1000);
+        return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+    };
+    document.getElementById('first-seen').textContent = fmt(first.timestamp);
+    document.getElementById('last-seen').textContent = fmt(last.timestamp);
+
+    // Map with altitude-colored trail
     const map = L.map('detail-map', { zoomControl: true });
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; OSM &copy; CARTO', maxZoom: 19,
     }).addTo(map);
 
-    const coords = positions.map(p => [p.lat, p.lon]).reverse();
-    const line = L.polyline(coords, { color: '#00ff88', weight: 2 }).addTo(map);
+    function altColor(alt) {
+        if (alt == null) return '#888';
+        const t = Math.min(Math.max(alt / 40000, 0), 1);
+        if (t < 0.5) {
+            const s = t * 2;
+            return `rgb(${Math.round(s * 255)},255,0)`;
+        } else {
+            const s = (t - 0.5) * 2;
+            return `rgb(255,${Math.round((1 - s) * 255)},0)`;
+        }
+    }
 
-    // Mark first and last position
-    L.circleMarker(coords[0], { radius: 5, color: '#00aaff', fillOpacity: 0.8 })
-        .bindTooltip('Start').addTo(map);
-    L.circleMarker(coords[coords.length - 1], { radius: 5, color: '#ff4444', fillOpacity: 0.8 })
-        .bindTooltip('Latest').addTo(map);
+    // Draw altitude-colored trail segments
+    const pts = [...positions].reverse(); // oldest first
+    const allCoords = [];
+    for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i-1], p1 = pts[i];
+        const color = altColor(p1.altitude_ft);
+        const opacity = 0.4 + 0.6 * (i / pts.length);
+        L.polyline([[p0.lat, p0.lon], [p1.lat, p1.lon]], {
+            color: color, weight: 3, opacity: opacity,
+        }).addTo(map);
+        if (i === 1) allCoords.push([p0.lat, p0.lon]);
+        allCoords.push([p1.lat, p1.lon]);
+    }
 
-    map.fitBounds(line.getBounds().pad(0.1));
+    // Start and end markers
+    if (allCoords.length >= 2) {
+        L.circleMarker(allCoords[0], { radius: 6, color: '#00aaff', fillOpacity: 0.8 })
+            .bindTooltip('First position').addTo(map);
+        L.circleMarker(allCoords[allCoords.length - 1], { radius: 6, color: '#ff4444', fillOpacity: 0.8 })
+            .bindTooltip('Latest position').addTo(map);
+        map.fitBounds(L.polyline(allCoords).getBounds().pad(0.15));
+    }
+}
+
+// Fetch external aircraft data via our proxy
+fetch('/api/lookup/{{ aircraft.icao }}')
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            document.getElementById('lookup-status').textContent = 'External lookup failed';
+            return;
+        }
+        document.getElementById('lookup-status').style.display = 'none';
+        document.getElementById('lookup-data').style.display = 'block';
+        document.getElementById('lu-manufacturer').textContent = data.manufacturer || '—';
+        document.getElementById('lu-type').textContent = data.type || '—';
+        document.getElementById('lu-typecode').textContent = data.type_code || '—';
+        document.getElementById('lu-owner').textContent = data.owner || '—';
+        document.getElementById('lu-reg').textContent = data.registration || '—';
+        document.getElementById('lu-source').textContent = data.source || '—';
+    })
+    .catch(() => {
+        document.getElementById('lookup-status').textContent = 'External lookup unavailable';
+    });
+
+// Draw altitude profile chart
+if (positions.length > 1) {
+    const canvas = document.getElementById('alt-chart');
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        ctx.scale(dpr, dpr);
+        const W = rect.width, H = rect.height;
+        const pad = { top: 20, right: 15, bottom: 30, left: 55 };
+
+        const pts = [...positions].reverse(); // oldest first
+        const alts = pts.map(p => p.altitude_ft || 0);
+        const times = pts.map(p => p.timestamp);
+        const minT = times[0], maxT = times[times.length - 1];
+        const maxAlt = Math.max(...alts, 1000);
+
+        // Grid lines
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 0.5;
+        for (let a = 0; a <= maxAlt; a += 10000) {
+            const y = pad.top + (1 - a / maxAlt) * (H - pad.top - pad.bottom);
+            ctx.beginPath();
+            ctx.moveTo(pad.left, y);
+            ctx.lineTo(W - pad.right, y);
+            ctx.stroke();
+            ctx.fillStyle = '#666';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'right';
+            ctx.fillText((a / 1000) + 'k', pad.left - 5, y + 4);
+        }
+
+        // Altitude label
+        ctx.save();
+        ctx.translate(12, H / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillStyle = '#888';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('Altitude (ft)', 0, 0);
+        ctx.restore();
+
+        // Time labels
+        ctx.fillStyle = '#666';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        const tStart = new Date(minT * 1000);
+        const tEnd = new Date(maxT * 1000);
+        ctx.fillText(tStart.toLocaleTimeString(), pad.left, H - 8);
+        ctx.fillText(tEnd.toLocaleTimeString(), W - pad.right, H - 8);
+
+        // Draw altitude line with color segments
+        for (let i = 1; i < pts.length; i++) {
+            const x0 = pad.left + ((times[i-1] - minT) / (maxT - minT || 1)) * (W - pad.left - pad.right);
+            const y0 = pad.top + (1 - alts[i-1] / maxAlt) * (H - pad.top - pad.bottom);
+            const x1 = pad.left + ((times[i] - minT) / (maxT - minT || 1)) * (W - pad.left - pad.right);
+            const y1 = pad.top + (1 - alts[i] / maxAlt) * (H - pad.top - pad.bottom);
+            ctx.strokeStyle = altColor(alts[i]);
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x0, y0);
+            ctx.lineTo(x1, y1);
+            ctx.stroke();
+        }
+    }
 }
 </script>
-{% endif %}
 {% endblock %}

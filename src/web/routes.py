@@ -82,17 +82,34 @@ def recent_positions():
     """Recent positions for map updates (polling endpoint).
 
     Returns the most recent position per aircraft.
+    Query params:
+        minutes: Only show aircraft seen within the last N minutes
     """
+    import time
+
     db = _db()
-    rows = db.conn.execute("""
-        SELECT p.*, a.registration, a.country, a.is_military
-        FROM positions p
-        JOIN aircraft a ON p.icao = a.icao
-        WHERE p.id IN (
-            SELECT MAX(id) FROM positions GROUP BY icao
-        )
-        ORDER BY p.timestamp DESC
-    """).fetchall()
+    minutes = request.args.get("minutes")
+    if minutes:
+        cutoff = time.time() - (int(minutes) * 60)
+        rows = db.conn.execute("""
+            SELECT p.*, a.registration, a.country, a.is_military
+            FROM positions p
+            JOIN aircraft a ON p.icao = a.icao
+            WHERE p.id IN (
+                SELECT MAX(id) FROM positions GROUP BY icao
+            ) AND p.timestamp >= ?
+            ORDER BY p.timestamp DESC
+        """, (cutoff,)).fetchall()
+    else:
+        rows = db.conn.execute("""
+            SELECT p.*, a.registration, a.country, a.is_military
+            FROM positions p
+            JOIN aircraft a ON p.icao = a.icao
+            WHERE p.id IN (
+                SELECT MAX(id) FROM positions GROUP BY icao
+            )
+            ORDER BY p.timestamp DESC
+        """).fetchall()
 
     positions = []
     for row in rows:
@@ -201,32 +218,39 @@ def all_positions():
 
 @api.route("/trails")
 def get_trails():
-    """Position trails for all active aircraft (last N positions each).
+    """Position trails for all active aircraft.
 
-    Returns trails keyed by ICAO with arrays of [lat, lon, alt] for polylines.
+    Returns trails keyed by ICAO with arrays of [lat, lon, alt, hdg, spd] for polylines.
+    Query params:
+        minutes: Only show positions from the last N minutes (default: 60)
+        limit: Max positions per aircraft (default: 500)
     """
     db = _db()
-    limit = int(request.args.get("limit", 50))
+    limit = int(request.args.get("limit", 500))
+    minutes = int(request.args.get("minutes", 60))
 
-    # Get all aircraft with recent positions
-    rows = db.conn.execute("""
-        SELECT DISTINCT icao FROM positions
-        WHERE id IN (SELECT MAX(id) FROM positions GROUP BY icao)
-    """).fetchall()
+    import time
+
+    cutoff = time.time() - (minutes * 60)
+
+    # Get all aircraft with positions in the time window
+    rows = db.conn.execute(
+        """SELECT DISTINCT icao FROM positions WHERE timestamp >= ?""",
+        (cutoff,),
+    ).fetchall()
 
     trails = {}
     for row in rows:
         icao = row["icao"]
         positions = db.conn.execute(
             """SELECT lat, lon, altitude_ft, heading_deg, speed_kts, timestamp
-               FROM positions WHERE icao = ?
-               ORDER BY timestamp DESC LIMIT ?""",
-            (icao, limit),
+               FROM positions WHERE icao = ? AND timestamp >= ?
+               ORDER BY timestamp ASC LIMIT ?""",
+            (icao, cutoff, limit),
         ).fetchall()
-        # Reverse so oldest first (for drawing polylines start→end)
         trails[icao] = [
             [p["lat"], p["lon"], p["altitude_ft"], p["heading_deg"], p["speed_kts"]]
-            for p in reversed(positions)
+            for p in positions
         ]
 
     return jsonify({"trails": trails})
@@ -269,6 +293,44 @@ def get_stats():
     return jsonify(s)
 
 
+@api.route("/lookup/<icao>")
+def lookup_aircraft(icao: str):
+    """Proxy lookup to hexdb.io for aircraft metadata.
+
+    Returns manufacturer, type, owner, registration from external DB.
+    Cached in-memory for the session to avoid repeated external calls.
+    """
+    icao = icao.upper()
+    # Simple in-memory cache
+    if not hasattr(g, "_lookup_cache"):
+        g._lookup_cache = {}
+    if icao in g._lookup_cache:
+        return jsonify(g._lookup_cache[icao])
+
+    import urllib.request
+    import json as _json
+
+    result = {"icao": icao, "source": "hexdb.io"}
+    try:
+        url = f"https://hexdb.io/api/v1/aircraft/{icao}"
+        req = urllib.request.Request(url, headers={"User-Agent": "adsb-decode/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read().decode())
+            result.update({
+                "registration": data.get("Registration", ""),
+                "manufacturer": data.get("Manufacturer", ""),
+                "type_code": data.get("ICAOTypeCode", ""),
+                "type": data.get("Type", ""),
+                "owner": data.get("RegisteredOwners", ""),
+                "operator_code": data.get("OperatorFlagCode", ""),
+            })
+    except Exception:
+        result["error"] = "Lookup failed"
+
+    g._lookup_cache[icao] = result
+    return jsonify(result)
+
+
 # --- Page Routes ---
 
 @pages.route("/")
@@ -290,14 +352,26 @@ def table_view():
 
 @pages.route("/aircraft/<icao>")
 def aircraft_detail(icao: str):
-    """Single aircraft detail page."""
+    """Single aircraft detail page with split-screen external intel."""
     db = _db()
     icao = icao.upper()
     ac = db.get_aircraft(icao)
     if not ac:
         return "Aircraft not found", 404
-    positions = db.get_positions(icao, limit=200)
-    return render_template("detail.html", aircraft=ac, positions=positions)
+    positions = db.get_positions(icao, limit=500)
+    events = [dict(e) for e in db.get_events() if e["icao"] == icao]
+    # Get sighting info (callsign, squawk)
+    sighting = db.conn.execute(
+        "SELECT callsign, squawk FROM sightings WHERE icao = ? ORDER BY id DESC LIMIT 1",
+        (icao,),
+    ).fetchone()
+    return render_template(
+        "detail.html",
+        aircraft=ac,
+        positions=positions,
+        events=events,
+        sighting=dict(sighting) if sighting else {},
+    )
 
 
 @pages.route("/query")
