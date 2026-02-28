@@ -218,6 +218,49 @@ class TestEventsPage:
         assert b"Receivers" in resp.data
 
 
+class TestQueryAPI:
+    def test_query_all(self, client):
+        resp = client.get("/api/query")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "positions" in data
+        assert data["count"] >= 1
+
+    def test_query_min_alt(self, client):
+        resp = client.get("/api/query?min_alt=39000")
+        data = resp.get_json()
+        # Only one position at 38000, should be excluded
+        assert data["count"] == 0
+
+    def test_query_max_alt(self, client):
+        resp = client.get("/api/query?max_alt=37000")
+        data = resp.get_json()
+        # Both positions (38000, 37500) are above 37000
+        assert data["count"] == 0
+
+    def test_query_icao_filter(self, client):
+        resp = client.get("/api/query?icao=A00001")
+        data = resp.get_json()
+        assert data["count"] == 2
+        assert all(p["icao"] == "A00001" for p in data["positions"])
+
+    def test_query_military_filter(self, client):
+        resp = client.get("/api/query?military=1")
+        data = resp.get_json()
+        # ADF7C8 is military but has no positions
+        assert data["count"] == 0
+
+    def test_query_limit(self, client):
+        resp = client.get("/api/query?limit=1")
+        data = resp.get_json()
+        assert data["count"] == 1
+
+    def test_query_page(self, client):
+        resp = client.get("/query")
+        assert resp.status_code == 200
+        assert b"Query" in resp.data
+
+
 class TestCORS:
     def test_cors_header(self, client):
         resp = client.get("/api/stats")

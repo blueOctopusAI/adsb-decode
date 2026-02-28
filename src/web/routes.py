@@ -103,6 +103,62 @@ def recent_positions():
     return jsonify({"positions": positions, "count": len(positions)})
 
 
+@api.route("/query")
+def query_positions():
+    """Query positions with filters — power user endpoint for the query builder.
+
+    Params:
+        min_alt: Minimum altitude in feet
+        max_alt: Maximum altitude in feet
+        icao: Filter by ICAO address
+        military: 1 for military only, 0 for civilian only
+        limit: Max results (default 5000)
+    """
+    db = _db()
+    clauses = ["1=1"]
+    params = []
+
+    min_alt = request.args.get("min_alt", type=int)
+    max_alt = request.args.get("max_alt", type=int)
+    icao_filter = request.args.get("icao", "").upper()
+    military = request.args.get("military")
+    limit = request.args.get("limit", 5000, type=int)
+
+    if min_alt is not None:
+        clauses.append("p.altitude_ft >= ?")
+        params.append(min_alt)
+    if max_alt is not None:
+        clauses.append("p.altitude_ft <= ?")
+        params.append(max_alt)
+    if icao_filter:
+        clauses.append("p.icao = ?")
+        params.append(icao_filter)
+    if military == "1":
+        clauses.append("a.is_military = 1")
+    elif military == "0":
+        clauses.append("a.is_military = 0")
+
+    where = " AND ".join(clauses)
+    params.append(limit)
+
+    rows = db.conn.execute(f"""
+        SELECT p.*, a.registration, a.country, a.is_military
+        FROM positions p
+        JOIN aircraft a ON p.icao = a.icao
+        WHERE {where}
+        ORDER BY p.timestamp DESC
+        LIMIT ?
+    """, params).fetchall()
+
+    positions = []
+    for row in rows:
+        p = dict(row)
+        p["is_military"] = bool(p.get("is_military", 0))
+        positions.append(p)
+
+    return jsonify({"positions": positions, "count": len(positions)})
+
+
 @api.route("/airports")
 def list_airports():
     """List all known airports for map overlay."""
@@ -240,6 +296,12 @@ def aircraft_detail(icao: str):
         return "Aircraft not found", 404
     positions = db.get_positions(icao, limit=200)
     return render_template("detail.html", aircraft=ac, positions=positions)
+
+
+@pages.route("/query")
+def query_page():
+    """Query builder page."""
+    return render_template("query.html")
 
 
 @pages.route("/replay")

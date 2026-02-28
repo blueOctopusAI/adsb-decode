@@ -14,6 +14,7 @@ from src.filters import (
     EVENT_CIRCLING,
     EVENT_HOLDING,
     EVENT_PROXIMITY,
+    EVENT_UNUSUAL_ALTITUDE,
     EMERGENCY_SQUAWKS,
     _haversine_nm,
 )
@@ -380,3 +381,48 @@ class TestProximityFilter:
         events = engine.check_proximity([a, b, c])
         # Should detect 3 pairs: AB, AC, BC
         assert len(events) == 3
+
+
+class TestUnusualAltitudeFilter:
+    def test_fast_low_no_airport(self, engine):
+        """Fast aircraft below 3000ft far from any airport triggers alert."""
+        ac = _make_ac(
+            lat=34.0, lon=-82.0,  # Not near any bundled airport
+            altitude_ft=2000, speed_kts=400,
+        )
+        events = engine.check(ac)
+        assert any(e.event_type == EVENT_UNUSUAL_ALTITUDE for e in events)
+
+    def test_fast_low_near_airport(self, engine):
+        """Fast aircraft near an airport should NOT trigger."""
+        # KATL is at 33.6407, -84.4277
+        ac = _make_ac(
+            lat=33.65, lon=-84.43,  # Very close to KATL
+            altitude_ft=2000, speed_kts=400,
+        )
+        events = engine.check(ac)
+        assert not any(e.event_type == EVENT_UNUSUAL_ALTITUDE for e in events)
+
+    def test_slow_low_ignored(self, engine):
+        """Slow aircraft at low altitude (e.g., Cessna) should not trigger."""
+        ac = _make_ac(
+            lat=34.0, lon=-82.0,
+            altitude_ft=2000, speed_kts=120,
+        )
+        events = engine.check(ac)
+        assert not any(e.event_type == EVENT_UNUSUAL_ALTITUDE for e in events)
+
+    def test_fast_high_ignored(self, engine):
+        """Fast aircraft at normal altitude should not trigger."""
+        ac = _make_ac(
+            lat=34.0, lon=-82.0,
+            altitude_ft=35000, speed_kts=450,
+        )
+        events = engine.check(ac)
+        assert not any(e.event_type == EVENT_UNUSUAL_ALTITUDE for e in events)
+
+    def test_no_position_ignored(self, engine):
+        """No position data should not trigger."""
+        ac = _make_ac(altitude_ft=2000, speed_kts=400, lat=None, lon=None)
+        events = engine.check(ac)
+        assert not any(e.event_type == EVENT_UNUSUAL_ALTITUDE for e in events)

@@ -28,6 +28,7 @@ EVENT_GEOFENCE = "geofence_entry"
 EVENT_CIRCLING = "circling"
 EVENT_HOLDING = "holding_pattern"
 EVENT_PROXIMITY = "proximity"
+EVENT_UNUSUAL_ALTITUDE = "unusual_altitude"
 
 
 # --- Thresholds ---
@@ -117,6 +118,7 @@ class FilterEngine:
         events.extend(self._check_geofences(ac))
         events.extend(self._check_circling(ac))
         events.extend(self._check_holding(ac))
+        events.extend(self._check_unusual_altitude(ac))
 
         return events
 
@@ -342,6 +344,38 @@ class FilterEngine:
             timestamp=ac.last_seen,
         ))
         return [event] if event else []
+
+    def _check_unusual_altitude(self, ac: AircraftState) -> list[Event]:
+        """Detect unusual altitude for aircraft type.
+
+        Commercial jets below 3,000 ft far from airports, or
+        small aircraft above 18,000 ft (Class A airspace) are unusual.
+        """
+        if ac.altitude_ft is None or not ac.has_position:
+            return []
+
+        # Check for commercial jet at very low altitude (not near airport)
+        if ac.speed_kts is not None and ac.speed_kts > 250 and ac.altitude_ft < 3000:
+            # Fast aircraft very low — unusual unless near airport
+            from .enrichment import nearest_airport
+            apt = nearest_airport(ac.lat, ac.lon, max_nm=15)
+            if apt is None:  # Not near any airport
+                event = self._emit(Event(
+                    icao=ac.icao,
+                    event_type=EVENT_UNUSUAL_ALTITUDE,
+                    description=(
+                        f"Unusual altitude: {ac.callsign or ac.icao} at "
+                        f"{ac.altitude_ft} ft, {ac.speed_kts:.0f} kts — "
+                        f"fast aircraft very low, no airport within 15nm"
+                    ),
+                    lat=ac.lat,
+                    lon=ac.lon,
+                    altitude_ft=ac.altitude_ft,
+                    timestamp=ac.last_seen,
+                ))
+                return [event] if event else []
+
+        return []
 
     def _check_geofences(self, ac: AircraftState) -> list[Event]:
         if not ac.has_position:
