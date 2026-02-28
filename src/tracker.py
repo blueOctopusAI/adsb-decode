@@ -68,6 +68,13 @@ class AircraftState:
     last_seen: float = 0.0
     message_count: int = 0
 
+    # History buffers for pattern detection
+    heading_history: list = field(default_factory=list)  # [(timestamp, heading_deg)]
+    position_history: list = field(default_factory=list)  # [(timestamp, lat, lon, alt)]
+
+    # Max history entries to keep (rolling buffer)
+    _MAX_HISTORY: int = field(default=120, repr=False)
+
     @property
     def has_position(self) -> bool:
         return self.lat is not None and self.lon is not None
@@ -222,6 +229,11 @@ class Tracker:
             ac.lat, ac.lon = position
             self.position_decodes += 1
 
+            # Record position for pattern detection
+            ac.position_history.append((msg.timestamp, ac.lat, ac.lon, ac.altitude_ft))
+            if len(ac.position_history) > ac._MAX_HISTORY:
+                ac.position_history = ac.position_history[-ac._MAX_HISTORY:]
+
             if self.db:
                 self.db.add_position(
                     icao=ac.icao,
@@ -284,6 +296,10 @@ class Tracker:
             ac.speed_kts = msg.speed_kts
         if msg.heading_deg is not None:
             ac.heading_deg = msg.heading_deg
+            # Record heading for circling detection
+            ac.heading_history.append((msg.timestamp, msg.heading_deg))
+            if len(ac.heading_history) > ac._MAX_HISTORY:
+                ac.heading_history = ac.heading_history[-ac._MAX_HISTORY:]
         if msg.vertical_rate_fpm is not None:
             ac.vertical_rate_fpm = msg.vertical_rate_fpm
 

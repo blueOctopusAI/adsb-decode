@@ -139,6 +139,20 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
                         f"{len(active)} active aircraft, "
                         f"{tracker.position_decodes} positions[/]"
                     )
+                    # Proximity checks across all active aircraft
+                    prox_events = filter_engine.check_proximity(active)
+                    for event in prox_events:
+                        db.add_event(
+                            icao=event.icao,
+                            event_type=event.event_type,
+                            description=event.description,
+                            lat=event.lat,
+                            lon=event.lon,
+                            altitude_ft=event.altitude_ft,
+                            timestamp=event.timestamp,
+                        )
+                        console.print(f"  [bold red]EVENT:[/] {event.description}")
+
                     last_print = now
                     tracker.prune_stale()
 

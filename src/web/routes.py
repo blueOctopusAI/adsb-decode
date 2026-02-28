@@ -4,17 +4,21 @@ API endpoints (JSON):
   GET /api/aircraft          List all tracked aircraft (with optional filters)
   GET /api/aircraft/<icao>   Single aircraft detail + recent positions
   GET /api/positions         Recent positions (for map updates, 2s polling)
+  GET /api/trails            Position trails per aircraft (for map polylines)
   GET /api/events            Recent events (military, emergency, anomaly)
-  GET /api/stats             Database statistics
+  GET /api/stats             Database statistics + receiver info
 
 Page routes (HTML):
   GET /                      Map view (Leaflet.js)
   GET /table                 Aircraft table with sort/filter
   GET /aircraft/<icao>       Single aircraft detail + history
+  GET /events                Events dashboard
   GET /stats                 Statistics dashboard
 """
 
 from __future__ import annotations
+
+import time
 
 from flask import Blueprint, Flask, g, jsonify, render_template, request
 
@@ -97,6 +101,39 @@ def recent_positions():
     return jsonify({"positions": positions, "count": len(positions)})
 
 
+@api.route("/trails")
+def get_trails():
+    """Position trails for all active aircraft (last N positions each).
+
+    Returns trails keyed by ICAO with arrays of [lat, lon, alt] for polylines.
+    """
+    db = _db()
+    limit = int(request.args.get("limit", 50))
+
+    # Get all aircraft with recent positions
+    rows = db.conn.execute("""
+        SELECT DISTINCT icao FROM positions
+        WHERE id IN (SELECT MAX(id) FROM positions GROUP BY icao)
+    """).fetchall()
+
+    trails = {}
+    for row in rows:
+        icao = row["icao"]
+        positions = db.conn.execute(
+            """SELECT lat, lon, altitude_ft, heading_deg, speed_kts, timestamp
+               FROM positions WHERE icao = ?
+               ORDER BY timestamp DESC LIMIT ?""",
+            (icao, limit),
+        ).fetchall()
+        # Reverse so oldest first (for drawing polylines start→end)
+        trails[icao] = [
+            [p["lat"], p["lon"], p["altitude_ft"], p["heading_deg"], p["speed_kts"]]
+            for p in reversed(positions)
+        ]
+
+    return jsonify({"trails": trails})
+
+
 @api.route("/events")
 def list_events():
     """Recent events."""
@@ -109,9 +146,29 @@ def list_events():
 
 @api.route("/stats")
 def get_stats():
-    """Database statistics."""
+    """Database statistics with receiver info."""
     db = _db()
-    return jsonify(db.stats())
+    s = db.stats()
+
+    # Add receiver location for map centering
+    receiver = db.conn.execute(
+        "SELECT * FROM receivers ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    if receiver:
+        s["receiver"] = {
+            "name": receiver["name"],
+            "lat": receiver["lat"],
+            "lon": receiver["lon"],
+        }
+
+    # Add capture start time for uptime calculation
+    capture = db.conn.execute(
+        "SELECT start_time FROM captures ORDER BY start_time DESC LIMIT 1"
+    ).fetchone()
+    if capture:
+        s["capture_start"] = capture["start_time"]
+
+    return jsonify(s)
 
 
 # --- Page Routes ---
@@ -143,6 +200,12 @@ def aircraft_detail(icao: str):
         return "Aircraft not found", 404
     positions = db.get_positions(icao, limit=200)
     return render_template("detail.html", aircraft=ac, positions=positions)
+
+
+@pages.route("/events")
+def events_page():
+    """Events dashboard page."""
+    return render_template("events.html")
 
 
 @pages.route("/stats")

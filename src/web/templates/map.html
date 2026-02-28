@@ -19,29 +19,53 @@
 #sidebar h3 { color: #00ff88; margin: 8px 0 4px; font-size: 13px; }
 #sidebar table { width: 100%; }
 #sidebar td { padding: 3px 6px; }
-#count-badge {
+#sidebar td a { cursor: pointer; }
+
+/* Stats overlay - top left under zoom controls */
+#stats-overlay {
     position: absolute;
     top: 56px;
     left: 56px;
-    background: rgba(0,0,0,0.8);
-    color: #00ff88;
-    padding: 6px 12px;
+    background: rgba(0,0,0,0.85);
+    color: #e0e0e0;
+    padding: 10px 14px;
     border-radius: 4px;
-    font-size: 13px;
+    font-size: 12px;
     z-index: 1000;
     border: 1px solid #333;
+    line-height: 1.6;
+    min-width: 180px;
 }
+#stats-overlay .stat-label { color: #888; }
+#stats-overlay .stat-value { color: #00ff88; font-weight: bold; float: right; }
+
 .leaflet-container { background: #0a0a0a; }
+
+/* Popup styling */
+.ac-popup { font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.5; }
+.ac-popup .popup-title { color: #00ff88; font-weight: bold; font-size: 14px; margin-bottom: 4px; }
+.ac-popup .popup-row { display: flex; justify-content: space-between; gap: 12px; }
+.ac-popup .popup-label { color: #888; }
+.ac-popup .popup-value { font-weight: bold; }
+.ac-popup .popup-mil { color: #ff4444; }
+.ac-popup a { color: #00aaff; }
+.leaflet-popup-content-wrapper { background: #111; color: #e0e0e0; border: 1px solid #333; }
+.leaflet-popup-tip { background: #111; }
 {% endblock %}
 
 {% block content %}
 <div id="map"></div>
-<div id="count-badge">Aircraft: <span id="ac-count">0</span></div>
+<div id="stats-overlay">
+    <div><span class="stat-label">Aircraft:</span> <span class="stat-value" id="so-aircraft">0</span></div>
+    <div><span class="stat-label">Positions:</span> <span class="stat-value" id="so-positions">0</span></div>
+    <div><span class="stat-label">Events:</span> <span class="stat-value" id="so-events">0</span></div>
+    <div><span class="stat-label">Uptime:</span> <span class="stat-value" id="so-uptime">--</span></div>
+</div>
 <div id="sidebar">
-    <h3>Aircraft List</h3>
+    <h3>Aircraft (<span id="ac-count">0</span>)</h3>
     <table id="ac-table">
         <thead>
-            <tr><th>ICAO</th><th>Call</th><th>Alt</th><th>Spd</th></tr>
+            <tr><th>ICAO</th><th>Call</th><th>Alt</th><th>Spd</th><th>Hdg</th></tr>
         </thead>
         <tbody></tbody>
     </table>
@@ -51,8 +75,9 @@
 {% block scripts %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+// --- Map initialization ---
 const map = L.map('map', {
-    center: [35.18, -83.38],
+    center: [35.18, -83.38],  // Default, overridden by receiver location
     zoom: 7,
     zoomControl: true,
 });
@@ -63,73 +88,198 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 }).addTo(map);
 
 const markers = {};
-const trails = {};
+const trailLines = {};
+let mapCentered = false;
 
+// --- Aircraft icon ---
 function acIcon(heading, isMilitary) {
     const color = isMilitary ? '#ff4444' : '#00ff88';
     const rotation = heading || 0;
     return L.divIcon({
         className: '',
-        html: `<svg width="20" height="20" viewBox="0 0 20 20" style="transform:rotate(${rotation}deg)">
-            <polygon points="10,2 14,18 10,14 6,18" fill="${color}" opacity="0.9"/>
+        html: `<svg width="24" height="24" viewBox="0 0 24 24" style="transform:rotate(${rotation}deg)">
+            <polygon points="12,1 15,9 22,10 15,15 16,22 12,18 8,22 9,15 2,10 9,9" fill="${color}" opacity="0.9" stroke="#000" stroke-width="0.5"/>
         </svg>`,
-        iconSize: [20, 20],
-        iconAnchor: [10, 10],
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
     });
 }
 
-function updateMap() {
-    fetch('/api/positions')
-        .then(r => r.json())
-        .then(data => {
-            document.getElementById('ac-count').textContent = data.count;
-            const tbody = document.querySelector('#ac-table tbody');
-            tbody.innerHTML = '';
-
-            const seen = new Set();
-            data.positions.forEach(p => {
-                const key = p.icao;
-                seen.add(key);
-
-                // Update or create marker
-                if (markers[key]) {
-                    markers[key].setLatLng([p.lat, p.lon]);
-                    markers[key].setIcon(acIcon(p.heading_deg, p.is_military));
-                } else {
-                    markers[key] = L.marker([p.lat, p.lon], {
-                        icon: acIcon(p.heading_deg, p.is_military),
-                    }).addTo(map);
-                }
-
-                const label = p.registration || p.callsign || p.icao;
-                markers[key].bindTooltip(label, {
-                    permanent: false,
-                    direction: 'right',
-                    className: 'dark-tooltip',
-                });
-
-                // Sidebar row
-                const cls = p.is_military ? 'mil' : '';
-                tbody.innerHTML += `<tr>
-                    <td><a href="/aircraft/${p.icao}" class="${cls}">${p.icao}</a></td>
-                    <td>${p.registration || p.callsign || '-'}</td>
-                    <td>${p.altitude_ft || '-'}</td>
-                    <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
-                </tr>`;
-            });
-
-            // Remove markers for aircraft no longer in response
-            Object.keys(markers).forEach(key => {
-                if (!seen.has(key)) {
-                    map.removeLayer(markers[key]);
-                    delete markers[key];
-                }
-            });
-        })
-        .catch(err => console.error('Update failed:', err));
+// --- Altitude → color gradient ---
+function altColor(alt) {
+    if (alt == null) return '#888';
+    // Green (low, 0ft) → Yellow (mid, 20000ft) → Red (high, 40000ft+)
+    const t = Math.min(Math.max(alt / 40000, 0), 1);
+    if (t < 0.5) {
+        // Green → Yellow
+        const s = t * 2;
+        const r = Math.round(s * 255);
+        const g = 255;
+        return `rgb(${r},${g},0)`;
+    } else {
+        // Yellow → Red
+        const s = (t - 0.5) * 2;
+        const r = 255;
+        const g = Math.round((1 - s) * 255);
+        return `rgb(${r},${g},0)`;
+    }
 }
 
+// --- Build popup content ---
+function popupHtml(p) {
+    const mil = p.is_military ? '<span class="popup-mil"> [MIL]</span>' : '';
+    const name = p.callsign || p.registration || p.icao;
+    return `<div class="ac-popup">
+        <div class="popup-title">${name}${mil}</div>
+        <div class="popup-row"><span class="popup-label">ICAO</span><span class="popup-value">${p.icao}</span></div>
+        ${p.callsign ? `<div class="popup-row"><span class="popup-label">Callsign</span><span class="popup-value">${p.callsign}</span></div>` : ''}
+        ${p.registration ? `<div class="popup-row"><span class="popup-label">Reg</span><span class="popup-value">${p.registration}</span></div>` : ''}
+        ${p.country ? `<div class="popup-row"><span class="popup-label">Country</span><span class="popup-value">${p.country}</span></div>` : ''}
+        <div class="popup-row"><span class="popup-label">Altitude</span><span class="popup-value">${p.altitude_ft != null ? p.altitude_ft.toLocaleString() + ' ft' : '--'}</span></div>
+        <div class="popup-row"><span class="popup-label">Speed</span><span class="popup-value">${p.speed_kts != null ? Math.round(p.speed_kts) + ' kts' : '--'}</span></div>
+        <div class="popup-row"><span class="popup-label">Heading</span><span class="popup-value">${p.heading_deg != null ? Math.round(p.heading_deg) + '&deg;' : '--'}</span></div>
+        <div class="popup-row"><span class="popup-label">VRate</span><span class="popup-value">${p.vertical_rate_fpm != null ? p.vertical_rate_fpm + ' fpm' : '--'}</span></div>
+        <div style="margin-top:6px;"><a href="/aircraft/${p.icao}">Full Detail &rarr;</a></div>
+    </div>`;
+}
+
+// --- Draw altitude-colored trail ---
+function drawTrail(icao, points) {
+    // Remove old trail
+    if (trailLines[icao]) {
+        trailLines[icao].forEach(seg => map.removeLayer(seg));
+    }
+    trailLines[icao] = [];
+
+    if (points.length < 2) return;
+
+    for (let i = 1; i < points.length; i++) {
+        const prev = points[i - 1];
+        const curr = points[i];
+        const alt = curr[2];  // altitude_ft
+        const color = altColor(alt);
+        // Fade older segments
+        const opacity = 0.3 + 0.7 * (i / points.length);
+        const seg = L.polyline(
+            [[prev[0], prev[1]], [curr[0], curr[1]]],
+            { color: color, weight: 2.5, opacity: opacity }
+        ).addTo(map);
+        trailLines[icao].push(seg);
+    }
+}
+
+// --- Dynamic map center from receiver ---
+function centerOnReceiver() {
+    if (mapCentered) return;
+    fetch('/api/stats')
+        .then(r => r.json())
+        .then(data => {
+            if (data.receiver && data.receiver.lat && data.receiver.lon) {
+                map.setView([data.receiver.lat, data.receiver.lon], 8);
+                mapCentered = true;
+
+                // Add receiver marker
+                L.circleMarker([data.receiver.lat, data.receiver.lon], {
+                    radius: 6, color: '#00aaff', fillColor: '#00aaff',
+                    fillOpacity: 0.8, weight: 1,
+                }).addTo(map).bindTooltip(data.receiver.name || 'Receiver', {
+                    permanent: true, direction: 'right',
+                    className: 'dark-tooltip',
+                });
+            }
+        })
+        .catch(() => {});
+}
+
+// --- Stats overlay ---
+function updateStats() {
+    fetch('/api/stats')
+        .then(r => r.json())
+        .then(s => {
+            document.getElementById('so-positions').textContent = (s.positions || 0).toLocaleString();
+            document.getElementById('so-events').textContent = s.events || 0;
+            if (s.capture_start) {
+                const elapsed = Date.now() / 1000 - s.capture_start;
+                const h = Math.floor(elapsed / 3600);
+                const m = Math.floor((elapsed % 3600) / 60);
+                document.getElementById('so-uptime').textContent = h > 0 ? `${h}h ${m}m` : `${m}m`;
+            }
+        })
+        .catch(() => {});
+}
+
+// --- Main update loop ---
+function updateMap() {
+    // Fetch positions and trails in parallel
+    Promise.all([
+        fetch('/api/positions').then(r => r.json()),
+        fetch('/api/trails').then(r => r.json()),
+    ]).then(([posData, trailData]) => {
+        document.getElementById('ac-count').textContent = posData.count;
+        document.getElementById('so-aircraft').textContent = posData.count;
+        const tbody = document.querySelector('#ac-table tbody');
+        tbody.innerHTML = '';
+
+        const seen = new Set();
+        posData.positions.forEach(p => {
+            const key = p.icao;
+            seen.add(key);
+
+            // Draw trail
+            if (trailData.trails[key]) {
+                drawTrail(key, trailData.trails[key]);
+            }
+
+            // Update or create marker
+            if (markers[key]) {
+                markers[key].setLatLng([p.lat, p.lon]);
+                markers[key].setIcon(acIcon(p.heading_deg, p.is_military));
+                markers[key].setPopupContent(popupHtml(p));
+            } else {
+                markers[key] = L.marker([p.lat, p.lon], {
+                    icon: acIcon(p.heading_deg, p.is_military),
+                }).addTo(map);
+                markers[key].bindPopup(popupHtml(p), { maxWidth: 250 });
+            }
+
+            const label = p.callsign || p.registration || p.icao;
+            markers[key].bindTooltip(label, {
+                permanent: false,
+                direction: 'right',
+                className: 'dark-tooltip',
+            });
+
+            // Sidebar row
+            const cls = p.is_military ? 'mil' : '';
+            const hdg = p.heading_deg != null ? Math.round(p.heading_deg) + '°' : '-';
+            tbody.innerHTML += `<tr>
+                <td><a href="/aircraft/${p.icao}" class="${cls}">${p.icao}</a></td>
+                <td>${p.callsign || p.registration || '-'}</td>
+                <td>${p.altitude_ft != null ? p.altitude_ft.toLocaleString() : '-'}</td>
+                <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
+                <td>${hdg}</td>
+            </tr>`;
+        });
+
+        // Remove markers + trails for aircraft no longer in response
+        Object.keys(markers).forEach(key => {
+            if (!seen.has(key)) {
+                map.removeLayer(markers[key]);
+                delete markers[key];
+                if (trailLines[key]) {
+                    trailLines[key].forEach(seg => map.removeLayer(seg));
+                    delete trailLines[key];
+                }
+            }
+        });
+    }).catch(err => console.error('Update failed:', err));
+}
+
+// --- Initialize ---
+centerOnReceiver();
 updateMap();
-setInterval(updateMap, 250);
+updateStats();
+setInterval(updateMap, 1000);
+setInterval(updateStats, 10000);
 </script>
 {% endblock %}

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}adsb-decode — Events{% endblock %}
+
+{% block extra_style %}
+.event-row { padding: 8px 12px; border-bottom: 1px solid #1a1a1a; font-size: 13px; }
+.event-row:hover { background: #111; }
+.event-time { color: #888; font-size: 11px; margin-right: 12px; }
+.event-type { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; margin-right: 8px; }
+.type-emergency_squawk { background: #ff0000; color: #fff; }
+.type-military_detected { background: #ff6600; color: #fff; }
+.type-rapid_descent { background: #ff4444; color: #fff; }
+.type-low_altitude { background: #ffaa00; color: #000; }
+.type-geofence_entry { background: #aa44ff; color: #fff; }
+.type-circling { background: #4488ff; color: #fff; }
+.type-proximity { background: #ff44aa; color: #fff; }
+.event-desc { color: #e0e0e0; }
+.event-loc { color: #888; font-size: 11px; margin-left: 8px; }
+#event-count { color: #00ff88; }
+.filter-bar { padding: 12px 16px; border-bottom: 1px solid #333; }
+.filter-btn { background: #222; color: #888; border: 1px solid #333; padding: 4px 12px; margin-right: 4px; cursor: pointer; font-family: 'Courier New', monospace; font-size: 12px; border-radius: 3px; }
+.filter-btn:hover, .filter-btn.active { color: #00ff88; border-color: #00ff88; }
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2 style="color:#00ff88; margin-bottom:8px;">Events <span style="font-size:14px;color:#888;">(<span id="event-count">0</span>)</span></h2>
+    <div class="filter-bar">
+        <button class="filter-btn active" data-type="all">All</button>
+        <button class="filter-btn" data-type="military_detected">Military</button>
+        <button class="filter-btn" data-type="emergency_squawk">Emergency</button>
+        <button class="filter-btn" data-type="rapid_descent">Rapid Descent</button>
+        <button class="filter-btn" data-type="low_altitude">Low Altitude</button>
+        <button class="filter-btn" data-type="geofence_entry">Geofence</button>
+        <button class="filter-btn" data-type="circling">Circling</button>
+        <button class="filter-btn" data-type="proximity">Proximity</button>
+    </div>
+    <div id="events-list"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let activeFilter = 'all';
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeFilter = btn.dataset.type;
+        loadEvents();
+    });
+});
+
+function formatTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function loadEvents() {
+    const url = activeFilter === 'all' ? '/api/events?limit=200' : `/api/events?type=${activeFilter}&limit=200`;
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('event-count').textContent = data.count;
+            const container = document.getElementById('events-list');
+            if (data.events.length === 0) {
+                container.innerHTML = '<div style="padding:24px;color:#888;">No events recorded yet. Events appear when aircraft trigger filters (military detection, emergency squawks, rapid descent, geofence entry).</div>';
+                return;
+            }
+            container.innerHTML = data.events.map(e => {
+                const loc = (e.lat && e.lon) ? `<span class="event-loc">${e.lat.toFixed(3)}, ${e.lon.toFixed(3)}</span>` : '';
+                const alt = e.altitude_ft ? `<span class="event-loc">${e.altitude_ft.toLocaleString()} ft</span>` : '';
+                const typeClass = 'type-' + e.event_type;
+                return `<div class="event-row">
+                    <span class="event-time">${formatTime(e.timestamp)}</span>
+                    <span class="event-type ${typeClass}">${e.event_type.replace(/_/g, ' ')}</span>
+                    <span class="event-desc"><a href="/aircraft/${e.icao}">${e.description}</a></span>
+                    ${loc}${alt}
+                </div>`;
+            }).join('');
+        })
+        .catch(err => console.error('Failed to load events:', err));
+}
+
+loadEvents();
+setInterval(loadEvents, 5000);
+</script>
+{% endblock %}

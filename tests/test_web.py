@@ -130,6 +130,54 @@ class TestPageRoutes:
         assert resp.status_code == 200
 
 
+class TestAPITrails:
+    def test_trails_endpoint(self, client):
+        resp = client.get("/api/trails")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "trails" in data
+        # A00001 has 2 positions
+        assert "A00001" in data["trails"]
+        trail = data["trails"]["A00001"]
+        assert len(trail) == 2
+        # Each point is [lat, lon, alt, heading, speed]
+        assert len(trail[0]) == 5
+
+    def test_trails_limit(self, client):
+        resp = client.get("/api/trails?limit=1")
+        data = resp.get_json()
+        trail = data["trails"]["A00001"]
+        assert len(trail) == 1
+
+    def test_trails_ordered_oldest_first(self, client):
+        resp = client.get("/api/trails")
+        data = resp.get_json()
+        trail = data["trails"]["A00001"]
+        # Oldest first (timestamp 1000 has alt 38000, timestamp 1001 has 37500)
+        assert trail[0][2] == 38000
+        assert trail[1][2] == 37500
+
+
+class TestStatsReceiver:
+    def test_stats_has_receiver(self, client):
+        resp = client.get("/api/stats")
+        data = resp.get_json()
+        assert "receiver" in data
+        assert data["receiver"]["name"] == "test-rx"
+
+    def test_stats_has_capture_start(self, client):
+        resp = client.get("/api/stats")
+        data = resp.get_json()
+        assert "capture_start" in data
+
+
+class TestEventsPage:
+    def test_events_page(self, client):
+        resp = client.get("/events")
+        assert resp.status_code == 200
+        assert b"Events" in resp.data
+
+
 class TestCORS:
     def test_cors_header(self, client):
         resp = client.get("/api/stats")

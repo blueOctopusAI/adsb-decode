@@ -25,12 +25,18 @@ EVENT_EMERGENCY = "emergency_squawk"
 EVENT_RAPID_DESCENT = "rapid_descent"
 EVENT_LOW_ALTITUDE = "low_altitude"
 EVENT_GEOFENCE = "geofence_entry"
+EVENT_CIRCLING = "circling"
+EVENT_PROXIMITY = "proximity"
 
 
 # --- Thresholds ---
 
 RAPID_DESCENT_THRESHOLD = -5000  # ft/min (negative = descending)
 LOW_ALTITUDE_THRESHOLD = 500  # ft AGL (below this triggers alert)
+CIRCLING_WINDOW_SEC = 300  # 5 minutes
+CIRCLING_MIN_HEADING_CHANGE = 360  # degrees cumulative
+PROXIMITY_HORIZONTAL_NM = 5.0  # nautical miles
+PROXIMITY_VERTICAL_FT = 1000  # feet
 EMERGENCY_SQUAWKS = {
     "7500": "Hijack",
     "7600": "Radio failure",
@@ -87,10 +93,14 @@ class FilterEngine:
         geofences: list[Geofence] | None = None,
         low_altitude_ft: int = LOW_ALTITUDE_THRESHOLD,
         rapid_descent_fpm: int = RAPID_DESCENT_THRESHOLD,
+        proximity_nm: float = PROXIMITY_HORIZONTAL_NM,
+        proximity_ft: int = PROXIMITY_VERTICAL_FT,
     ):
         self.geofences = geofences or []
         self.low_altitude_ft = low_altitude_ft
         self.rapid_descent_fpm = rapid_descent_fpm
+        self.proximity_nm = proximity_nm
+        self.proximity_ft = proximity_ft
 
         # Track emitted events to avoid duplicates: {(icao, event_type)}
         self._emitted: set[tuple[str, str]] = set()
@@ -104,7 +114,52 @@ class FilterEngine:
         events.extend(self._check_rapid_descent(ac))
         events.extend(self._check_low_altitude(ac))
         events.extend(self._check_geofences(ac))
+        events.extend(self._check_circling(ac))
 
+        return events
+
+    def check_proximity(self, aircraft: list[AircraftState]) -> list[Event]:
+        """Check all pairs of aircraft for proximity alerts.
+
+        Called separately from check() because it needs the full aircraft list.
+        """
+        events = []
+        positioned = [ac for ac in aircraft if ac.has_position]
+
+        for i, a in enumerate(positioned):
+            for b in positioned[i + 1:]:
+                dist = _haversine_nm(a.lat, a.lon, b.lat, b.lon)
+                if dist > self.proximity_nm:
+                    continue
+
+                # Check vertical separation
+                if a.altitude_ft is not None and b.altitude_ft is not None:
+                    vert_sep = abs(a.altitude_ft - b.altitude_ft)
+                    if vert_sep > self.proximity_ft:
+                        continue
+
+                # Proximity alert — use sorted pair as key to avoid double-emit
+                pair = tuple(sorted([a.icao, b.icao]))
+                key = (f"{pair[0]}:{pair[1]}", EVENT_PROXIMITY)
+                if key in self._emitted:
+                    continue
+                self._emitted.add(key)
+
+                label_a = a.callsign or a.registration or a.icao
+                label_b = b.callsign or b.registration or b.icao
+                vert = f", {vert_sep} ft vertical" if a.altitude_ft and b.altitude_ft else ""
+                events.append(Event(
+                    icao=a.icao,
+                    event_type=EVENT_PROXIMITY,
+                    description=(
+                        f"Proximity alert: {label_a} and {label_b} "
+                        f"within {dist:.1f} nm{vert}"
+                    ),
+                    lat=a.lat,
+                    lon=a.lon,
+                    altitude_ft=a.altitude_ft,
+                    timestamp=a.last_seen,
+                ))
         return events
 
     def _emit(self, event: Event) -> Event | None:
@@ -180,6 +235,45 @@ class FilterEngine:
             description=(
                 f"Low altitude {ac.altitude_ft} ft — "
                 f"{ac.callsign or ac.icao}"
+            ),
+            lat=ac.lat,
+            lon=ac.lon,
+            altitude_ft=ac.altitude_ft,
+            timestamp=ac.last_seen,
+        ))
+        return [event] if event else []
+
+    def _check_circling(self, ac: AircraftState) -> list[Event]:
+        """Detect circling/loitering by cumulative heading change."""
+        if len(ac.heading_history) < 4:
+            return []
+
+        now = ac.last_seen
+        cutoff = now - CIRCLING_WINDOW_SEC
+        recent = [(t, h) for t, h in ac.heading_history if t >= cutoff]
+        if len(recent) < 4:
+            return []
+
+        # Sum absolute heading changes (handling 360→0 wraparound)
+        total_change = 0.0
+        for i in range(1, len(recent)):
+            delta = recent[i][1] - recent[i - 1][1]
+            # Normalize to [-180, 180]
+            while delta > 180:
+                delta -= 360
+            while delta < -180:
+                delta += 360
+            total_change += abs(delta)
+
+        if total_change < CIRCLING_MIN_HEADING_CHANGE:
+            return []
+
+        event = self._emit(Event(
+            icao=ac.icao,
+            event_type=EVENT_CIRCLING,
+            description=(
+                f"Circling detected: {ac.callsign or ac.icao} — "
+                f"{total_change:.0f}° heading change in {CIRCLING_WINDOW_SEC}s"
             ),
             lat=ac.lat,
             lon=ac.lon,
