@@ -62,6 +62,7 @@
     <div><span class="stat-label">Uptime:</span> <span class="stat-value" id="so-uptime">--</span></div>
     <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;">
         <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
+        <label style="cursor:pointer;font-size:11px;margin-left:10px;"><input type="checkbox" id="airport-toggle"> Airports</label>
     </div>
 </div>
 <div id="sidebar">
@@ -277,6 +278,53 @@ function updateMap() {
             }
         });
     }).catch(err => console.error('Update failed:', err));
+}
+
+// --- Airport layer ---
+let airportMarkers = [];
+let airportsLoaded = false;
+
+document.getElementById('airport-toggle').addEventListener('change', function() {
+    if (this.checked) {
+        loadAirports();
+    } else {
+        airportMarkers.forEach(m => map.removeLayer(m));
+        airportMarkers = [];
+    }
+});
+
+function loadAirports() {
+    if (airportsLoaded && airportMarkers.length > 0) {
+        airportMarkers.forEach(m => m.addTo(map));
+        return;
+    }
+    fetch('/api/airports')
+        .then(r => r.json())
+        .then(data => {
+            airportMarkers.forEach(m => map.removeLayer(m));
+            airportMarkers = [];
+            data.airports.forEach(apt => {
+                // Airport icon: runway symbol
+                const icon = L.divIcon({
+                    className: '',
+                    html: `<svg width="16" height="16" viewBox="0 0 16 16">
+                        <rect x="3" y="7" width="10" height="2" rx="1" fill="#ffaa00" opacity="0.9"/>
+                        <rect x="7" y="2" width="2" height="12" rx="1" fill="#ffaa00" opacity="0.9"/>
+                    </svg>`,
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8],
+                });
+                const m = L.marker([apt.lat, apt.lon], { icon: icon, interactive: true })
+                    .bindTooltip(`${apt.icao} — ${apt.name}`, {
+                        permanent: false, direction: 'right',
+                        className: 'dark-tooltip',
+                    })
+                    .addTo(map);
+                airportMarkers.push(m);
+            });
+            airportsLoaded = true;
+        })
+        .catch(() => {});
 }
 
 // --- Heatmap layer ---

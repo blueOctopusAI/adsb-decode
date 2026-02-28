@@ -22,6 +22,8 @@ import time
 
 from flask import Blueprint, Flask, g, jsonify, render_template, request
 
+from ..enrichment import AIRPORTS
+
 api = Blueprint("api", __name__, url_prefix="/api")
 pages = Blueprint("pages", __name__)
 
@@ -99,6 +101,16 @@ def recent_positions():
         positions.append(p)
 
     return jsonify({"positions": positions, "count": len(positions)})
+
+
+@api.route("/airports")
+def list_airports():
+    """List all known airports for map overlay."""
+    airports = [
+        {"icao": code, "name": name, "lat": lat, "lon": lon, "elevation_ft": elev}
+        for code, name, lat, lon, elev in AIRPORTS
+    ]
+    return jsonify({"airports": airports, "count": len(airports)})
 
 
 @api.route("/positions/all")

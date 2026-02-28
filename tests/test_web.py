@@ -171,6 +171,20 @@ class TestStatsReceiver:
         assert "capture_start" in data
 
 
+class TestAirports:
+    def test_airports_endpoint(self, client):
+        resp = client.get("/api/airports")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "airports" in data
+        assert data["count"] == 20  # 20 bundled airports
+        apt = data["airports"][0]
+        assert "icao" in apt
+        assert "name" in apt
+        assert "lat" in apt
+        assert "lon" in apt
+
+
 class TestAllPositions:
     def test_all_positions(self, client):
         resp = client.get("/api/positions/all")
