@@ -1,13 +1,16 @@
 """Feeder agent — lightweight frame forwarder for remote receivers.
 
-Runs on any machine with an RTL-SDR dongle. Captures frames from rtl_adsb
-and POSTs them to a central adsb-decode server in batches.
+Runs on any machine with an RTL-SDR dongle. Captures frames using our
+custom demodulator (pyrtlsdr + IQ→magnitude→preamble→PPM) and POSTs
+them to a central adsb-decode server in batches.
+
+Falls back to rtl_adsb subprocess if pyrtlsdr is not installed.
 
 Usage:
     python -m src.feeder --server https://adsb.example.com --name roof-antenna --key abc123
 
 Architecture:
-    [Pi + Dongle] → feeder.py → HTTP POST /api/v1/frames → [Central Server]
+    [Pi + Dongle] → our demodulator → feeder.py → HTTP POST → [Central Server]
 
     Feeder buffers frames and sends them in batches every few seconds.
     Heartbeat is sent every 30s with receiver status.
@@ -15,8 +18,6 @@ Architecture:
 
 from __future__ import annotations
 
-import json
-import subprocess
 import sys
 import time
 from collections import deque
@@ -127,7 +128,11 @@ class Feeder:
         self._send_batch()
 
     def capture_and_forward(self):
-        """Start capturing from rtl_adsb and forwarding to server."""
+        """Start capturing from RTL-SDR dongle and forwarding to server.
+
+        Uses our custom demodulator (pyrtlsdr) if available, falls back
+        to rtl_adsb subprocess otherwise.
+        """
         if requests is None:
             print("Error: 'requests' package required. Install with: pip install requests", file=sys.stderr)
             sys.exit(1)
@@ -138,25 +143,21 @@ class Feeder:
         sender.start()
 
         print(f"Feeder '{self.receiver_name}' → {self.server_url}")
-        print("Capturing from rtl_adsb...")
+
+        from .capture import LiveCapture
 
         try:
-            proc = subprocess.Popen(
-                ["rtl_adsb"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            for line in proc.stdout:
-                line = line.strip()
-                if line.startswith("*") and line.endswith(";"):
-                    hex_str = line[1:-1]
-                    self.buffer.append(hex_str)
-                    self.frames_captured += 1
+            capture = LiveCapture()
+            capture.start()
+            print(f"Capturing via {capture.source_name}...")
+
+            for frame in capture:
+                self.buffer.append(frame.hex_str)
+                self.frames_captured += 1
         except KeyboardInterrupt:
             print("\nStopping feeder...")
-        except FileNotFoundError:
-            print("Error: rtl_adsb not found. Install rtl-sdr tools first.", file=sys.stderr)
+        except Exception as e:
+            print(f"Capture error: {e}", file=sys.stderr)
             sys.exit(1)
         finally:
             self.running = False

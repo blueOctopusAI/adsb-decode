@@ -1,9 +1,10 @@
 """Capture and file I/O for ADS-B data.
 
-Three input modes:
-- FrameReader: Pre-demodulated hex frame strings (one per line, from rtl_adsb/dump1090 --raw)
-- IQReader: Raw IQ samples from RTL-SDR (.iq files, interleaved uint8 pairs)
-- LiveCapture: Real-time capture from RTL-SDR dongle via pyrtlsdr (Phase 3)
+Input modes:
+- FrameReader:       Pre-demodulated hex frame strings (one per line, from dump1090 --raw etc.)
+- IQReader:          Raw IQ samples from RTL-SDR (.iq files, interleaved uint8 pairs)
+- LiveDemodCapture:  Native real-time capture: pyrtlsdr → our demodulator → frames (preferred)
+- LiveCapture:       Auto-selects native demod or rtl_adsb fallback
 """
 
 from __future__ import annotations
@@ -196,12 +197,131 @@ class IQReader:
         return iq[:, 0] ** 2 + iq[:, 1] ** 2
 
 
-class LiveCapture:
-    """Real-time frame capture from rtl_adsb subprocess.
+class LiveDemodCapture:
+    """Real-time capture using pyrtlsdr + our custom demodulator.
 
-    Wraps the rtl_adsb command-line tool as a subprocess and yields
-    RawFrame objects as they arrive. Used by `adsb track --live`.
+    This is the native path — raw IQ samples from the dongle go through
+    our demodulator (preamble detection, PPM bit recovery, CRC check).
+    No external tools required, just the dongle.
+
+    Falls back to rtl_adsb subprocess if pyrtlsdr is not installed.
     """
+
+    SAMPLE_RATE = 2_000_000  # 2 MHz for ADS-B
+    CENTER_FREQ = 1_090_000_000  # 1090 MHz
+    CHUNK_SIZE = 262_144  # ~131ms of data per read
+
+    def __init__(self, device_index: int = 0, gain: float | str = "auto"):
+        self._device_index = device_index
+        self._gain = gain
+        self._sdr = None
+        self._running = False
+
+    def start(self) -> None:
+        """Open RTL-SDR device and configure for ADS-B reception."""
+        try:
+            from rtlsdr import RtlSdr
+        except ImportError:
+            raise ImportError(
+                "pyrtlsdr required for native capture. "
+                "Install with: pip install pyrtlsdr"
+            )
+
+        self._sdr = RtlSdr(self._device_index)
+        self._sdr.sample_rate = self.SAMPLE_RATE
+        self._sdr.center_freq = self.CENTER_FREQ
+        if isinstance(self._gain, str) and self._gain == "auto":
+            self._sdr.gain = "auto"
+        else:
+            self._sdr.gain = float(self._gain)
+        self._running = True
+
+    def stop(self) -> None:
+        """Close the RTL-SDR device."""
+        self._running = False
+        if self._sdr:
+            self._sdr.close()
+            self._sdr = None
+
+    def __iter__(self) -> Iterator[RawFrame]:
+        from .demodulator import iq_to_magnitude, demodulate_buffer
+
+        if self._sdr is None:
+            self.start()
+
+        while self._running:
+            # Read raw bytes from dongle
+            raw = self._sdr.read_bytes(self.CHUNK_SIZE * 2)
+            raw_np = np.frombuffer(raw, dtype=np.uint8)
+
+            if len(raw_np) < 480:  # Need at least WINDOW_SIZE * 2
+                continue
+
+            mag = iq_to_magnitude(raw_np)
+            frames = demodulate_buffer(mag, timestamp=time.time())
+
+            for frame in frames:
+                yield frame
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop()
+
+
+class LiveCapture:
+    """Real-time frame capture — uses our demodulator if pyrtlsdr is available,
+    falls back to rtl_adsb subprocess otherwise.
+
+    Preferred path: pyrtlsdr → our demodulator (no external tools)
+    Fallback path: rtl_adsb subprocess (requires rtl-sdr tools installed)
+    """
+
+    def __init__(self, device_index: int = 0, gain: str = "auto"):
+        self._device_index = device_index
+        self._gain = gain
+        self._inner = None
+        self._use_native = False
+
+    def start(self) -> None:
+        """Start capture — try native demod first, fall back to rtl_adsb."""
+        try:
+            self._inner = LiveDemodCapture(self._device_index, self._gain)
+            self._inner.start()
+            self._use_native = True
+        except ImportError:
+            # pyrtlsdr not installed — fall back to rtl_adsb
+            self._inner = _RtlAdsbCapture(self._device_index, self._gain)
+            self._inner.start()
+            self._use_native = False
+
+    def stop(self) -> None:
+        """Stop capture."""
+        if self._inner:
+            self._inner.stop()
+            self._inner = None
+
+    @property
+    def source_name(self) -> str:
+        return "demodulator" if self._use_native else "rtl_adsb"
+
+    def __iter__(self) -> Iterator[RawFrame]:
+        if self._inner is None:
+            self.start()
+        yield from self._inner
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop()
+
+
+class _RtlAdsbCapture:
+    """Fallback: shell out to rtl_adsb for frame capture."""
 
     def __init__(self, device_index: int = 0, gain: str = "auto"):
         self._device_index = device_index
@@ -209,7 +329,6 @@ class LiveCapture:
         self._proc: subprocess.Popen | None = None
 
     def start(self) -> None:
-        """Start the rtl_adsb subprocess."""
         cmd = ["rtl_adsb", "-d", str(self._device_index)]
         if self._gain != "auto":
             cmd.extend(["-g", self._gain])
@@ -222,7 +341,6 @@ class LiveCapture:
         )
 
     def stop(self) -> None:
-        """Stop the subprocess."""
         if self._proc:
             self._proc.kill()
             self._proc.wait()
@@ -242,10 +360,3 @@ class LiveCapture:
                         timestamp=time.time(),
                         source="rtl_adsb",
                     )
-
-    def __enter__(self):
-        self.start()
-        return self
-
-    def __exit__(self, *args):
-        self.stop()
