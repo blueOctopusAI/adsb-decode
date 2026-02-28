@@ -315,9 +315,10 @@ What makes this more than a radio scanner:
 |--------|------|-------------|
 | GET | `/api/aircraft` | All tracked aircraft (optional `?military=true`) |
 | GET | `/api/aircraft/<icao>` | Single aircraft detail + positions + events |
-| GET | `/api/positions` | Most recent position per aircraft |
+| GET | `/api/positions` | Most recent position per aircraft (optional `?minutes=` time filter) |
 | GET | `/api/positions/all` | All positions ordered by time (for replay) |
-| GET | `/api/trails` | Position trails per aircraft (for polylines) |
+| GET | `/api/trails` | Position trails per aircraft (`?minutes=` time window, default 60) |
+| GET | `/api/lookup/<icao>` | External aircraft metadata via hexdb.io (manufacturer, type, owner) |
 | GET | `/api/query` | Filtered positions (min/max alt, ICAO, military, limit) |
 | GET | `/api/airports` | 3,642 US airports with type classification |
 | GET | `/api/events` | Recent events (optional `?type=` filter) |
@@ -348,5 +349,5 @@ What makes this more than a radio scanner:
 | `src/cli.py` | ~280 | Click CLI entry points |
 | `src/web/app.py` | ~50 | Flask app factory |
 | `src/web/ingest.py` | ~185 | Frame ingestion API for remote feeders |
-| `src/web/routes.py` | ~340 | REST API + page routes (14 endpoints, 9 pages) |
+| `src/web/routes.py` | ~400 | REST API + page routes (15 endpoints, 9 pages) |
 | `data/airports.csv` | 3,643 | OurAirports US airport database |

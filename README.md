@@ -113,14 +113,17 @@ This isn't just a radio scanner. It's an intelligence tool.
 
 Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 
-- **Live map** — Aircraft icons with heading rotation, altitude-colored trail lines (green→yellow→red), stats overlay, altitude legend
+- **Live map** — Aircraft silhouette icons (jet/prop/turboprop/helicopter/military) with heading rotation, altitude-colored trail lines (green→yellow→red), stats overlay, altitude legend
+- **Trail duration slider** — 5 minutes to 24 hours. Controls trail visibility AND which aircraft appear on the map/list. Stale aircraft auto-removed.
+- **Aircraft detail** — Split-screen view. Left: captured trail map, events, position history. Right: external intel from hexdb.io (manufacturer, type, owner), link cards to ADSBExchange/Planespotters/FlightAware/FlightRadar24/FAA Registry/OpenSky, altitude profile chart.
 - **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links.
 - **Heatmap** — Position density visualization toggle
 - **Events dashboard** — Color-coded events with type filters
 - **Query builder** — Preset queries (military, low altitude, fast) + custom filters with map visualization
-- **Historical replay** — Time slider with play/pause, adjustable speed (1x–60x)
+- **Historical replay** — Time slider with play/pause, adjustable speed (1x–10min)
 - **Receiver management** — Connected feeders with coverage circles
 - **Table view** — Sortable aircraft list with detail pages
+- **State persistence** — All checkbox states, map position, trail duration saved to localStorage across page navigation
 
 ## Multi-Receiver Network
 
@@ -172,7 +175,7 @@ src/
     └── templates/   # Map, table, detail, events, query, replay, receivers, stats
 ```
 
-**289 tests** covering every module. 19 Python modules, 9 HTML templates, ~5,800 lines. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
+**365 tests** covering every module. 19 Python modules, 9 HTML templates, ~6,300 lines. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
 
 ## License
 
