@@ -17,7 +17,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .capture import FrameReader
+from .capture import FrameReader, LiveCapture
 from .database import Database
 from .frame_parser import parse_frame
 from .tracker import Tracker
@@ -54,16 +54,33 @@ def decode(file: str, ref_lat: float | None, ref_lon: float | None):
 
 
 @cli.command()
-@click.argument("file", type=click.Path(exists=True))
+@click.argument("file", type=click.Path(exists=True), required=False)
+@click.option("--live", is_flag=True, help="Live capture from RTL-SDR dongle")
 @click.option("--db-path", type=click.Path(), default=str(DEFAULT_DB), help="Database file path")
 @click.option("--ref-lat", type=float, default=None, help="Receiver latitude")
 @click.option("--ref-lon", type=float, default=None, help="Receiver longitude")
 @click.option("--receiver", type=str, default="default", help="Receiver name")
-def track(file: str, db_path: str, ref_lat: float | None, ref_lon: float | None, receiver: str):
-    """Track aircraft from a capture file with database persistence."""
+@click.option("--port", type=int, default=None, help="Launch web dashboard on this port")
+def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
+          ref_lon: float | None, receiver: str, port: int | None):
+    """Track aircraft from a capture file or live RTL-SDR.
+
+    \b
+    Examples:
+      adsb track data/capture.txt                    # From file
+      adsb track --live --port 8080                  # Live with dashboard
+      adsb track --live --ref-lat 35.18 --ref-lon -83.43  # Live with position
+    """
+    if not file and not live:
+        raise click.UsageError("Provide a FILE or use --live for RTL-SDR capture")
+
+    import os
+    os.makedirs(Path(db_path).parent, exist_ok=True)
+
     db = Database(db_path)
+    source = "rtl_adsb:live" if live else file
     rid = db.add_receiver(receiver, lat=ref_lat, lon=ref_lon)
-    cap_id = db.start_capture(source=file, receiver_id=rid)
+    cap_id = db.start_capture(source=source, receiver_id=rid)
 
     filter_engine = FilterEngine()
     tracker = Tracker(
@@ -71,26 +88,64 @@ def track(file: str, db_path: str, ref_lat: float | None, ref_lon: float | None,
         ref_lat=ref_lat, ref_lon=ref_lon,
     )
 
-    reader = FrameReader(file)
-    for raw_frame in reader:
-        frame = parse_frame(raw_frame.hex_str, timestamp=raw_frame.timestamp)
-        if frame:
-            msg = tracker.update(frame)
-            if msg:
-                ac = tracker.aircraft.get(msg.icao)
-                if ac:
-                    events = filter_engine.check(ac)
-                    for event in events:
-                        db.add_event(
-                            icao=event.icao,
-                            event_type=event.event_type,
-                            description=event.description,
-                            lat=event.lat,
-                            lon=event.lon,
-                            altitude_ft=event.altitude_ft,
-                            timestamp=event.timestamp,
-                        )
-                        console.print(f"  [bold red]EVENT:[/] {event.description}")
+    # Start web dashboard in background thread if requested
+    if port:
+        import threading
+        from .web.app import create_app
+        app = create_app(db_path=db_path)
+        thread = threading.Thread(
+            target=lambda: app.run(host="127.0.0.1", port=port, use_reloader=False),
+            daemon=True,
+        )
+        thread.start()
+        console.print(f"[bold green]Dashboard[/] → http://127.0.0.1:{port}")
+
+    frame_source = LiveCapture() if live else FrameReader(file)
+
+    try:
+        if live:
+            console.print("[bold green]Live tracking started[/] — Ctrl+C to stop\n")
+
+        last_print = 0.0
+        for raw_frame in frame_source:
+            frame = parse_frame(raw_frame.hex_str, timestamp=raw_frame.timestamp)
+            if frame:
+                msg = tracker.update(frame)
+                if msg:
+                    ac = tracker.aircraft.get(msg.icao)
+                    if ac:
+                        events = filter_engine.check(ac)
+                        for event in events:
+                            db.add_event(
+                                icao=event.icao,
+                                event_type=event.event_type,
+                                description=event.description,
+                                lat=event.lat,
+                                lon=event.lon,
+                                altitude_ft=event.altitude_ft,
+                                timestamp=event.timestamp,
+                            )
+                            console.print(f"  [bold red]EVENT:[/] {event.description}")
+
+            # In live mode, print status every 10 seconds
+            if live:
+                import time as _time
+                now = _time.time()
+                if now - last_print > 10:
+                    active = tracker.get_active()
+                    console.print(
+                        f"  [dim]{tracker.total_frames} frames, "
+                        f"{tracker.valid_frames} valid, "
+                        f"{len(active)} active aircraft, "
+                        f"{tracker.position_decodes} positions[/]"
+                    )
+                    last_print = now
+                    tracker.prune_stale()
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopping...[/]")
+        if live and isinstance(frame_source, LiveCapture):
+            frame_source.stop()
 
     db.end_capture(
         cap_id,

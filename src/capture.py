@@ -9,6 +9,7 @@ Three input modes:
 from __future__ import annotations
 
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -155,6 +156,25 @@ class IQReader:
         iq = raw.reshape(-1, 2).astype(np.float32) - 127.5
         return iq[:, 0] + 1j * iq[:, 1]
 
+    def read_magnitude_chunked(self, chunk_samples: int = 2_000_000):
+        """Yield magnitude chunks for streaming demodulation.
+
+        Args:
+            chunk_samples: Samples per chunk (default 1 second at 2 MHz).
+
+        Yields:
+            (magnitude_array, sample_offset) tuples.
+        """
+        overlap = 240  # WINDOW_SIZE from demodulator
+        offset = 0
+        while offset < self.n_samples:
+            count = min(chunk_samples, self.n_samples - offset)
+            if count < overlap:
+                break
+            mag = self.read_magnitude(count=count, offset=offset)
+            yield mag, offset
+            offset += count - overlap
+
     def read_magnitude(self, count: int | None = None, offset: int = 0) -> np.ndarray:
         """Read IQ samples and return magnitude (envelope).
 
@@ -174,3 +194,58 @@ class IQReader:
         raw = np.fromfile(self.path, dtype=np.uint8, count=byte_count, offset=byte_offset)
         iq = raw.reshape(-1, 2).astype(np.float32) - 127.5
         return iq[:, 0] ** 2 + iq[:, 1] ** 2
+
+
+class LiveCapture:
+    """Real-time frame capture from rtl_adsb subprocess.
+
+    Wraps the rtl_adsb command-line tool as a subprocess and yields
+    RawFrame objects as they arrive. Used by `adsb track --live`.
+    """
+
+    def __init__(self, device_index: int = 0, gain: str = "auto"):
+        self._device_index = device_index
+        self._gain = gain
+        self._proc: subprocess.Popen | None = None
+
+    def start(self) -> None:
+        """Start the rtl_adsb subprocess."""
+        cmd = ["rtl_adsb", "-d", str(self._device_index)]
+        if self._gain != "auto":
+            cmd.extend(["-g", self._gain])
+        self._proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+
+    def stop(self) -> None:
+        """Stop the subprocess."""
+        if self._proc:
+            self._proc.kill()
+            self._proc.wait()
+            self._proc = None
+
+    def __iter__(self) -> Iterator[RawFrame]:
+        if self._proc is None:
+            self.start()
+        assert self._proc and self._proc.stdout
+        for line in self._proc.stdout:
+            line = line.strip()
+            if line.startswith("*") and line.endswith(";"):
+                hex_str = line[1:-1].upper()
+                if _HEX_PATTERN.match(hex_str):
+                    yield RawFrame(
+                        hex_str=hex_str,
+                        timestamp=time.time(),
+                        source="rtl_adsb",
+                    )
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop()
