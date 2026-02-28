@@ -63,15 +63,18 @@ bash scripts/capture-iq.sh 60    # Capture 60s raw IQ samples
 bash scripts/capture-frames.sh 60 # Capture 60s demodulated frames
 ```
 
-## Database Schema (5 tables)
+## Database Schema (6 tables)
 
+- **receivers** — sensor nodes (name, lat, lon, altitude, description). Multi-receiver from day one.
 - **aircraft** — ICAO address, registration, country, military flag, first/last seen
 - **sightings** — per-session appearance (callsign, squawk, signal strength)
-- **positions** — lat, lon, alt, speed, heading, vertical rate, timestamp
-- **captures** — metadata per capture session (source, duration, frame counts)
+- **positions** — lat, lon, alt, speed, heading, vertical rate, timestamp, `receiver_id`
+- **captures** — metadata per capture session (source, duration, frame counts, `receiver_id`)
 - **events** — detected anomalies (emergency squawk, rapid descent, military, circling)
 
 SQLite with WAL mode, foreign keys enabled, indexed queries. Test fixtures use tmp_path.
+
+Every position and capture is tagged with which receiver heard it. Single-receiver deployments work identically — one row in receivers table. Adding receivers is adding data sources, not refactoring.
 
 ## Key Technical Details
 

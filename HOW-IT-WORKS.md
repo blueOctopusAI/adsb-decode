@@ -226,11 +226,23 @@ The tracker:
 
 SQLite database with WAL (Write-Ahead Logging) mode for concurrent read/write. Schema:
 
+- **receivers**: Registered sensor nodes. Each receiver has a name, lat/lon, altitude, and description. Designed for distributed deployment — multiple receivers feeding a single database.
 - **aircraft**: One row per unique ICAO address seen. Accumulates country, registration, military flag.
 - **sightings**: One row per capture session per aircraft. Tracks callsign, squawk, min/max altitude, signal strength.
-- **positions**: Time-series position data. Lat, lon, altitude, speed, heading, vertical rate.
-- **captures**: Metadata for each capture session — source file, start/end time, frame counts.
+- **positions**: Time-series position data. Lat, lon, altitude, speed, heading, vertical rate. Tagged with `receiver_id` — which sensor heard this frame.
+- **captures**: Metadata per capture session. Source file, start/end time, frame counts. Tagged with `receiver_id`.
 - **events**: Anomalies detected by filters — emergency squawk, rapid descent, military aircraft, geofence breach.
+
+### Multi-Receiver Architecture
+
+The schema is receiver-aware from day one. Every position report and capture session records which receiver heard it. This enables:
+
+- **Coverage mapping**: Which receivers see which aircraft? Where are the terrain shadows?
+- **Signal comparison**: Same aircraft heard by multiple receivers at different signal strengths — crude triangulation.
+- **MLAT readiness**: With 3+ receivers and precise timestamps, time-difference-of-arrival (TDOA) can independently verify or compute aircraft positions — including aircraft that broadcast Mode S but not ADS-B.
+- **Reliability**: Receivers operate independently. One goes down, the network keeps collecting.
+
+A single-receiver deployment works identically — it just has one row in the receivers table. Adding receivers is adding data sources, not refactoring the schema.
 
 ---
 
