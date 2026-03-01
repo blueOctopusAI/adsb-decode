@@ -191,11 +191,31 @@ const tileSets = {
     'voyager': { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attr: '&copy; OSM &copy; CARTO', maxZoom: 19 },
 };
 let currentTileLayer = null;
+// Theme-aware color palettes — dark bg needs bright colors, light bg needs dark colors
+const mapThemes = {
+    dark:         { bg: 'dark',  civilian: '#00ff88', military: '#ff4444', trailWeight: 2.5, trailMinOpacity: 0.3, outline: '#000', outlineWidth: 0.5 },
+    satellite:    { bg: 'dark',  civilian: '#00ffcc', military: '#ff6666', trailWeight: 3,   trailMinOpacity: 0.4, outline: '#000', outlineWidth: 0.8 },
+    topo:         { bg: 'light', civilian: '#006633', military: '#cc0000', trailWeight: 3,   trailMinOpacity: 0.5, outline: '#fff', outlineWidth: 0.8 },
+    streets:      { bg: 'light', civilian: '#006633', military: '#cc0000', trailWeight: 3,   trailMinOpacity: 0.5, outline: '#fff', outlineWidth: 0.8 },
+    'dark-matter': { bg: 'dark', civilian: '#00ff88', military: '#ff4444', trailWeight: 2.5, trailMinOpacity: 0.3, outline: '#000', outlineWidth: 0.5 },
+    voyager:      { bg: 'light', civilian: '#007744', military: '#cc0000', trailWeight: 3,   trailMinOpacity: 0.5, outline: '#fff', outlineWidth: 0.8 },
+};
+let activeTheme = mapThemes['dark'];
 function setMapStyle(style) {
     const ts = tileSets[style] || tileSets['dark'];
     if (currentTileLayer) map.removeLayer(currentTileLayer);
     currentTileLayer = L.tileLayer(ts.url, { attribution: ts.attr, maxZoom: ts.maxZoom }).addTo(map);
     document.getElementById('map-style').value = style;
+    activeTheme = mapThemes[style] || mapThemes['dark'];
+    // Update altitude legend gradient to match theme
+    const bar = document.querySelector('#alt-legend .legend-bar');
+    if (bar) {
+        if (activeTheme.bg === 'light') {
+            bar.style.background = 'linear-gradient(to top, #003cb3, #b45a00 50%, #cc0000)';
+        } else {
+            bar.style.background = 'linear-gradient(to top, #00ff00, #ffff00 50%, #ff0000)';
+        }
+    }
 }
 setMapStyle('dark');
 
@@ -234,31 +254,44 @@ const acSvgs = {
 };
 
 function acIcon(heading, isMilitary, acType) {
-    const color = isMilitary ? '#ff4444' : '#00ff88';
+    const color = isMilitary ? activeTheme.military : activeTheme.civilian;
     const type = acType || (isMilitary ? 'military' : 'jet');
     const svgBody = (acSvgs[type] || acSvgs.jet)(color);
     const rotation = heading || 0;
     return L.divIcon({
         className: '',
-        html: `<svg width="24" height="24" viewBox="0 0 24 24" style="transform:rotate(${rotation}deg)">${svgBody}</svg>`,
+        html: `<svg width="24" height="24" viewBox="0 0 24 24" style="transform:rotate(${rotation}deg);filter:drop-shadow(0 0 1px ${activeTheme.outline})">${svgBody}</svg>`,
         iconSize: [24, 24],
         iconAnchor: [12, 12],
     });
 }
 
-// --- Altitude → color gradient ---
+// --- Altitude → color gradient (theme-aware) ---
 function altColor(alt) {
-    if (alt == null) return '#888';
-    // Green (low, 0ft) → Yellow (mid, 20000ft) → Red (high, 40000ft+)
+    if (alt == null) return activeTheme.bg === 'dark' ? '#888' : '#555';
     const t = Math.min(Math.max(alt / 40000, 0), 1);
+    if (activeTheme.bg === 'light') {
+        // Dark palette for light maps: dark blue (low) → dark orange (mid) → dark red (high)
+        if (t < 0.5) {
+            const s = t * 2;
+            const r = Math.round(s * 180);
+            const g = Math.round(40 + (1 - s) * 60);
+            const b = Math.round((1 - s) * 180);
+            return `rgb(${r},${g},${b})`;
+        } else {
+            const s = (t - 0.5) * 2;
+            const r = Math.round(180 + s * 60);
+            const g = Math.round(40 * (1 - s));
+            return `rgb(${r},${g},0)`;
+        }
+    }
+    // Bright palette for dark maps: green (low) → yellow (mid) → red (high)
     if (t < 0.5) {
-        // Green → Yellow
         const s = t * 2;
         const r = Math.round(s * 255);
         const g = 255;
         return `rgb(${r},${g},0)`;
     } else {
-        // Yellow → Red
         const s = (t - 0.5) * 2;
         const r = 255;
         const g = Math.round((1 - s) * 255);
@@ -308,10 +341,10 @@ function drawTrail(icao, points) {
         const alt = curr[2];  // altitude_ft
         const color = altColor(alt);
         // Fade older segments
-        const opacity = 0.3 + 0.7 * (i / points.length);
+        const opacity = activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity) * (i / points.length);
         const seg = L.polyline(
             [[prev[0], prev[1]], [curr[0], curr[1]]],
-            { color: color, weight: 2.5, opacity: opacity }
+            { color: color, weight: activeTheme.trailWeight, opacity: opacity }
         ).addTo(map);
         trailLines[icao].push(seg);
     }
@@ -627,6 +660,8 @@ map.on('moveend', saveState);
 document.getElementById('map-style').addEventListener('change', function() {
     setMapStyle(this.value);
     saveState();
+    // Force redraw of all markers and trails with new theme colors
+    updateMap();
 });
 
 // --- Geofence management ---

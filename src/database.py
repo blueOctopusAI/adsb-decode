@@ -412,27 +412,30 @@ class Database:
         self.conn.commit()
         return cur.rowcount
 
-    def prune_phantom_aircraft(self) -> int:
-        """Delete aircraft that have never had a position decode.
+    def prune_phantom_aircraft(self, min_age_hours: float = 1.0) -> int:
+        """Delete aircraft that have never had a position decode AND are old.
 
         These are phantom ICAOs from CRC-residual extraction in DF5/DF21 frames.
-        Also cleans up their sightings and events.
+        Only prunes aircraft last seen more than min_age_hours ago — fresh aircraft
+        may simply not have had CPR pairs resolve yet.
 
         Returns total rows deleted across all tables.
         """
-        # Find ICAOs that have positions (real aircraft)
-        real_icaos = "SELECT DISTINCT icao FROM positions"
-        # Delete sightings for phantoms
+        import time as _time
+        cutoff = _time.time() - (min_age_hours * 3600)
+        # Phantoms: no positions AND last seen before cutoff
+        phantoms = (
+            "SELECT icao FROM aircraft WHERE icao NOT IN "
+            "(SELECT DISTINCT icao FROM positions) AND last_seen < ?"
+        )
         c1 = self.conn.execute(
-            f"DELETE FROM sightings WHERE icao NOT IN ({real_icaos})"
+            f"DELETE FROM sightings WHERE icao IN ({phantoms})", (cutoff,)
         )
-        # Delete events for phantoms
         c2 = self.conn.execute(
-            f"DELETE FROM events WHERE icao NOT IN ({real_icaos})"
+            f"DELETE FROM events WHERE icao IN ({phantoms})", (cutoff,)
         )
-        # Delete phantom aircraft
         c3 = self.conn.execute(
-            f"DELETE FROM aircraft WHERE icao NOT IN ({real_icaos})"
+            f"DELETE FROM aircraft WHERE icao IN ({phantoms})", (cutoff,)
         )
         self.conn.commit()
         return c1.rowcount + c2.rowcount + c3.rowcount
