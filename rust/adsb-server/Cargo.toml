@@ -11,3 +11,4 @@ path = "src/main.rs"
 adsb-core = { path = "../adsb-core" }
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
+rusqlite = { version = "0.31", features = ["bundled"] }

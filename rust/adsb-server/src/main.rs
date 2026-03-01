@@ -1,6 +1,4 @@
 //! adsb-server: CLI + web server for ADS-B tracking.
-//!
-//! Phase 1: `adsb decode <file>` — parse hex frames and print aircraft table.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead};
@@ -13,7 +11,10 @@ use adsb_core::cpr;
 use adsb_core::decode;
 use adsb_core::frame::{self, IcaoCache};
 use adsb_core::icao;
+use adsb_core::tracker::Tracker;
 use adsb_core::types::*;
+
+mod db;
 
 #[derive(Parser)]
 #[command(name = "adsb", version, about = "ADS-B decoder and tracker")]
@@ -32,6 +33,27 @@ enum Commands {
         /// Show raw decoded messages instead of summary table
         #[arg(short, long)]
         raw: bool,
+    },
+
+    /// Track aircraft from a capture file with database persistence
+    Track {
+        /// Path to file containing hex frames (one per line)
+        file: PathBuf,
+
+        /// SQLite database path
+        #[arg(long, default_value = "data/adsb.db")]
+        db_path: String,
+
+        /// Minimum seconds between stored positions per aircraft
+        #[arg(long, default_value = "2.0")]
+        min_interval: f64,
+    },
+
+    /// Show database statistics
+    Stats {
+        /// SQLite database path
+        #[arg(long, default_value = "data/adsb.db")]
+        db_path: String,
     },
 }
 
@@ -144,6 +166,12 @@ fn main() {
 
     match cli.command {
         Commands::Decode { file, raw } => cmd_decode(file, raw),
+        Commands::Track {
+            file,
+            db_path,
+            min_interval,
+        } => cmd_track(file, &db_path, min_interval),
+        Commands::Stats { db_path } => cmd_stats(&db_path),
     }
 }
 
@@ -213,6 +241,164 @@ fn cmd_decode(file: PathBuf, raw: bool) {
     if !raw {
         print_summary(&aircraft, total_frames, decoded_frames);
     }
+}
+
+fn cmd_track(file: PathBuf, db_path: &str, min_interval: f64) {
+    let mut database = db::Database::open(db_path).unwrap_or_else(|e| {
+        eprintln!("Error opening database {db_path}: {e}");
+        std::process::exit(1);
+    });
+
+    let source = file.display().to_string();
+    let capture_id = database.start_capture(&source, None);
+
+    let mut tracker = Tracker::new(None, Some(capture_id), None, None, min_interval);
+    let mut icao_cache = IcaoCache::new(60.0);
+
+    let reader: Box<dyn BufRead> = if file.to_str() == Some("-") {
+        Box::new(io::stdin().lock())
+    } else {
+        let f = std::fs::File::open(&file).unwrap_or_else(|e| {
+            eprintln!("Error opening {}: {e}", file.display());
+            std::process::exit(1);
+        });
+        Box::new(io::BufReader::new(f))
+    };
+
+    let mut timestamp = 0.0f64;
+
+    // Batch mode for throughput
+    database.set_autocommit(false);
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        let hex = line.trim();
+        if hex.is_empty() || hex.starts_with('#') {
+            continue;
+        }
+
+        let (hex_part, ts) = if let Some((h, t)) = hex.split_once(';') {
+            (h.trim(), t.trim().parse::<f64>().unwrap_or(timestamp))
+        } else {
+            (hex, timestamp)
+        };
+        timestamp = ts + 0.1;
+
+        let frame = match frame::parse_frame(hex_part, ts, None, true, &mut icao_cache) {
+            Some(f) => f,
+            None => match frame::parse_frame(hex_part, ts, None, false, &mut icao_cache) {
+                Some(f) => f,
+                None => continue,
+            },
+        };
+
+        let (_msg, events) = tracker.update(&frame);
+        database.apply_events(&events);
+    }
+
+    database.flush();
+    database.end_capture(
+        capture_id,
+        tracker.total_frames,
+        tracker.valid_frames,
+        tracker.aircraft.len() as u64,
+    );
+    database.flush();
+
+    // Print summary
+    let stats = database.stats();
+    println!();
+    println!("Track complete: {}", file.display());
+    println!(
+        "  Frames: {} total, {} valid",
+        tracker.total_frames, tracker.valid_frames
+    );
+    println!(
+        "  Positions: {} decoded, {} stored, {} downsampled",
+        tracker.position_decodes,
+        tracker.position_decodes - tracker.positions_skipped,
+        tracker.positions_skipped
+    );
+    println!("  Aircraft: {}", tracker.aircraft.len());
+    println!();
+    println!("Database: {db_path}");
+    println!(
+        "  {} aircraft, {} positions, {} events",
+        stats.aircraft, stats.positions, stats.events
+    );
+
+    // Print aircraft table
+    let now = timestamp;
+    let active = tracker.get_active(now + 3600.0); // Show all (generous timeout)
+
+    if !active.is_empty() {
+        println!();
+        let mut table = Table::new();
+        table.set_header(vec![
+            "ICAO", "Callsign", "Squawk", "Alt (ft)", "Speed", "Hdg", "Lat", "Lon", "Country",
+            "Msgs",
+        ]);
+
+        for ac in &active {
+            table.add_row(vec![
+                Cell::new(icao_to_string(&ac.icao)),
+                Cell::new(ac.callsign.as_deref().unwrap_or("-")),
+                Cell::new(ac.squawk.as_deref().unwrap_or("-")),
+                Cell::new(
+                    ac.altitude_ft
+                        .map(|a| a.to_string())
+                        .unwrap_or("-".into()),
+                ),
+                Cell::new(
+                    ac.speed_kts
+                        .map(|s| format!("{s:.0}"))
+                        .unwrap_or("-".into()),
+                ),
+                Cell::new(
+                    ac.heading_deg
+                        .map(|h| format!("{h:.1}"))
+                        .unwrap_or("-".into()),
+                ),
+                Cell::new(
+                    ac.lat
+                        .map(|l| format!("{l:.4}"))
+                        .unwrap_or("-".into()),
+                ),
+                Cell::new(
+                    ac.lon
+                        .map(|l| format!("{l:.4}"))
+                        .unwrap_or("-".into()),
+                ),
+                Cell::new(ac.country.unwrap_or("-")),
+                Cell::new(ac.message_count),
+            ]);
+        }
+
+        println!("{table}");
+    }
+}
+
+fn cmd_stats(db_path: &str) {
+    let database = db::Database::open(db_path).unwrap_or_else(|e| {
+        eprintln!("Error opening database {db_path}: {e}");
+        std::process::exit(1);
+    });
+
+    let stats = database.stats();
+
+    println!();
+    println!("Database: {db_path}");
+    println!();
+    println!("  Aircraft:   {}", stats.aircraft);
+    println!("  Positions:  {}", stats.positions);
+    println!("  Events:     {}", stats.events);
+    println!("  Receivers:  {}", stats.receivers);
+    println!("  Captures:   {}", stats.captures);
+    println!();
 }
 
 fn print_summary(
