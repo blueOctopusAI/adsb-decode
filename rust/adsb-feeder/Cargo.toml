@@ -9,3 +9,4 @@ path = "src/main.rs"
 
 [dependencies]
 adsb-core = { path = "../adsb-core" }
+clap = { version = "4", features = ["derive"] }

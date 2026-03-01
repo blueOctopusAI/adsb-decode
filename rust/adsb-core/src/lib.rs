@@ -7,6 +7,7 @@ pub mod config;
 pub mod cpr;
 pub mod crc;
 pub mod decode;
+pub mod demod;
 pub mod frame;
 pub mod icao;
 pub mod tracker;

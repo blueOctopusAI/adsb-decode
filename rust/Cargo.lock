@@ -15,6 +15,7 @@ name = "adsb-feeder"
 version = "0.1.0"
 dependencies = [
  "adsb-core",
+ "clap",
 ]
 
 [[package]]
