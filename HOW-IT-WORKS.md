@@ -26,7 +26,7 @@ The RTL-SDR dongle is a software-defined radio that samples the 1090 MHz band an
 
 We also support pre-demodulated frame input — hex strings from tools like `rtl_adsb` or `dump1090 --raw` — for testing without raw IQ processing.
 
-**Files:** `capture.py` provides `IQReader` (raw samples), `FrameReader` (hex frames), and `LiveCapture` (real-time from dongle).
+**Files:** `capture.py` provides `IQReader` (raw samples), `FrameReader` (hex frames), and `LiveCapture` (real-time from dongle). `LiveCapture` uses `pyrtlsdr` to read raw IQ bytes directly from the USB dongle and pipes them through our `demodulator.py` — no external demodulation tools in the signal path. An `rtl_adsb` fallback exists only for systems without `pyrtlsdr` installed.
 
 ---
 
