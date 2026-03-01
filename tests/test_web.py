@@ -272,6 +272,99 @@ class TestQueryAPI:
         assert b"Query" in resp.data
 
 
+class TestHeatmap:
+    def test_heatmap_endpoint(self, client):
+        resp = client.get("/api/heatmap")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "points" in data
+        assert "count" in data
+        assert data["count"] >= 1
+
+    def test_heatmap_point_format(self, client):
+        resp = client.get("/api/heatmap")
+        data = resp.get_json()
+        if data["count"] > 0:
+            point = data["points"][0]
+            assert len(point) == 3  # [lat, lon, altitude_ft]
+
+    def test_heatmap_minutes_param(self, client):
+        resp = client.get("/api/heatmap?minutes=5")
+        assert resp.status_code == 200
+
+
+class TestGeofences:
+    def test_list_geofences_empty(self, client):
+        # Clear module state
+        from src.web.routes import _geofences
+        _geofences.clear()
+
+        resp = client.get("/api/geofences")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["count"] == 0
+
+    def test_add_geofence(self, client):
+        from src.web import routes
+        routes._geofences.clear()
+        routes._geofence_next_id = 1
+
+        resp = client.post("/api/geofences", json={
+            "name": "Test Zone",
+            "lat": 35.18,
+            "lon": -83.38,
+            "radius_nm": 10,
+        })
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data["name"] == "Test Zone"
+        assert data["id"] == 1
+
+    def test_add_geofence_validation(self, client):
+        resp = client.post("/api/geofences", json={"name": "Bad"})
+        assert resp.status_code == 400
+
+    def test_delete_geofence(self, client):
+        from src.web import routes
+        routes._geofences.clear()
+        routes._geofence_next_id = 1
+
+        client.post("/api/geofences", json={
+            "name": "Delete Me",
+            "lat": 35.0,
+            "lon": -83.0,
+            "radius_nm": 5,
+        })
+        resp = client.delete("/api/geofences/1")
+        assert resp.status_code == 200
+        assert resp.get_json()["deleted"] == 1
+
+    def test_delete_nonexistent(self, client):
+        resp = client.delete("/api/geofences/999")
+        assert resp.status_code == 404
+
+    def test_add_and_list(self, client):
+        from src.web import routes
+        routes._geofences.clear()
+        routes._geofence_next_id = 1
+
+        client.post("/api/geofences", json={
+            "name": "Zone A", "lat": 35.0, "lon": -83.0, "radius_nm": 5,
+        })
+        client.post("/api/geofences", json={
+            "name": "Zone B", "lat": 36.0, "lon": -84.0, "radius_nm": 15,
+        })
+        resp = client.get("/api/geofences")
+        data = resp.get_json()
+        assert data["count"] == 2
+
+    def test_geofence_radius_validation(self, client):
+        resp = client.post("/api/geofences", json={
+            "name": "Bad Radius", "lat": 35.0, "lon": -83.0, "radius_nm": -5,
+        })
+        assert resp.status_code == 400
+
+
 class TestCORS:
     def test_cors_header(self, client):
         resp = client.get("/api/stats")

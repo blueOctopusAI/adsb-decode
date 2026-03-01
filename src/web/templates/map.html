@@ -126,6 +126,12 @@
                 <span style="font-size:11px;color:#00ff88;float:right;" id="trail-dur-label">1h</span>
                 <input type="range" id="trail-dur-slider" min="0" max="7" value="3" style="width:100%;accent-color:#00ff88;margin-top:2px;">
             </div>
+            <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="notify-toggle"> Alerts</label>
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="audio-toggle"> Sound</label>
+                <button id="add-geofence-btn" style="font-size:10px;padding:2px 6px;background:#222;color:#00ff88;border:1px solid #444;border-radius:3px;cursor:pointer;" title="Click map to place geofence">+ Fence</button>
+            </div>
+            <div id="geofence-list" style="margin-top:4px;font-size:10px;color:#888;max-height:60px;overflow-y:auto;"></div>
         </div>
         <div id="ac-list-section">
             <h3>Aircraft (<span id="ac-count">0</span>)</h3>
@@ -494,24 +500,21 @@ document.getElementById('heatmap-toggle').addEventListener('change', function() 
 
 function updateHeatmap() {
     if (!heatmapEnabled) return;
-    fetch('/api/trails?limit=200')
+    // Heatmap uses max of trail window or 24h — density needs history
+    const heatMinutes = Math.max(trailMinutes, 1440);
+    fetch('/api/heatmap?minutes=' + heatMinutes)
         .then(r => r.json())
         .then(data => {
-            const points = [];
-            Object.values(data.trails).forEach(trail => {
-                trail.forEach(p => {
-                    points.push([p[0], p[1], 0.5]);  // lat, lon, intensity
-                });
-            });
+            const points = data.points.map(p => [p[0], p[1], 0.8]);
             if (heatLayer) map.removeLayer(heatLayer);
             if (points.length > 0) {
                 heatLayer = L.heatLayer(points, {
-                    radius: 15, blur: 20, maxZoom: 12,
-                    gradient: {0.2: '#0000ff', 0.4: '#00ff88', 0.6: '#ffff00', 0.8: '#ff8800', 1.0: '#ff0000'},
+                    radius: 25, blur: 15, maxZoom: 17, minOpacity: 0.4,
+                    gradient: {0.2: '#0033aa', 0.4: '#0088ff', 0.5: '#00ff88', 0.7: '#ffff00', 0.9: '#ff8800', 1.0: '#ff0000'},
                 }).addTo(map);
             }
         })
-        .catch(() => {});
+        .catch((e) => { console.error('Heatmap update failed:', e); });
 }
 
 // --- Trail toggle ---
@@ -551,6 +554,8 @@ function saveState() {
         aptLarge: document.getElementById('apt-large').checked,
         aptMedium: document.getElementById('apt-medium').checked,
         aptSmall: document.getElementById('apt-small').checked,
+        notify: document.getElementById('notify-toggle').checked,
+        audio: document.getElementById('audio-toggle').checked,
         zoom: map.getZoom(),
         center: [map.getCenter().lat, map.getCenter().lng],
     };
@@ -571,6 +576,10 @@ function restoreState() {
         if (s.aptLarge) document.getElementById('apt-large').checked = true;
         if (s.aptMedium) document.getElementById('apt-medium').checked = true;
         if (s.aptSmall) document.getElementById('apt-small').checked = true;
+        if (s.notify && 'Notification' in window && Notification.permission === 'granted') {
+            document.getElementById('notify-toggle').checked = true; notificationsEnabled = true;
+        }
+        if (s.audio) { document.getElementById('audio-toggle').checked = true; audioEnabled = true; }
         if (s.center && s.zoom) { map.setView(s.center, s.zoom); mapCentered = true; }
         // Trigger airport + heatmap load if restored
         if (s.aptLarge || s.aptMedium || s.aptSmall) {
@@ -586,9 +595,154 @@ function restoreState() {
 }
 // Save on map move and checkbox changes
 map.on('moveend', saveState);
-['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small'].forEach(id => {
+['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small', 'notify-toggle', 'audio-toggle'].forEach(id => {
     document.getElementById(id).addEventListener('change', saveState);
 });
+
+// --- Geofence management ---
+let geofenceCircles = {};  // {id: L.circle}
+let placingGeofence = false;
+
+document.getElementById('add-geofence-btn').addEventListener('click', function() {
+    placingGeofence = !placingGeofence;
+    this.style.background = placingGeofence ? '#00ff88' : '#222';
+    this.style.color = placingGeofence ? '#000' : '#00ff88';
+    map.getContainer().style.cursor = placingGeofence ? 'crosshair' : '';
+});
+
+map.on('click', function(e) {
+    if (!placingGeofence) return;
+    placingGeofence = false;
+    const btn = document.getElementById('add-geofence-btn');
+    btn.style.background = '#222';
+    btn.style.color = '#00ff88';
+    map.getContainer().style.cursor = '';
+
+    const name = prompt('Geofence name:', 'Zone ' + (Object.keys(geofenceCircles).length + 1));
+    if (!name) return;
+    const radiusStr = prompt('Radius (nautical miles):', '10');
+    if (!radiusStr) return;
+    const radiusNm = parseFloat(radiusStr);
+    if (isNaN(radiusNm) || radiusNm <= 0) return;
+
+    fetch('/api/geofences', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name, lat: e.latlng.lat, lon: e.latlng.lng, radius_nm: radiusNm}),
+    }).then(r => r.json()).then(fence => {
+        if (fence.id) drawGeofence(fence);
+        refreshGeofenceList();
+    });
+});
+
+function drawGeofence(fence) {
+    if (geofenceCircles[fence.id]) map.removeLayer(geofenceCircles[fence.id]);
+    const radiusMeters = fence.radius_nm * 1852;
+    const circle = L.circle([fence.lat, fence.lon], {
+        radius: radiusMeters, color: '#ff8800', fillColor: '#ff8800',
+        fillOpacity: 0.08, weight: 1.5, dashArray: '6,4',
+    }).addTo(map);
+    circle.bindTooltip(fence.name, {permanent: true, direction: 'center', className: 'dark-tooltip'});
+    geofenceCircles[fence.id] = circle;
+}
+
+function refreshGeofenceList() {
+    fetch('/api/geofences').then(r => r.json()).then(data => {
+        const el = document.getElementById('geofence-list');
+        if (data.count === 0) { el.innerHTML = ''; return; }
+        el.innerHTML = data.geofences.map(f =>
+            `<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0;">
+                <span style="color:#ff8800;">${f.name}</span>
+                <span>${f.radius_nm}nm
+                    <a href="#" onclick="deleteGeofence(${f.id});return false;" style="color:#ff4444;margin-left:4px;">×</a>
+                </span>
+            </div>`
+        ).join('');
+        // Draw circles for any not already drawn
+        data.geofences.forEach(f => { if (!geofenceCircles[f.id]) drawGeofence(f); });
+    });
+}
+
+function deleteGeofence(id) {
+    fetch('/api/geofences/' + id, {method: 'DELETE'}).then(() => {
+        if (geofenceCircles[id]) { map.removeLayer(geofenceCircles[id]); delete geofenceCircles[id]; }
+        refreshGeofenceList();
+    });
+}
+
+// --- Browser notifications + audio alerts ---
+let notificationsEnabled = false;
+let audioEnabled = false;
+let lastEventId = 0;
+
+document.getElementById('notify-toggle').addEventListener('change', function() {
+    if (this.checked) {
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission().then(p => {
+                notificationsEnabled = (p === 'granted');
+                this.checked = notificationsEnabled;
+            });
+        } else {
+            notificationsEnabled = ('Notification' in window && Notification.permission === 'granted');
+            this.checked = notificationsEnabled;
+        }
+    } else {
+        notificationsEnabled = false;
+    }
+    saveState();
+});
+
+document.getElementById('audio-toggle').addEventListener('change', function() {
+    audioEnabled = this.checked;
+    saveState();
+});
+
+// Simple beep using Web Audio API
+function playAlertBeep() {
+    if (!audioEnabled) return;
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        osc.type = 'sine';
+        gain.gain.value = 0.3;
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.stop(ctx.currentTime + 0.4);
+    } catch(e) {}
+}
+
+function pollEvents() {
+    if (!notificationsEnabled && !audioEnabled) return;
+    fetch('/api/events?limit=5').then(r => r.json()).then(data => {
+        if (!data.events || data.events.length === 0) return;
+        // Use the first event's id as high-water mark
+        const latestId = data.events[0].id;
+        if (lastEventId === 0) { lastEventId = latestId; return; }  // First poll — just set baseline
+        if (latestId <= lastEventId) return;
+
+        // New events since last poll
+        const newEvents = data.events.filter(e => e.id > lastEventId);
+        lastEventId = latestId;
+
+        newEvents.forEach(evt => {
+            if (notificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
+                new Notification('adsb-decode: ' + evt.event_type, {
+                    body: evt.description,
+                    icon: '/static/icon.png',
+                    tag: 'adsb-' + evt.id,
+                });
+            }
+            playAlertBeep();
+        });
+    }).catch(() => {});
+}
+
+// Load geofences on startup
+refreshGeofenceList();
 
 // --- Panel toggle ---
 document.getElementById('panel-header').addEventListener('click', function() {
@@ -606,5 +760,7 @@ updateStats();
 setInterval(updateMap, 1000);
 setInterval(updateStats, 10000);
 setInterval(updateHeatmap, 15000);
+setInterval(pollEvents, 5000);
+pollEvents(); // Set baseline
 </script>
 {% endblock %}

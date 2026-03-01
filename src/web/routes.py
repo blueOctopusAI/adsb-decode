@@ -5,8 +5,12 @@ API endpoints (JSON):
   GET /api/aircraft/<icao>   Single aircraft detail + recent positions
   GET /api/positions         Recent positions (for map updates, 2s polling)
   GET /api/trails            Position trails per aircraft (for map polylines)
+  GET /api/heatmap           Position density data for heatmap layer
   GET /api/events            Recent events (military, emergency, anomaly)
   GET /api/stats             Database statistics + receiver info
+  GET /api/geofences         List configured geofences
+  POST /api/geofences        Add a geofence
+  DELETE /api/geofences/<id> Remove a geofence
 
 Page routes (HTML):
   GET /                      Map view (Leaflet.js)
@@ -25,6 +29,11 @@ from flask import Blueprint, Flask, g, jsonify, render_template, request
 # Module-level lookup cache: {icao: (result_dict, timestamp)}
 _lookup_cache: dict[str, tuple[dict, float]] = {}
 _LOOKUP_CACHE_TTL = 3600  # 1 hour
+
+# Module-level geofence store (in-memory, survives across requests)
+# List of dicts: {id, name, lat, lon, radius_nm, description}
+_geofences: list[dict] = []
+_geofence_next_id = 1
 
 from ..enrichment import AIRPORTS
 
@@ -254,6 +263,31 @@ def get_trails():
     return jsonify({"trails": trails})
 
 
+@api.route("/heatmap")
+def heatmap_data():
+    """Position density data for heatmap layer.
+
+    Returns lat/lon points from all positions in the time window,
+    sampled to a reasonable count for client-side rendering.
+    Query params:
+        minutes: Time window (default: 1440 = 24h, max: 10080 = 7 days)
+    """
+    db = _db()
+    minutes = max(1, min(request.args.get("minutes", 1440, type=int), 10080))
+    cutoff = time.time() - (minutes * 60)
+
+    # Sample up to 50k points — enough for density without killing the browser
+    rows = db.conn.execute("""
+        SELECT lat, lon, altitude_ft FROM positions
+        WHERE timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT 50000
+    """, (cutoff,)).fetchall()
+
+    points = [[r["lat"], r["lon"], r["altitude_ft"]] for r in rows]
+    return jsonify({"points": points, "count": len(points)})
+
+
 @api.route("/events")
 def list_events():
     """Recent events."""
@@ -289,6 +323,63 @@ def get_stats():
         s["capture_start"] = capture["start_time"]
 
     return jsonify(s)
+
+
+@api.route("/geofences", methods=["GET"])
+def list_geofences():
+    """List all configured geofences."""
+    return jsonify({"geofences": _geofences, "count": len(_geofences)})
+
+
+@api.route("/geofences", methods=["POST"])
+def add_geofence():
+    """Add a new geofence zone.
+
+    JSON body: {name, lat, lon, radius_nm, description?}
+    """
+    global _geofence_next_id
+    data = request.get_json(silent=True) or {}
+
+    name = data.get("name", "").strip()
+    lat = data.get("lat")
+    lon = data.get("lon")
+    radius_nm = data.get("radius_nm")
+
+    if not name or lat is None or lon is None or radius_nm is None:
+        return jsonify({"error": "name, lat, lon, radius_nm required"}), 400
+
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        radius_nm = float(radius_nm)
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat, lon, radius_nm must be numbers"}), 400
+
+    if radius_nm <= 0 or radius_nm > 500:
+        return jsonify({"error": "radius_nm must be 0-500"}), 400
+
+    fence = {
+        "id": _geofence_next_id,
+        "name": name,
+        "lat": lat,
+        "lon": lon,
+        "radius_nm": radius_nm,
+        "description": data.get("description", ""),
+    }
+    _geofences.append(fence)
+    _geofence_next_id += 1
+    return jsonify(fence), 201
+
+
+@api.route("/geofences/<int:fence_id>", methods=["DELETE"])
+def delete_geofence(fence_id: int):
+    """Remove a geofence by ID."""
+    global _geofences
+    before = len(_geofences)
+    _geofences = [f for f in _geofences if f["id"] != fence_id]
+    if len(_geofences) == before:
+        return jsonify({"error": "Geofence not found"}), 404
+    return jsonify({"deleted": fence_id})
 
 
 @api.route("/lookup/<icao>")

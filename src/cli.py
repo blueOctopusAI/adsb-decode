@@ -61,8 +61,9 @@ def decode(file: str, ref_lat: float | None, ref_lon: float | None):
 @click.option("--ref-lon", type=float, default=None, help="Receiver longitude")
 @click.option("--receiver", type=str, default="default", help="Receiver name")
 @click.option("--port", type=int, default=None, help="Launch web dashboard on this port")
+@click.option("--webhook", type=str, default=None, help="Webhook URL for event notifications")
 def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
-          ref_lon: float | None, receiver: str, port: int | None):
+          ref_lon: float | None, receiver: str, port: int | None, webhook: str | None):
     """Track aircraft from a capture file or live RTL-SDR.
 
     \b
@@ -74,6 +75,18 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
     if not file and not live:
         raise click.UsageError("Provide a FILE or use --live for RTL-SDR capture")
 
+    # Apply config defaults if flags not explicitly set
+    from .config import load_config
+    cfg = load_config()
+    if ref_lat is None and cfg["receiver"]["lat"] is not None:
+        ref_lat = cfg["receiver"]["lat"]
+    if ref_lon is None and cfg["receiver"]["lon"] is not None:
+        ref_lon = cfg["receiver"]["lon"]
+    if receiver == "default" and cfg["receiver"]["name"] != "default":
+        receiver = cfg["receiver"]["name"]
+    if webhook is None and cfg.get("webhook"):
+        webhook = cfg["webhook"]
+
     import os
     os.makedirs(Path(db_path).parent, exist_ok=True)
 
@@ -83,6 +96,14 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
     cap_id = db.start_capture(source=source, receiver_id=rid)
 
     filter_engine = FilterEngine()
+
+    # Webhook notifications
+    notifier = None
+    if webhook:
+        from .notifications import NotificationDispatcher, WebhookConfig
+        notifier = NotificationDispatcher([WebhookConfig(url=webhook)])
+        console.print(f"[bold green]Webhook[/] → {webhook}")
+
     tracker = Tracker(
         db=db, receiver_id=rid, capture_id=cap_id,
         ref_lat=ref_lat, ref_lon=ref_lon,
@@ -127,6 +148,10 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
                                 timestamp=event.timestamp,
                             )
                             console.print(f"  [bold red]EVENT:[/] {event.description}")
+                            if notifier:
+                                notifier.notify({"icao": event.icao, "event_type": event.event_type,
+                                                 "description": event.description, "lat": event.lat,
+                                                 "lon": event.lon, "altitude_ft": event.altitude_ft})
 
             # In live mode, print status every 10 seconds
             if live:
@@ -153,6 +178,10 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
                             timestamp=event.timestamp,
                         )
                         console.print(f"  [bold red]EVENT:[/] {event.description}")
+                        if notifier:
+                            notifier.notify({"icao": event.icao, "event_type": event.event_type,
+                                             "description": event.description, "lat": event.lat,
+                                             "lon": event.lon, "altitude_ft": event.altitude_ft})
 
                     last_print = now
                     tracker.prune_stale()
@@ -294,6 +323,99 @@ def serve(db_path: str, host: str, port: int, debug: bool):
     app = create_app(db_path=db_path)
     console.print(f"[bold green]adsb-decode dashboard[/] → http://{host}:{port}")
     app.run(host=host, port=port, debug=debug)
+
+
+@cli.command()
+def setup():
+    """Interactive setup wizard — detect dongle, test capture, save config."""
+    from .hardware import find_dongles, check_rtl_tools, test_capture
+    from .config import load_config, save_config
+
+    console.print("[bold green]adsb-decode setup wizard[/]\n")
+
+    # Step 1: Detect USB dongle
+    console.print("[bold]Step 1:[/] Scanning for RTL-SDR dongle...")
+    dongles = find_dongles()
+    if dongles:
+        for d in dongles:
+            console.print(f"  [green]✓[/] Found: {d['description']}")
+    else:
+        console.print("  [yellow]No RTL-SDR dongle detected.[/]")
+        console.print("  Make sure your dongle is plugged in.")
+        console.print("  Supported: RTL-SDR Blog v3/v4, generic RTL2832U")
+
+    # Step 2: Check drivers and tools
+    console.print("\n[bold]Step 2:[/] Checking drivers and tools...")
+    tools = check_rtl_tools()
+
+    import sys
+    if tools.get("librtlsdr"):
+        console.print("  [green]✓[/] librtlsdr installed")
+    else:
+        if sys.platform == "darwin":
+            console.print("  [red]✗[/] librtlsdr not found — install with: [cyan]brew install librtlsdr[/]")
+        else:
+            console.print("  [red]✗[/] librtlsdr not found — install with: [cyan]sudo apt install librtlsdr-dev[/]")
+
+    if tools.get("pyrtlsdr"):
+        console.print("  [green]✓[/] pyrtlsdr Python binding installed")
+    else:
+        console.print("  [red]✗[/] pyrtlsdr not found — install with: [cyan]pip install 'adsb-decode[rtlsdr]'[/]")
+
+    if tools.get("rtl_test"):
+        console.print("  [green]✓[/] rtl_test available")
+    if tools.get("rtl_adsb"):
+        console.print("  [green]✓[/] rtl_adsb available (fallback capture)")
+
+    # Step 3: Receiver configuration
+    console.print("\n[bold]Step 3:[/] Receiver configuration")
+    config = load_config()
+
+    name = click.prompt("  Receiver name", default=config["receiver"]["name"])
+    lat = click.prompt("  Receiver latitude", default=config["receiver"]["lat"] or "", show_default=False)
+    lon = click.prompt("  Receiver longitude", default=config["receiver"]["lon"] or "", show_default=False)
+
+    try:
+        lat = float(lat) if lat else None
+    except ValueError:
+        lat = None
+    try:
+        lon = float(lon) if lon else None
+    except ValueError:
+        lon = None
+
+    config["receiver"]["name"] = name
+    config["receiver"]["lat"] = lat
+    config["receiver"]["lon"] = lon
+
+    # Step 4: Dashboard port
+    port = click.prompt("  Dashboard port", default=config["dashboard"]["port"], type=int)
+    config["dashboard"]["port"] = port
+
+    # Step 5: Test capture
+    if dongles or tools.get("pyrtlsdr") or tools.get("rtl_adsb"):
+        if click.confirm("\n  Run a 5-second test capture?", default=True):
+            console.print("  Capturing for 5 seconds...")
+            result = test_capture(seconds=5)
+            if result["success"]:
+                fps = result["frames"] / result["duration_sec"]
+                console.print(
+                    f"  [green]✓[/] Captured {result['frames']} frames "
+                    f"({fps:.1f}/sec) via {result['method']}"
+                )
+            else:
+                console.print(f"  [red]✗[/] Capture failed: {result['error']}")
+
+    # Step 6: Save config
+    path = save_config(config)
+    console.print(f"\n[bold]Config saved:[/] {path}")
+
+    console.print("\n[bold green]Ready![/] Start tracking with:")
+    cmd = "adsb track --live"
+    if lat and lon:
+        cmd += f" --ref-lat {lat} --ref-lon {lon}"
+    cmd += f" --port {port}"
+    console.print(f"  [cyan]{cmd}[/]")
 
 
 def _print_aircraft_table(tracker: Tracker):
