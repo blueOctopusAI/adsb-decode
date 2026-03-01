@@ -8,6 +8,8 @@ pub mod cpr;
 pub mod crc;
 pub mod decode;
 pub mod demod;
+pub mod enrich;
+pub mod filter;
 pub mod frame;
 pub mod icao;
 pub mod tracker;
