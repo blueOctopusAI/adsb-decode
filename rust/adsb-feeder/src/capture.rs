@@ -3,8 +3,7 @@
 //! Input modes:
 //! - `FrameReader`:  Pre-demodulated hex frame strings (one per line)
 //! - `IQReader`:     Raw IQ samples from RTL-SDR (.iq files, interleaved uint8)
-//!
-//! Live RTL-SDR capture will be added when `rtlsdr_mt` integration is done.
+//! - `demodulate_stream`: Streaming IQ demod from any `Read` source (file, pipe, stdin)
 
 #![allow(dead_code)]
 
@@ -85,6 +84,85 @@ fn is_valid_hex(s: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming IQ Demodulator
+// ---------------------------------------------------------------------------
+
+/// Read as many bytes as possible from source, returning count read.
+/// Unlike `read_exact`, returns partial reads on EOF without error.
+fn read_fill<R: Read>(source: &mut R, buf: &mut [u8]) -> io::Result<usize> {
+    let mut total = 0;
+    while total < buf.len() {
+        match source.read(&mut buf[total..])? {
+            0 => break,
+            n => total += n,
+        }
+    }
+    Ok(total)
+}
+
+/// Demodulate a stream of raw IQ samples into ADS-B frames.
+///
+/// Reads interleaved uint8 IQ pairs from any `Read` source (file, pipe,
+/// stdin) in 1-second chunks, overlapping by `WINDOW_SIZE` samples to
+/// avoid missing frames at chunk boundaries. Each chunk goes through
+/// `iq_to_magnitude()` → `demodulate_buffer()`, and discovered frames
+/// are passed to the callback.
+///
+/// Works for both file-based (IQReader) and live streaming (rtl_sdr pipe).
+pub fn demodulate_stream<R: Read>(
+    source: &mut R,
+    sample_rate: u32,
+    noise_tracker: &mut NoiseFloorTracker,
+    callback: &mut dyn FnMut(RawFrame),
+) -> io::Result<()> {
+    let chunk_bytes = sample_rate as usize * 2; // 1 second of IQ data
+    let overlap_bytes = WINDOW_SIZE * 2;
+
+    let mut carry: Vec<u8> = Vec::new();
+    let mut sample_offset: u64 = 0;
+
+    loop {
+        // Build chunk: carry (overlap from previous) + fresh data
+        let fresh_needed = chunk_bytes - carry.len();
+        let mut fresh = vec![0u8; fresh_needed];
+        let bytes_read = read_fill(source, &mut fresh)?;
+        fresh.truncate(bytes_read);
+
+        let mut chunk = Vec::with_capacity(carry.len() + fresh.len());
+        chunk.extend_from_slice(&carry);
+        chunk.extend_from_slice(&fresh);
+
+        if chunk.len() < WINDOW_SIZE * 2 {
+            break;
+        }
+
+        let mag = demod::iq_to_magnitude(&chunk);
+        let chunk_time = sample_offset as f64 / sample_rate as f64;
+        let frames = demod::demodulate_buffer(&mag, chunk_time, noise_tracker);
+        for frame in frames {
+            callback(frame);
+        }
+
+        // Save last WINDOW_SIZE samples as overlap for next chunk
+        let chunk_samples = chunk.len() / 2;
+        if chunk.len() >= overlap_bytes {
+            carry = chunk[chunk.len() - overlap_bytes..].to_vec();
+        } else {
+            carry.clear();
+        }
+
+        // Advance sample offset by non-overlapping portion
+        sample_offset += (chunk_samples - WINDOW_SIZE) as u64;
+
+        if bytes_read == 0 || bytes_read < fresh_needed {
+            break; // EOF
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // IQ File Reader
 // ---------------------------------------------------------------------------
 
@@ -125,38 +203,16 @@ impl IQReader {
     /// Reads in chunks to manage memory. Each chunk overlaps the
     /// previous by WINDOW_SIZE samples to avoid missing frames.
     pub fn demodulate(&self) -> io::Result<Vec<RawFrame>> {
-        let file_size = self.file_size()? as usize;
-        let total_samples = file_size / 2;
-        let chunk_samples = self.sample_rate as usize; // 1 second per chunk
-
-        let mut all_frames = Vec::new();
-        let mut noise_tracker = NoiseFloorTracker::new();
-        let overlap = WINDOW_SIZE;
-        let mut offset = 0usize;
-
         let mut file = fs::File::open(&self.path)?;
+        let mut noise_tracker = NoiseFloorTracker::new();
+        let mut all_frames = Vec::new();
 
-        while offset < total_samples {
-            let byte_offset = offset * 2;
-            let byte_count = (chunk_samples * 2).min(file_size - byte_offset);
-
-            if byte_count < WINDOW_SIZE * 2 {
-                break;
-            }
-
-            let mut raw = vec![0u8; byte_count];
-            // Seek to position and read
-            use std::io::Seek;
-            file.seek(io::SeekFrom::Start(byte_offset as u64))?;
-            file.read_exact(&mut raw)?;
-
-            let mag = demod::iq_to_magnitude(&raw);
-            let chunk_time = offset as f64 / self.sample_rate as f64;
-            let frames = demod::demodulate_buffer(&mag, chunk_time, &mut noise_tracker);
-            all_frames.extend(frames);
-
-            offset += chunk_samples - overlap;
-        }
+        demodulate_stream(
+            &mut file,
+            self.sample_rate,
+            &mut noise_tracker,
+            &mut |frame| all_frames.push(frame),
+        )?;
 
         Ok(all_frames)
     }
@@ -224,5 +280,64 @@ mod tests {
         assert!(is_valid_hex("02E197C845AC82")); // 14 chars
         assert!(!is_valid_hex("8D4840")); // wrong length
         assert!(!is_valid_hex("ZZZZZZZZZZZZZZ")); // invalid chars
+    }
+
+    #[test]
+    fn test_demodulate_stream_empty() {
+        let mut source = io::Cursor::new(Vec::<u8>::new());
+        let mut noise_tracker = NoiseFloorTracker::new();
+        let mut frames = Vec::new();
+
+        demodulate_stream(&mut source, 2_000_000, &mut noise_tracker, &mut |f| {
+            frames.push(f);
+        })
+        .unwrap();
+
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_demodulate_stream_noise_only() {
+        // Random noise — no valid preambles, should produce no frames
+        let data: Vec<u8> = (0..4_000_000u32).map(|i| (i % 256) as u8).collect();
+        let mut source = io::Cursor::new(data);
+        let mut noise_tracker = NoiseFloorTracker::new();
+        let mut frames = Vec::new();
+
+        demodulate_stream(&mut source, 2_000_000, &mut noise_tracker, &mut |f| {
+            frames.push(f);
+        })
+        .unwrap();
+
+        // Patterned data shouldn't produce valid ADS-B frames
+        // (any "frames" found would fail CRC downstream)
+        // Just verify it doesn't panic or infinite-loop
+        assert!(frames.len() < 100); // sanity bound
+    }
+
+    #[test]
+    fn test_demodulate_stream_too_small() {
+        // Less than WINDOW_SIZE * 2 bytes — should gracefully return nothing
+        let data = vec![128u8; WINDOW_SIZE * 2 - 2];
+        let mut source = io::Cursor::new(data);
+        let mut noise_tracker = NoiseFloorTracker::new();
+        let mut frames = Vec::new();
+
+        demodulate_stream(&mut source, 2_000_000, &mut noise_tracker, &mut |f| {
+            frames.push(f);
+        })
+        .unwrap();
+
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_read_fill_partial() {
+        let data = vec![1u8, 2, 3, 4, 5];
+        let mut source = io::Cursor::new(data);
+        let mut buf = vec![0u8; 10]; // request more than available
+        let n = read_fill(&mut source, &mut buf).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], &[1, 2, 3, 4, 5]);
     }
 }

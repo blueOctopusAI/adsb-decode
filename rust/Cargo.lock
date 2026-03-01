@@ -23,6 +23,7 @@ name = "adsb-server"
 version = "0.1.0"
 dependencies = [
  "adsb-core",
+ "adsb-feeder",
  "async-trait",
  "axum",
  "clap",

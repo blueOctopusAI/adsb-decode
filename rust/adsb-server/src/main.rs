@@ -47,6 +47,10 @@ enum Commands {
         #[arg(long)]
         live: bool,
 
+        /// Use native IQ demodulation instead of rtl_adsb (pipe from rtl_sdr)
+        #[arg(long)]
+        native_demod: bool,
+
         /// SQLite database path
         #[arg(long, default_value = "data/adsb.db")]
         db_path: String,
@@ -232,6 +236,7 @@ async fn main() {
         Commands::Track {
             file,
             live,
+            native_demod,
             db_path,
             min_interval,
             port,
@@ -240,8 +245,16 @@ async fn main() {
                 eprintln!("Error: provide a FILE or use --live for RTL-SDR capture");
                 std::process::exit(1);
             }
+            if native_demod && !live {
+                eprintln!("Error: --native-demod requires --live");
+                std::process::exit(1);
+            }
             if live {
-                cmd_track_live(&db_path, min_interval, port).await;
+                if native_demod {
+                    cmd_track_live_native(&db_path, min_interval, port).await;
+                } else {
+                    cmd_track_live(&db_path, min_interval, port).await;
+                }
             } else {
                 cmd_track(file.unwrap(), &db_path, min_interval);
             }
@@ -590,6 +603,138 @@ async fn cmd_track_live(db_path: &str, min_interval: f64, port: Option<u16>) {
     database.flush();
     eprintln!(
         "\nStopped. {} frames, {} valid, {} aircraft",
+        t.total_frames, t.valid_frames, t.aircraft.len()
+    );
+}
+
+async fn cmd_track_live_native(db_path: &str, min_interval: f64, port: Option<u16>) {
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, RwLock};
+
+    let mut database = db::Database::open(db_path).unwrap_or_else(|e| {
+        eprintln!("Error opening database {db_path}: {e}");
+        std::process::exit(1);
+    });
+
+    let source = "rtl_sdr:native_demod";
+    let capture_id = database.start_capture(source, None);
+    database.set_autocommit(false);
+
+    let tracker = Arc::new(RwLock::new(Tracker::new(
+        None,
+        Some(capture_id),
+        None,
+        None,
+        min_interval,
+    )));
+    let mut icao_cache = IcaoCache::new(60.0);
+
+    // Start web server if --port given
+    if let Some(p) = port {
+        let web_db: Arc<dyn db::AdsbDatabase> = Arc::new(db::SqliteDb::new(db_path.to_string()));
+        let state = Arc::new(web::AppState {
+            db: web_db,
+            tracker: Some(tracker.clone()),
+            geofences: RwLock::new(Vec::new()),
+            geofence_next_id: RwLock::new(1),
+        });
+        let app = web::build_router(state);
+        let addr = format!("0.0.0.0:{p}");
+        eprintln!("Dashboard → http://127.0.0.1:{p}");
+        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+    }
+
+    // Spawn rtl_sdr — outputs raw interleaved uint8 IQ pairs to stdout
+    eprintln!("Starting rtl_sdr (native demod)...");
+    let mut child = Command::new("rtl_sdr")
+        .args(["-f", "1090000000", "-s", "2000000", "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to start rtl_sdr: {e}");
+            eprintln!("Make sure rtl-sdr tools are installed (brew install librtlsdr)");
+            std::process::exit(1);
+        });
+
+    let mut stdout = child.stdout.take().unwrap();
+    let mut noise_tracker = adsb_core::demod::NoiseFloorTracker::new();
+    let sample_rate = 2_000_000u32;
+
+    eprintln!("Live tracking started (native demod) — Ctrl+C to stop\n");
+
+    let mut last_print = std::time::Instant::now();
+    let mut last_flush = std::time::Instant::now();
+    let tracker_ref = tracker.clone();
+
+    let result = adsb_feeder::capture::demodulate_stream(
+        &mut stdout,
+        sample_rate,
+        &mut noise_tracker,
+        &mut |raw_frame| {
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+
+            let frame = match frame::parse_frame(
+                &raw_frame.hex_str,
+                now_ts,
+                Some(raw_frame.signal_level as f64),
+                true,
+                &mut icao_cache,
+            ) {
+                Some(f) => f,
+                None => return,
+            };
+
+            let events = {
+                let mut t = tracker_ref.write().unwrap();
+                let (_msg, events) = t.update(&frame);
+                events
+            };
+
+            database.apply_events(&events);
+
+            if last_print.elapsed().as_secs_f64() > 10.0 {
+                let mut t = tracker_ref.write().unwrap();
+                let active = t.get_active(now_ts);
+                eprintln!(
+                    "  {} frames, {} valid, {} active aircraft, {} positions [native]",
+                    t.total_frames, t.valid_frames, active.len(), t.position_decodes
+                );
+                t.prune_stale(now_ts);
+                last_print = std::time::Instant::now();
+            }
+
+            if last_flush.elapsed().as_secs_f64() > 5.0 {
+                database.flush();
+                last_flush = std::time::Instant::now();
+            }
+        },
+    );
+
+    if let Err(e) = result {
+        eprintln!("Stream error: {e}");
+    }
+
+    // Cleanup
+    let _ = child.kill();
+    let _ = child.wait();
+    database.flush();
+    let t = tracker.read().unwrap();
+    database.end_capture(
+        capture_id,
+        t.total_frames,
+        t.valid_frames,
+        t.aircraft.len() as u64,
+    );
+    database.flush();
+    eprintln!(
+        "\nStopped. {} frames, {} valid, {} aircraft [native demod]",
         t.total_frames, t.valid_frames, t.aircraft.len()
     );
 }

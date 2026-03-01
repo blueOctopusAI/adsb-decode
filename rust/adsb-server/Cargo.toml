@@ -13,6 +13,7 @@ timescaledb = ["dep:sqlx"]
 
 [dependencies]
 adsb-core = { path = "../adsb-core" }
+adsb-feeder = { path = "../adsb-feeder" }
 async-trait = "0.1"
 axum = "0.7"
 clap = { version = "4", features = ["derive"] }
