@@ -2,7 +2,13 @@
 
 ADS-B radio protocol decoder — from raw 1090 MHz radio signals to identified aircraft on a map.
 
-Built from scratch in Python. No dump1090 dependency, no borrowed decoders. Every byte of the protocol is decoded and documented, from the preamble pulse pattern to the Compact Position Reporting trigonometry.
+Built from scratch. No dump1090 dependency, no borrowed decoders. Every byte of the protocol is decoded and documented, from the preamble pulse pattern to the Compact Position Reporting trigonometry.
+
+Two implementations:
+- **Python** — the original reference implementation (22 modules, 394 tests, ~7,300 lines)
+- **Rust** — the primary/active implementation (3-crate workspace, 199 tests, ~10,700 lines)
+
+Both decode the same protocol identically. Cross-validated: 296-frame capture file produces 100% matching output between Python and Rust.
 
 ## What It Does
 
@@ -18,23 +24,22 @@ Plugs into an RTL-SDR USB dongle, tunes to 1090 MHz, and decodes ADS-B broadcast
 | No export | CSV, JSON, KML (Google Earth flight paths), GeoJSON |
 | Single receiver | Multi-receiver network (hub-and-spoke, feeder agents) |
 | No enrichment | Aircraft type classification, 3,642 airports, operator lookup |
-| C, hard to modify | Python, readable, documented |
-| "Just works" | "Decoded blind, explained every step" |
+| C, hard to modify | Readable, documented, tested |
 
 ## The Signal Chain
 
 ```
 RTL-SDR Dongle (1090 MHz)
-    → Raw IQ Samples (capture.py)
-    → Magnitude Signal (demodulator.py)
-    → Mode S Frames (frame_parser.py + crc.py)
-    → Typed Messages (decoder.py + cpr.py)
-    → Aircraft State (tracker.py + icao.py)
-    → SQLite Database (database.py)
-    → Web Map + CLI (web/ + cli.py)
+    → Raw IQ Samples / rtl_adsb hex frames
+    → Magnitude Signal (demod)
+    → Mode S Frames (frame parser + CRC-24)
+    → Typed Messages (decoder + CPR)
+    → Aircraft State (tracker + ICAO lookup)
+    → SQLite Database
+    → Web Map + CLI
 ```
 
-Each stage has a dedicated module with full documentation. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive — from the physics of pulse position modulation to the trigonometry of Compact Position Reporting.
+Each stage has a dedicated module with full documentation. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
 
 ## Real Demo
 
@@ -59,31 +64,41 @@ Summary:
   Aircraft seen:    41
 ```
 
-5 aircraft fully resolved with N-number registrations. 41 total ICAO addresses heard in under a minute. Range estimated at 80-120 nm from aircraft altitudes and distances.
+5 aircraft fully resolved with N-number registrations. 41 total ICAO addresses heard in under a minute.
 
-## Quick Start
+## Quick Start (Rust)
 
 ```bash
-# Install
-pip install -e ".[dev]"
-
-# Hardware setup (macOS)
-bash scripts/setup-rtlsdr.sh
+# Build
+cd rust
+cargo build --release
 
 # Decode a capture file
-adsb decode data/live_capture.txt
+cargo run --bin adsb -- decode data/live_capture.txt
 
 # Track from file with persistence
-adsb track data/live_capture.txt --db-path data/flights.db
+cargo run --bin adsb -- track data/live_capture.txt --db-path data/flights.db
 
-# Live tracking with web dashboard
-adsb track --live --port 8080
+# Live tracking with web dashboard (RTL-SDR dongle required)
+cargo run --bin adsb -- track --live --port 8080
+
+# Serve dashboard from existing database (no dongle)
+cargo run --bin adsb -- serve --db-path data/adsb.db --port 8080
 
 # Database statistics
-adsb stats --db-path data/flights.db
+cargo run --bin adsb -- stats --db-path data/flights.db
 
-# Export flight paths to Google Earth
-adsb export --format kml -o flights.kml
+# Export flight paths
+cargo run --bin adsb -- export --db-path data/flights.db --format json
+```
+
+### Quick Start (Python reference)
+
+```bash
+pip install -e ".[dev]"
+bash scripts/setup-rtlsdr.sh
+adsb decode data/live_capture.txt
+adsb track --live --port 8080
 ```
 
 ## Hardware
@@ -103,19 +118,19 @@ This isn't just a radio scanner. It's an intelligence tool.
 - **Circling/loitering detection** — Cumulative heading change analysis over 5-minute windows. Catches surveillance, search patterns, training flights.
 - **Holding pattern detection** — Stable altitude + reciprocal headings identified via heading histogram analysis.
 - **Proximity alerts** — Flags when two aircraft are within configurable distance (default 5nm horizontal, 1,000 ft vertical).
-- **Unusual altitude** — Fast aircraft (>250 kts) at low altitude (< 3,000 ft) far from airports.
+- **Unusual altitude** — Fast aircraft (>200 kts) at low altitude (<3,000 ft) far from airports.
 - **Geofence alerts** — Configure a lat/lon/radius zone and get notified when aircraft enter it.
 - **Aircraft type enrichment** — Speed/altitude profile classifies aircraft as jet, prop, turboprop, helicopter, military, or cargo. Airline operator lookup from callsign prefix.
 - **Airport awareness** — 3,642 US airports bundled. Nearest airport lookup, flight phase classification (approaching, departing, overflying).
 - **Historical queries** — SQLite database stores every position report. Query builder with preset and custom filters.
-- **Tiered data retention** — Ingest-side downsampling (2s), tiered historical thinning (30s/60s buckets), phantom aircraft pruning, auto-VACUUM. Sustainable for long-running deployments.
+- **CRC error correction** — 1-2 bit error correction via syndrome table lookup. Recovers corrupted frames that would otherwise be dropped.
 
 ## Web Dashboard
 
 Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 
 - **Live map** — Aircraft silhouette icons (jet/prop/turboprop/helicopter/military) with heading rotation, altitude-colored trail lines (green→yellow→red), stats overlay, altitude legend
-- **Trail duration slider** — 5 minutes to 24 hours. Controls trail visibility AND which aircraft appear on the map/list. Stale aircraft auto-removed.
+- **Trail duration slider** — 5 minutes to 24 hours. Controls trail visibility AND which aircraft appear on the map/list.
 - **Aircraft detail** — Split-screen view. Left: captured trail map, events, position history. Right: external intel from hexdb.io (manufacturer, type, owner), link cards to ADSBExchange/Planespotters/FlightAware/FlightRadar24/FAA Registry/OpenSky, altitude profile chart.
 - **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links.
 - **Heatmap** — Position density visualization toggle
@@ -125,7 +140,6 @@ Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 - **Historical replay** — Time slider with play/pause, adjustable speed (1x–10min)
 - **Receiver management** — Connected feeders with coverage circles
 - **Table view** — Sortable aircraft list with detail pages
-- **State persistence** — All checkbox states, map position, trail duration saved to localStorage across page navigation
 
 ## Multi-Receiver Network
 
@@ -135,14 +149,13 @@ Hub-and-spoke architecture for distributed coverage:
 [Pi + Dongle] --HTTP POST--> [Central Server] <--Browser-- [Dashboard]
 [Pi + Dongle] --HTTP POST-->      ↑
 [Mac + Dongle] --HTTP POST-->     |
-                            Flask API + SQLite
+                            Axum API + SQLite
 ```
 
-- **Feeder agent** (`adsb feeder`) runs on each receiver node
+- **Feeder agent** (`adsb-feeder` binary) runs on each receiver node
 - Bearer token authentication for frame ingestion
 - Heartbeat monitoring with online/offline status
 - ~$60/node (Pi + dongle + antenna)
-- Production deployment: Caddy + Gunicorn + systemd
 
 ## Why This Exists
 
@@ -154,6 +167,47 @@ Two reasons:
 
 ## Project Structure
 
+### Rust (primary)
+
+```
+rust/
+├── Cargo.toml                # Workspace root
+├── adsb-core/                # Library: pure decode + tracking (no async, no I/O)
+│   └── src/
+│       ├── lib.rs            # Module exports
+│       ├── types.rs          # Shared types, hex encode/decode, Icao type
+│       ├── crc.rs            # CRC-24 LUT, syndrome tables, 1-2 bit error correction
+│       ├── frame.rs          # ModeFrame, parse_frame, IcaoCache
+│       ├── decode.rs         # Identification, position, velocity, altitude, squawk
+│       ├── cpr.rs            # CPR global/local decode, NL table
+│       ├── demod.rs          # IQ→magnitude LUT, preamble, PPM bit recovery
+│       ├── tracker.rs        # AircraftState, CPR pairing, stale pruning, TrackEvent
+│       ├── filter.rs         # Event detection (military, emergency, circling, geofence, unusual alt)
+│       ├── enrich.rs         # Aircraft classification, airline lookup, 3,642 airports
+│       ├── icao.rs           # Country lookup, military detect, N-number conversion
+│       ├── config.rs         # YAML config load/save
+│       └── airports.csv      # OurAirports US airport database (embedded at compile time)
+│
+├── adsb-feeder/              # Binary: edge device (Pi + RTL-SDR)
+│   └── src/
+│       ├── main.rs           # Capture → decode → batch POST
+│       └── capture.rs        # FrameReader, IQReader, LiveDemodCapture
+│
+├── adsb-server/              # Binary: web server + CLI + database
+│   ├── src/
+│   │   ├── main.rs           # CLI dispatch (decode, track, stats, history, export, serve, setup)
+│   │   ├── db.rs             # SQLite database (6 tables, WAL mode, retention, downsample)
+│   │   ├── db_pg.rs          # TimescaleDB backend (behind feature flag)
+│   │   └── web/
+│   │       ├── mod.rs        # Axum app, shared state, CORS
+│   │       ├── routes.rs     # REST API endpoints
+│   │       ├── pages.rs      # HTML page handlers
+│   │       └── ingest.rs     # Multi-receiver ingest + heartbeat
+│   └── templates/            # 8 HTML pages (map, table, detail, events, query, replay, receivers, stats)
+```
+
+### Python (reference)
+
 ```
 src/
 ├── capture.py       # IQ file reader, hex frame reader, native demod + fallback live capture
@@ -163,24 +217,30 @@ src/
 ├── decoder.py       # ModeFrame → typed messages (identification, position, velocity)
 ├── cpr.py           # Compact Position Reporting — global + local decode
 ├── icao.py          # Country lookup, military detection, N-number conversion
-├── tracker.py       # Per-aircraft state machine with CPR frame pairing, ingest downsampling
+├── tracker.py       # Per-aircraft state machine with CPR frame pairing
 ├── database.py      # SQLite with WAL mode, multi-receiver schema, tiered retention
 ├── filters.py       # Military, emergency, circling, holding, proximity, unusual altitude, geofence
 ├── enrichment.py    # Aircraft type classification, operator lookup, 3,642 airports
-├── notifications.py # Webhook dispatch for events (configurable URL + event type filter)
+├── notifications.py # Webhook dispatch for events
 ├── config.py        # Config file management (~/.adsb-decode/config.yaml)
-├── hardware.py      # RTL-SDR dongle detection, driver checks, test capture
+├── hardware.py      # RTL-SDR dongle detection, driver checks
 ├── exporters.py     # CSV, JSON, KML (Google Earth), GeoJSON
-├── feeder.py        # Remote receiver agent — captures + forwards to central server
-├── cli.py           # Click CLI — setup, decode, track, stats, history, export, serve
+├── feeder.py        # Remote receiver agent
+├── cli.py           # Click CLI
 └── web/
     ├── app.py       # Flask app factory
     ├── ingest.py    # Frame ingestion API for remote feeders
-    ├── routes.py    # 16 REST API endpoints + 9 page routes (dual-path: memory or DB)
-    └── templates/   # Map, table, detail, events, query, replay, receivers, stats
+    ├── routes.py    # REST API + page routes
+    └── templates/   # Jinja2 templates (9 pages)
 ```
 
-**394 tests** covering every module. 22 Python modules, 9 HTML templates, ~7,300 lines. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
+**Rust:** 199 tests, ~10,700 lines across 3 crates. **Python:** 394 tests, ~7,300 lines across 22 modules. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
+
+## Future
+
+- **Native IQ demodulation in Rust** — The `demod.rs` module exists with magnitude LUT, preamble detection, and PPM bit recovery. Currently live capture uses `rtl_adsb` subprocess for hex frame input. Wiring the native demod into the live capture path would eliminate the external dependency.
+- **TimescaleDB production backend** — Implemented behind a feature flag (`db_pg.rs`). Includes hypertables, compression policies, retention policies, and continuous aggregates. Requires a PostgreSQL instance to activate.
+- **Cross-compiled Pi binaries** — GitHub Actions CI configured for aarch64 (Pi 4/5) and armv7 (Pi 3) targets via `cross`. Release binaries not yet published.
 
 ## License
 

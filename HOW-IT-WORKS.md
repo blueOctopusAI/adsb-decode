@@ -2,7 +2,7 @@
 
 ## The Signal Chain
 
-This document traces an ADS-B message from the antenna to the screen. Every stage corresponds to a module in `src/`.
+This document traces an ADS-B message from the antenna to the screen. Each stage corresponds to modules in both the Rust (`rust/adsb-core/src/`) and Python (`src/`) implementations. The protocol-level details are identical — only the implementation language differs.
 
 ---
 
@@ -16,7 +16,7 @@ Messages are either **56 bits** (short, Mode S surveillance) or **112 bits** (lo
 
 ---
 
-## Stage 1: Capture (`capture.py`)
+## Stage 1: Capture
 
 The RTL-SDR dongle is a software-defined radio that samples the 1090 MHz band and produces **IQ (In-phase/Quadrature) samples** — pairs of 8-bit unsigned integers representing the signal's amplitude and phase.
 
@@ -26,13 +26,22 @@ The RTL-SDR dongle is a software-defined radio that samples the 1090 MHz band an
 
 We also support pre-demodulated frame input — hex strings from tools like `rtl_adsb` or `dump1090 --raw` — for testing without raw IQ processing.
 
-**Files:** `capture.py` provides `IQReader` (raw samples), `FrameReader` (hex frames), and `LiveCapture` (real-time from dongle). `LiveCapture` uses `pyrtlsdr` to read raw IQ bytes directly from the USB dongle and pipes them through our `demodulator.py` — no external demodulation tools in the signal path. An `rtl_adsb` fallback exists only for systems without `pyrtlsdr` installed.
+**Current live capture:** The Rust implementation uses `rtl_adsb` subprocess for hex frame input. The Python implementation has native IQ demodulation via `pyrtlsdr` (reading raw IQ bytes directly from the USB dongle and piping through our own demodulator). Both also support file-based input (hex frame files and raw IQ files).
+
+| | Rust | Python |
+|---|---|---|
+| Hex frame files | `capture.rs` FrameReader | `capture.py` FrameReader |
+| Raw IQ files | `capture.rs` IQReader | `capture.py` IQReader |
+| Live capture | `main.rs` spawns `rtl_adsb` | `capture.py` LiveDemodCapture (pyrtlsdr) |
+| Demod module | `demod.rs` (implemented, not wired to live) | `demodulator.py` (active in live path) |
 
 ---
 
-## Stage 2: Demodulation (`demodulator.py`)
+## Stage 2: Demodulation
 
 Raw IQ samples must be converted to magnitude and searched for ADS-B messages.
+
+**Modules:** Rust `demod.rs` / Python `demodulator.py`
 
 ### IQ to Magnitude
 
@@ -41,7 +50,7 @@ For each sample pair (I, Q), compute magnitude:
 magnitude = sqrt(I² + Q²)
 ```
 
-In practice we use `I² + Q²` (squared magnitude) to avoid the sqrt — relative comparisons still work.
+In practice we use `I² + Q²` (squared magnitude) to avoid the sqrt — relative comparisons still work. The Rust implementation uses a compile-time `const [[f32; 256]; 256]` lookup table for magnitude values.
 
 ### Preamble Detection
 
@@ -63,7 +72,9 @@ This gives us a raw bitstream of 56 or 112 bits.
 
 ---
 
-## Stage 3: Frame Parsing (`frame_parser.py`, `crc.py`)
+## Stage 3: Frame Parsing + CRC
+
+**Modules:** Rust `frame.rs` + `crc.rs` / Python `frame_parser.py` + `crc.py`
 
 ### CRC-24 Validation
 
@@ -77,6 +88,12 @@ Hex: 0xFFF409
 For DF17 (ADS-B) messages, the last 24 bits are pure CRC — valid messages produce remainder 0x000000.
 
 For DF11 (all-call) messages, the last 24 bits are XORed with the ICAO address — we recover the address by XORing the CRC remainder with the known polynomial result.
+
+### CRC Error Correction
+
+Both implementations include syndrome-table-based error correction for 1-2 bit errors. Pre-built lookup tables map CRC syndromes (the non-zero remainder of a corrupted message) to the bit position(s) that are flipped. Safety: never corrects bits 0-4 (the DF field) to avoid turning one message type into another.
+
+The Rust CRC LUT is built at compile time via `const fn build_crc_table()`. Syndrome tables use `LazyLock<HashMap<u32, Vec<usize>>>` initialized on first access.
 
 ### Downlink Format Classification
 
@@ -94,11 +111,13 @@ The first 5 bits of every frame encode the **Downlink Format (DF)**:
 | 20 | 112 | Comm-B altitude reply | Altitude + BDS data |
 | 21 | 112 | Comm-B identity reply | Squawk + BDS data |
 
-**Output:** `ModeFrame` dataclass with DF, ICAO address, raw message bytes, timestamp, signal level.
+**Output:** `ModeFrame` struct with DF, ICAO address (`[u8; 3]`), raw message bytes, timestamp, signal level.
 
 ---
 
-## Stage 4: Decoding (`decoder.py`, `cpr.py`)
+## Stage 4: Decoding
+
+**Modules:** Rust `decode.rs` + `cpr.rs` / Python `decoder.py` + `cpr.py`
 
 ### DF17 Extended Squitter — ADS-B Messages
 
@@ -143,11 +162,13 @@ The 13-bit Identity field encodes a 4-digit octal squawk code using Gillham codi
 
 The 13-bit Altitude Code uses either:
 - **25-ft mode**: M-bit = 0, Q-bit = 1 → altitude = (code × 25) - 1000
-- **100-ft mode**: M-bit = 0, Q-bit = 0 → Gillham gray code
+- **100-ft mode**: M-bit = 0, Q-bit = 0 → Gillham gray code (interleaved bit extraction → octal digit construction → dual gray code transformation → altitude in 100-ft increments)
 
 ---
 
-## Stage 4a: CPR Decoding (`cpr.py`)
+## Stage 4a: CPR Decoding
+
+**Modules:** Rust `cpr.rs` / Python `cpr.py`
 
 CPR is the trickiest part of ADS-B. It compresses latitude and longitude into 17-bit values using a zone system.
 
@@ -193,9 +214,11 @@ If we have a known reference position (receiver location or last decoded positio
 
 ---
 
-## Stage 5: Tracking (`tracker.py`, `icao.py`)
+## Stage 5: Tracking
 
-### ICAO Address Resolution (`icao.py`)
+**Modules:** Rust `tracker.rs` + `icao.rs` / Python `tracker.py` + `icao.py`
+
+### ICAO Address Resolution
 
 Every aircraft has a unique 24-bit ICAO address assigned by its country of registration:
 
@@ -203,7 +226,7 @@ Every aircraft has a unique 24-bit ICAO address assigned by its country of regis
 - **Military blocks**: Some address ranges are reserved for military aircraft
 - **N-number algorithm**: US civil aircraft addresses (0xA00001-0xADF7C7) can be converted back to the N-number registration using a base-conversion algorithm
 
-### State Machine (`tracker.py`)
+### State Machine
 
 Each aircraft (by ICAO address) maintains a state object:
 - Current position (lat, lon, altitude)
@@ -211,52 +234,53 @@ Each aircraft (by ICAO address) maintains a state object:
 - Callsign and squawk
 - CPR frame buffer (last even and odd frames for position decoding)
 - Last update timestamp
-- Signal history
+- Heading history (for circling/holding detection)
 
-The tracker:
-1. Receives decoded messages from the decoder
-2. Updates the appropriate aircraft state
-3. Pairs even/odd CPR frames for position calculation
-4. Writes updates to the database
-5. Runs filters for anomaly detection
+The tracker produces `TrackEvent` enum outputs:
+- `NewAircraft` — first time seeing this ICAO address
+- `AircraftUpdate` — subsequent message from known aircraft
+- `PositionUpdate` — new decoded position
+- `SightingUpdate` — callsign/squawk/altitude change
+
+This separates pure decode/track logic from I/O — the database layer consumes events.
 
 ---
 
-## Stage 6: Persistence (`database.py`)
+## Stage 6: Persistence
+
+**Modules:** Rust `db.rs` / Python `database.py`
 
 SQLite database with WAL (Write-Ahead Logging) mode for concurrent read/write. Schema:
 
 - **receivers**: Registered sensor nodes. Each receiver has a name, lat/lon, altitude, and description. Designed for distributed deployment — multiple receivers feeding a single database.
-- **aircraft**: One row per unique ICAO address seen. Accumulates country, registration, military flag.
-- **sightings**: One row per capture session per aircraft. Tracks callsign, squawk, min/max altitude, signal strength.
-- **positions**: Time-series position data. Lat, lon, altitude, speed, heading, vertical rate. Tagged with `receiver_id` — which sensor heard this frame.
+- **aircraft**: One row per unique ICAO address seen. Accumulates country, registration, military flag (sticky via MAX — once set to true, never reverts).
+- **sightings**: One row per capture session per aircraft. Tracks callsign, squawk, min/max altitude, message count.
+- **positions**: Time-series position data. Lat, lon, altitude, speed, heading, vertical rate. Tagged with `receiver_id`.
 - **captures**: Metadata per capture session. Source file, start/end time, frame counts. Tagged with `receiver_id`.
-- **events**: Anomalies detected by filters — emergency squawk, rapid descent, military aircraft, geofence breach.
-
-### Multi-Receiver Architecture
-
-The schema is receiver-aware from day one. Every position report and capture session records which receiver heard it. This enables:
-
-- **Coverage mapping**: Which receivers see which aircraft? Where are the terrain shadows?
-- **Signal comparison**: Same aircraft heard by multiple receivers at different signal strengths — crude triangulation.
-- **MLAT readiness**: With 3+ receivers and precise timestamps, time-difference-of-arrival (TDOA) can independently verify or compute aircraft positions — including aircraft that broadcast Mode S but not ADS-B.
-- **Reliability**: Receivers operate independently. One goes down, the network keeps collecting.
-
-A single-receiver deployment works identically — it just has one row in the receivers table. Adding receivers is adding data sources, not refactoring the schema.
+- **events**: Anomalies detected by filters — emergency squawk, military, circling, unusual altitude, geofence.
 
 ### Data Retention
 
-Left unchecked, position data grows ~6.9M rows/day (100 aircraft × 1 position/2s × 86,400s). The system implements tiered retention:
+Both implementations have retention/pruning functions:
 
-- **Ingest downsampling**: Tracker skips DB writes if the same aircraft had a position stored within `min_position_interval` seconds (default 2s). In-memory state updates at full rate for real-time map display and pattern detection.
-- **Tiered thinning**: Positions older than 24h are thinned to one per 30-second bucket. Positions older than 7 days are thinned to one per 60-second bucket. Positions older than 30 days are deleted entirely.
-- **Phantom aircraft pruning**: CRC-residual ICAO extraction in DF5/DF21 frames creates millions of fake aircraft records with no positions. `prune_phantom_aircraft()` deletes orphaned aircraft/sightings/events.
-- **VACUUM**: After pruning, SQLite VACUUM reclaims disk space (DELETE frees logical space but doesn't shrink the file).
-- **Schedule**: Pruning runs every 10 minutes during live tracking. VACUUM runs only when rows were actually cleaned.
+- **`prune_positions(max_age_hours)`** — deletes old positions
+- **`prune_events(max_age_hours)`** — deletes old events
+- **`downsample_positions(older_than_hours, keep_interval_sec)`** — bucket-based thinning (keeps one position per bucket per aircraft)
+- **`prune_phantom_aircraft(min_age_hours)`** — removes aircraft with no positions (CRC-residual extraction artifacts)
+
+The Python implementation runs these automatically every 10 minutes during live tracking with tiered policies (24h→30s, 7d→60s, 30d→delete). The Rust implementation has the functions but does not yet schedule them automatically.
+
+### Database Trait (Rust)
+
+The Rust implementation defines an `AdsbDatabase` async trait with 13 methods, enabling backend swapping:
+- **`SqliteDb`** — stateless wrapper, opens fresh connections per request (used by web server)
+- **`TimescaleDb`** — PostgreSQL with hypertables, compression (>7d), retention (90d positions, 365d events), continuous aggregates (30s + 5m). Behind `timescaledb` feature flag. Not currently in use.
 
 ---
 
-## Stage 7: Intelligence (`filters.py`, `enrichment.py`)
+## Stage 7: Intelligence
+
+**Modules:** Rust `filter.rs` + `enrich.rs` / Python `filters.py` + `enrichment.py`
 
 What makes this more than a radio scanner:
 
@@ -267,57 +291,60 @@ What makes this more than a radio scanner:
 - **Circling/loitering**: Cumulative heading change >360° within 5 minutes, handles wraparound
 - **Holding patterns**: Stable altitude (±500 ft) + reciprocal headings (180°±30°) detected via 10° heading bins
 - **Proximity alerts**: Two aircraft within configurable distance (default 5nm horizontal, 1,000 ft vertical). Sorted pair key prevents duplicate alerts.
-- **Unusual altitude**: Fast aircraft (>250 kts) below 3,000 ft with no airport within 15nm
+- **Unusual altitude**: Fast aircraft (>200 kts) below 3,000 ft with no airport within 15nm
 - **Geofence alerts**: Aircraft entering a configured lat/lon/radius zone
-- **Aircraft type enrichment**: Speed/altitude profile classification (jet, prop, turboprop, helicopter, military, cargo). Airline ICAO prefix → operator name lookup.
-- **Airport awareness**: 3,642 US airports from OurAirports dataset. Nearest airport lookup, flight phase classification (approaching, departing, overflying).
+- **Aircraft type enrichment**: Speed/altitude profile classification (jet, prop, turboprop, helicopter, military, cargo). Airline ICAO prefix → operator name lookup (26 carriers).
+- **Airport awareness**: 3,642 US airports from OurAirports dataset, embedded at compile time. Nearest airport lookup, flight phase classification (approaching, departing, overflying).
+
+All filters use `emit()` deduplication to prevent repeated alerts for the same aircraft.
 
 ---
 
-## Stage 8: Display (`web/`, `cli.py`, `exporters.py`)
+## Stage 8: Display
 
-### Web Dashboard (`web/`)
-- Flask app with Leaflet.js map (dark CARTO tiles)
-- Aircraft icons with heading rotation, color-coded (green=civilian, red=military)
-- Altitude-colored trail lines (green→yellow→red gradient, fading opacity for older segments)
-- Click-to-detail popups with callsign, registration, country, altitude, speed, heading, vertical rate
+### Web Dashboard
+
+**Modules:** Rust `web/` (axum) / Python `web/` (Flask)
+
+Both implementations serve the same dashboard functionality:
+- Leaflet.js map with dark CARTO tiles
+- Aircraft silhouette icons (jet/prop/turboprop/helicopter/military) with heading rotation
+- Altitude-colored trail lines (green→yellow→red gradient)
+- Click-to-detail popups
 - Stats overlay: aircraft count, positions, events, uptime
-- Altitude legend (color bar with labeled scale 0–40,000 ft)
-- Heatmap layer toggle (Leaflet.heat plugin for position density)
-- Switchable map styles: Dark, Satellite (Esri), Topo, Streets (OSM), Dark Matter, Voyager (CARTO)
-- Airport overlay: 3,642 US airports with Major/Medium/Small toggles, viewport-filtered rendering. Click for popup with elevation, coords, AirNav + SkyVector links.
-- Dynamic map centering from receiver location via `/api/stats`
-- Events dashboard with type filter buttons (military, emergency, anomaly)
-- Query builder with preset filters (military, low altitude, fast, recent) and custom parameters
-- Historical replay with time slider, play/pause, adjustable speed (1x–60x)
+- Heatmap layer toggle
+- 6 switchable map styles: Dark, Satellite, Topo, Streets, Dark Matter, Voyager
+- Airport overlay: 3,642 US airports with Major/Medium/Small toggles
+- Events dashboard with type filter buttons
+- Query builder with preset filters and custom parameters
+- Historical replay with time slider, play/pause, adjustable speed
 - Receiver management page with coverage circles
-- Table view with sort/filter
-- Single aircraft detail page with position history
-- 500ms polling for real-time updates (sub-second when live tracker attached)
-- **Dual-path position serving**: When a live tracker is attached (local dongle mode), `/api/positions` reads from in-memory aircraft state for sub-second latency. Remote server mode falls back to DB queries.
-- Dark theme (avionics tradition)
+- Aircraft detail page with position history and external intel (hexdb.io)
+- 500ms polling for real-time updates
+- **Dual-path position serving**: When a live tracker is attached, `/api/positions` reads from in-memory aircraft state for sub-second latency. Otherwise falls back to DB queries.
 
-### Multi-Receiver Network (`feeder.py`, `web/ingest.py`)
-- **Feeder agent**: Runs on remote Pi/machine with dongle. Captures frames via native demodulator (pyrtlsdr) or rtl_adsb fallback. Batches and POSTs hex frames to central server every N seconds.
-- **Ingest API**: `POST /api/v1/frames` accepts batched frames with receiver metadata. Bearer token auth. Heartbeat endpoint for status. `GET /api/v1/receivers` lists all connected receivers with online/offline status.
+### Multi-Receiver Network
+
+- **Feeder agent**: Runs on remote Pi/machine with dongle. Captures frames, batches, and POSTs to central server.
+- **Ingest API**: `POST /api/v1/frames` with bearer token auth. Heartbeat monitoring.
 - **Architecture**: Hub-and-spoke. Multiple feeders → one central server → one dashboard.
 
-### CLI (`cli.py`)
-- Rich-formatted tables in the terminal
-- Real-time scrolling display with live proximity checks
-- Stats summary (aircraft count, position count, military detections)
+### CLI
 
-### Export (`exporters.py`)
-- **CSV**: Flat position data for spreadsheet analysis
+- Decode: parse hex frames, print aircraft table
+- Track: process capture file or live dongle, write to DB
+- Stats: database summary
+- History: aircraft sighting history
+- Export: CSV/JSON output
+- Serve: web dashboard from existing DB
+- Setup: hardware detection (Python only currently)
+
+### Export
+
+- **CSV**: Flat position data
 - **JSON**: Structured aircraft + position data
-- **KML**: Google Earth flight paths with altitude
-- **GeoJSON**: Map-ready feature collections
-
-### Deployment (`deploy/`)
-- Caddy (auto-HTTPS reverse proxy) + Gunicorn + Flask + SQLite
-- systemd service with auto-restart
-- Server provisioning script (Ubuntu: UFW, fail2ban, Python, unattended-upgrades)
-- One-command deploy: `bash deploy/deploy.sh`
+- **KML**: Google Earth flight paths (Python only currently)
+- **GeoJSON**: Map-ready feature collections (Python only currently)
 
 ---
 
@@ -329,44 +356,16 @@ What makes this more than a radio scanner:
 | GET | `/api/aircraft/<icao>` | Single aircraft detail + positions + events |
 | GET | `/api/positions` | Most recent position per aircraft (optional `?minutes=` time filter) |
 | GET | `/api/positions/all` | All positions ordered by time (for replay) |
-| GET | `/api/trails` | Position trails per aircraft (`?minutes=` time window, default 60) |
-| GET | `/api/lookup/<icao>` | External aircraft metadata via hexdb.io (manufacturer, type, owner) |
+| GET | `/api/trails` | Position trails per aircraft (`?minutes=` time window) |
+| GET | `/api/lookup/<icao>` | External aircraft metadata via hexdb.io |
 | GET | `/api/query` | Filtered positions (min/max alt, ICAO, military, limit) |
 | GET | `/api/airports` | 3,642 US airports with type classification |
-| GET | `/api/heatmap` | Position density data for heatmap layer (`?minutes=` window, max 50k points) |
+| GET | `/api/heatmap` | Position density data for heatmap layer |
 | GET | `/api/geofences` | List configured geofence zones |
-| POST | `/api/geofences` | Create a geofence zone (name, lat, lon, radius_nm) |
+| POST | `/api/geofences` | Create a geofence zone |
 | DELETE | `/api/geofences/<id>` | Delete a geofence zone |
 | GET | `/api/events` | Recent events (optional `?type=` filter) |
-| GET | `/api/stats` | Database stats, receiver info, capture start time |
+| GET | `/api/stats` | Database stats, receiver info |
 | POST | `/api/v1/frames` | Ingest frames from remote feeder (auth required) |
 | POST | `/api/v1/heartbeat` | Feeder status heartbeat |
 | GET | `/api/v1/receivers` | List connected receivers |
-
----
-
-## File Map
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/crc.py` | ~40 | CRC-24 polynomial validation |
-| `src/capture.py` | ~360 | IQ file reader, frame reader, native demod + fallback live capture |
-| `src/demodulator.py` | ~200 | IQ→magnitude, preamble detection, bit recovery |
-| `src/frame_parser.py` | ~150 | Bit→ModeFrame, DF classification |
-| `src/decoder.py` | ~400 | Frame→typed messages, all DF/TC types |
-| `src/cpr.py` | ~180 | Compact Position Reporting math |
-| `src/icao.py` | ~200 | Country lookup, military blocks, N-number |
-| `src/tracker.py` | ~340 | Per-aircraft state machine, heading/position history, ingest downsampling |
-| `src/database.py` | ~460 | SQLite schema, queries, WAL mode, tiered retention, VACUUM |
-| `src/filters.py` | ~405 | Military, emergency, circling, holding, proximity, unusual alt, geofence |
-| `src/enrichment.py` | ~310 | Aircraft type classification, operator lookup, 3,642 airports |
-| `src/exporters.py` | ~150 | CSV, JSON, KML, GeoJSON output |
-| `src/feeder.py` | ~190 | Remote receiver agent |
-| `src/config.py` | ~145 | Config file management (~/.adsb-decode/config.yaml) |
-| `src/hardware.py` | ~160 | RTL-SDR dongle detection, driver checks, test capture |
-| `src/notifications.py` | ~65 | Webhook dispatch for events |
-| `src/cli.py` | ~475 | Click CLI entry points (setup, capture, decode, track, stats, export, serve) |
-| `src/web/app.py` | ~57 | Flask app factory (tracker injection, template auto-reload) |
-| `src/web/ingest.py` | ~185 | Frame ingestion API for remote feeders |
-| `src/web/routes.py` | ~535 | REST API + page routes (16 endpoints, 9 pages, dual-path positions) |
-| `data/airports.csv` | 3,643 | OurAirports US airport database |

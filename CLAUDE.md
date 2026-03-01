@@ -4,7 +4,13 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## What This Is
 
-An ADS-B (Automatic Dependent Surveillance-Broadcast) radio protocol decoder that processes raw 1090 MHz radio signals into identified aircraft on a map. Built from scratch in Python — no dump1090 dependency, no borrowed decoders. Every byte of the protocol is decoded and documented.
+An ADS-B (Automatic Dependent Surveillance-Broadcast) radio protocol decoder that processes raw 1090 MHz radio signals into identified aircraft on a map. Built from scratch — no dump1090 dependency, no borrowed decoders. Every byte of the protocol is decoded and documented.
+
+Two implementations exist side by side:
+- **Rust** (primary, active development) — 3-crate workspace under `rust/`, 199 tests, ~10,700 lines
+- **Python** (reference implementation) — 22 modules under `src/`, 394 tests, ~7,300 lines
+
+The Rust implementation is feature-complete and is the active codebase. The Python implementation serves as the reference oracle — both were cross-validated against a 296-frame capture file with 100% field match.
 
 Part of the Blue Octopus Technology portfolio. Demonstrates AI-accelerated reverse engineering of live radio protocols, complementing the ctf-lab binary analysis work.
 
@@ -14,94 +20,162 @@ Part of the Blue Octopus Technology portfolio. Demonstrates AI-accelerated rever
 RTL-SDR Dongle (1090 MHz) → Raw IQ Samples → Magnitude Signal → Mode S Frames → Typed Messages → Aircraft State → Database + Map
 ```
 
-Each stage has a dedicated module in `src/`. See HOW-IT-WORKS.md for the full signal chain deep dive.
+See HOW-IT-WORKS.md for the full signal chain deep dive.
 
-## Project Structure
+## Rust Project Structure (primary)
+
+```
+rust/
+├── Cargo.toml                # Workspace root
+├── adsb-core/                # Library: pure decode + tracking (no async, no I/O)
+│   └── src/
+│       ├── lib.rs            # Module exports
+│       ├── types.rs          # Shared types, hex encode/decode, Icao = [u8; 3]
+│       ├── crc.rs            # CRC-24 LUT (compile-time const fn), syndrome tables, try_fix
+│       ├── frame.rs          # ModeFrame, parse_frame, IcaoCache
+│       ├── decode.rs         # Identification, position, velocity, altitude, squawk, Gillham
+│       ├── cpr.rs            # CPR global/local decode, NL table
+│       ├── demod.rs          # IQ→magnitude LUT, preamble, PPM bit recovery
+│       ├── tracker.rs        # AircraftState, CPR pairing, stale pruning, TrackEvent enum
+│       ├── filter.rs         # FilterEngine with 8 detectors + dedup
+│       ├── enrich.rs         # Aircraft classification, airline lookup, 3,642 airports (include_str!)
+│       ├── icao.rs           # Country lookup, military blocks, N-number conversion
+│       ├── config.rs         # YAML config load/save
+│       └── airports.csv      # OurAirports US database (embedded at compile time)
+│
+├── adsb-feeder/              # Binary: edge device (Pi + RTL-SDR)
+│   └── src/
+│       ├── main.rs           # Capture → decode → batch POST to server
+│       └── capture.rs        # FrameReader, IQReader, LiveDemodCapture
+│
+├── adsb-server/              # Binary: web server + CLI + database
+│   ├── src/
+│   │   ├── main.rs           # CLI: decode, track (--live --port), stats, history, export, serve, setup
+│   │   ├── db.rs             # SQLite (6 tables, WAL, retention, downsample, phantom pruning)
+│   │   ├── db_pg.rs          # TimescaleDB (feature-gated, not currently in use)
+│   │   └── web/
+│   │       ├── mod.rs        # Axum app builder, AppState, CORS
+│   │       ├── routes.rs     # REST API endpoints
+│   │       ├── pages.rs      # HTML page handlers
+│   │       └── ingest.rs     # Multi-receiver ingest + heartbeat
+│   └── templates/            # 8 HTML pages with Leaflet.js maps
+```
+
+**Dependency graph:** `adsb-core` (pure, no async) ← `adsb-feeder` + `adsb-server`
+
+## Python Project Structure (reference)
 
 ```
 src/
 ├── cli.py           # Click CLI — setup, capture, decode, track, stats, export, serve
 ├── capture.py       # IQ file readers, frame readers, live capture (native demod + fallback)
-├── config.py        # Config file management (~/.adsb-decode/config.yaml)
 ├── demodulator.py   # IQ → bits (PPM demod, preamble detection, numpy DSP)
 ├── frame_parser.py  # Raw bits → ModeFrame objects (DF classification)
 ├── decoder.py       # Frames → typed messages (callsign, position, velocity)
 ├── cpr.py           # Compact Position Reporting math (global + local decode)
 ├── crc.py           # CRC-24 validation (ICAO standard polynomial)
-├── hardware.py      # RTL-SDR dongle detection, driver checks, test capture
 ├── icao.py          # ICAO address → country, military block detection, N-number
 ├── tracker.py       # Per-aircraft state machine with CPR pairing, ingest downsampling
 ├── database.py      # SQLite persistence (WAL mode, 6 tables, tiered retention, VACUUM)
 ├── filters.py       # Military, emergency, circling, holding, proximity, unusual altitude, geofence
 ├── enrichment.py    # Aircraft type classification, operator lookup, 3,642 airports
-├── notifications.py # Webhook dispatch for events (configurable URL + event type filter)
+├── notifications.py # Webhook dispatch for events
+├── config.py        # Config file management (~/.adsb-decode/config.yaml)
+├── hardware.py      # RTL-SDR dongle detection, driver checks, test capture
 ├── exporters.py     # CSV, JSON, KML (Google Earth), GeoJSON output
-├── feeder.py        # Remote receiver agent — captures frames, POSTs to central server
+├── feeder.py        # Remote receiver agent
 └── web/
     ├── app.py       # Flask app factory
-    ├── ingest.py    # Frame ingestion API for remote feeders (auth, heartbeat)
-    ├── routes.py    # REST API + page routes (16 endpoints, 9 pages, dual-path positions)
-    └── templates/   # Jinja2 — map, table, detail, events, query, replay, receivers, stats
-data/
-└── airports.csv     # 3,642 US airports from OurAirports (public domain)
-deploy/
-├── Caddyfile        # Caddy reverse proxy config
-├── adsb-decode.service  # systemd service
-├── server-setup.sh  # VPS provisioning (Ubuntu)
-├── deploy.sh        # Git pull + restart deployment
-└── wsgi.py          # Gunicorn entry point
+    ├── ingest.py    # Frame ingestion API for remote feeders
+    ├── routes.py    # REST API + page routes
+    └── templates/   # Jinja2 (9 pages)
 ```
 
 ## Commands
 
+### Rust (primary)
+
 ```bash
-# Development
-pip install -e ".[dev]"          # Install in dev mode
-pytest                           # Run all tests
-pytest tests/test_crc.py -v      # Run specific test file
+cd rust
+cargo build --release            # Build all crates
+cargo test --workspace           # Run all 199 tests
+cargo test -p adsb-core          # Test core library only
+cargo clippy --workspace         # Lint
 
 # CLI
-adsb setup                       # Check RTL-SDR hardware
-adsb capture --duration 60       # Capture 60s of frames
-adsb decode data/capture.bin     # Decode a capture file
-adsb track --file data/cap.bin   # Track aircraft from file
-adsb track --live --port 8080    # Live tracking with web dashboard
-adsb stats                       # Show database statistics
-adsb export --format kml         # Export flight paths
+cargo run --bin adsb -- decode data/live_capture.txt
+cargo run --bin adsb -- track --live --port 8080     # Live RTL-SDR + web dashboard
+cargo run --bin adsb -- serve --db-path data/adsb.db  # Serve dashboard from existing DB
+cargo run --bin adsb -- stats --db-path data/adsb.db
+cargo run --bin adsb -- history --db-path data/adsb.db
+cargo run --bin adsb -- export --db-path data/adsb.db --format json
+```
 
-# Hardware setup (macOS)
-bash scripts/setup-rtlsdr.sh     # Install librtlsdr via Homebrew
-bash scripts/validate-hardware.sh # Check dongle is detected
-bash scripts/capture-iq.sh 60    # Capture 60s raw IQ samples
-bash scripts/capture-frames.sh 60 # Capture 60s demodulated frames
+### Python (reference)
+
+```bash
+pip install -e ".[dev]"          # Install in dev mode
+pytest                           # Run all 394 tests
+
+adsb setup                       # Check RTL-SDR hardware
+adsb decode data/capture.bin     # Decode a capture file
+adsb track --live --port 8080    # Live tracking with web dashboard
 ```
 
 ## Database Schema (6 tables)
 
-- **receivers** — sensor nodes (name, lat, lon, altitude, description). Multi-receiver from day one.
-- **aircraft** — ICAO address, registration, country, military flag, first/last seen
-- **sightings** — per-session appearance (callsign, squawk, signal strength)
-- **positions** — lat, lon, alt, speed, heading, vertical rate, timestamp, `receiver_id`
-- **captures** — metadata per capture session (source, duration, frame counts, `receiver_id`)
-- **events** — detected anomalies (emergency squawk, rapid descent, military, circling)
+- **receivers** — sensor nodes (name, lat, lon, altitude, description)
+- **aircraft** — ICAO address, registration, country, military flag (sticky via MAX), first/last seen
+- **sightings** — per-session appearance (callsign, squawk, min/max altitude, message count)
+- **positions** — lat, lon, alt, speed, heading, vertical rate, timestamp, receiver_id
+- **captures** — metadata per capture session (source, duration, frame counts, receiver_id)
+- **events** — detected anomalies (emergency squawk, military, circling, unusual altitude)
 
-SQLite with WAL mode, foreign keys enabled, indexed queries. Test fixtures use tmp_path.
+SQLite with WAL mode, foreign keys enabled, indexed queries.
 
-Every position and capture is tagged with which receiver heard it. Single-receiver deployments work identically — one row in receivers table. Adding receivers is adding data sources, not refactoring.
+Key SQL patterns:
+- `is_military = MAX(is_military, excluded.is_military)` — military flag is sticky, never reverts
+- `country = COALESCE(excluded.country, country)` — preserves existing country on NULL re-upsert
+- `downsample_positions(older_than_hours, keep_interval_sec)` — bucket-based thinning
+
+## Current State
+
+### What works now:
+- Full decode pipeline (CRC-24, all downlink formats, all ADS-B type codes, CPR, Gillham altitude)
+- Live tracking via `rtl_adsb` subprocess → hex frame parsing → tracker → SQLite → web dashboard
+- 8 filter types: military, emergency squawk, circling, holding, proximity, unusual altitude, geofence, rapid descent
+- Aircraft enrichment: speed/altitude classification, 26 airline prefixes, 3,642 embedded airports
+- Web dashboard with 8 pages (map, table, detail, events, query, replay, receivers, stats)
+- Dual-path positions: live tracker serves from memory; DB fallback when no tracker attached
+- Multi-receiver ingest API with bearer token auth and heartbeat
+- CLI: decode, track, stats, history, export, serve, setup
+- CRC error correction: 1-2 bit errors via syndrome table lookup
+- 199 Rust tests + 394 Python tests
+
+### What's implemented but not active:
+- **TimescaleDB backend** (`db_pg.rs`) — fully implemented with hypertables, compression, retention, continuous aggregates. Requires a PostgreSQL instance to use. Currently using SQLite.
+- **Native IQ demodulation** (`demod.rs`) — magnitude LUT, preamble detection, PPM bit recovery all implemented. Live capture currently uses `rtl_adsb` subprocess instead of the native demod path.
+- **Cross-compilation CI** — GitHub Actions configured for Pi 3/4/5 ARM targets. No release binaries published yet.
+
+### Not implemented:
+- LLM integration / airspace narrator (discussed as future idea, no code exists)
+- Native `rtlsdr_mt` USB dongle access from Rust (would replace `rtl_adsb` subprocess)
+- Tiered data retention in Rust (Python has it; Rust has downsample/prune functions but no automatic scheduling)
+- Webhook notifications in Rust (Python has `notifications.py`)
 
 ## Key Technical Details
 
 ### CRC-24
 - Generator polynomial: 0xFFF409 (ICAO standard)
-- Applied to full message — valid frames produce remainder 0x000000
-- Used for error detection AND ICAO address recovery in DF11/17/18
+- LUT built at compile time via `const fn build_crc_table()`
+- Syndrome tables for 56-bit and 112-bit messages via `LazyLock<HashMap>`
+- `try_fix()` corrects 1-2 bit errors, refuses to touch DF field (bits 0-4)
 
 ### Compact Position Reporting (CPR)
 - Encodes lat/lon into 17-bit values using Nb=17 zones
 - Even and odd frames use different zone counts (NZ=15 base)
 - Global decode requires even+odd pair within 10 seconds
 - Local decode uses reference position (receiver or last known)
-- Edge cases: zone boundary crossings, polar regions, antimeridian
 
 ### Mode S Downlink Formats
 - DF0: Short air-air surveillance (altitude)
@@ -114,36 +188,34 @@ Every position and capture is tagged with which receiver heard it. Single-receiv
 - DF20: Comm-B altitude reply
 - DF21: Comm-B identity reply
 
-### ADS-B Type Codes (within DF17)
-- TC 1-4: Aircraft identification (callsign)
-- TC 5-8: Surface position
-- TC 9-18: Airborne position (barometric altitude)
-- TC 19: Airborne velocity
-- TC 20-22: Airborne position (GNSS altitude)
-- TC 28: Aircraft status (emergency/priority)
-- TC 29: Target state and status
-- TC 31: Aircraft operational status
+### Live Tracking Architecture (Rust)
+- `rtl_adsb` subprocess produces hex frames on stdout
+- Main thread reads frames, parses through decode/track pipeline
+- `Tracker` shared via `Arc<RwLock<Tracker>>` with web server
+- `Database` (concrete SQLite) handles writes from main thread
+- `SqliteDb` (opens fresh connections per request) handles web reads
+- Web server runs in a tokio task, sees DB writes immediately
 
 ## Division of Labor
 
-**Human does:** Plug in RTL-SDR, position antenna, run capture scripts, validate against FlightAware.
+**Human does:** Plug in RTL-SDR, position antenna, validate against FlightAware.
 
 **Claude does:** All code, tests, documentation, CLI, web dashboard, DSP, protocol decode, CPR math.
 
 ## Testing Strategy
 
-- Unit tests for every module with known test vectors
-- Published ADS-B frame examples as fixtures (known hex → known decode)
+- Unit tests for every module with known test vectors from published ADS-B frames
+- CRC validated against ICAO standard polynomial (including error correction)
 - CPR math validated against published even/odd pairs
-- CRC validated against ICAO standard polynomial
-- Integration tests: hex frames → full decode pipeline
-- Database tests use pytest tmp_path fixtures
+- Gillham gray code altitude decoder tested with range sweep (all 8192 codes)
+- Database tests use in-memory SQLite (`:memory:`)
+- Cross-validation: same capture file through Python + Rust, every decoded field compared
 
 ## Sensitive Data
 
 - **Never commit** capture files (.iq, .bin) — they contain real aircraft data
 - **Never commit** database files (.db) — contain position histories
-- Receiver coordinates (lat/lon) should use placeholder `[RECEIVER_LAT]`/`[RECEIVER_LON]` in committed docs
+- Receiver coordinates (lat/lon) should use placeholder values in committed docs
 - ICAO addresses are public (broadcast over radio) — safe to reference in tests
 
 ## Companion Docs
