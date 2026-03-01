@@ -72,16 +72,44 @@ function altColor(alt) {
     }
 }
 
-function acIcon(heading, isMilitary) {
+function classifyAircraft(p) {
+    if (p.is_military) return 'military';
+    if (p.speed_kts != null) {
+        if (p.speed_kts > 250) return 'jet';
+        if (p.speed_kts < 80 && p.altitude_ft != null && p.altitude_ft < 3000) return 'helicopter';
+        if (p.speed_kts <= 180) return 'prop';
+        if (p.speed_kts <= 250) return 'turboprop';
+    }
+    if (p.altitude_ft != null) {
+        if (p.altitude_ft > 30000) return 'jet';
+        if (p.altitude_ft < 5000) return 'prop';
+    }
+    return 'jet';
+}
+
+const acSvgs = {
+    jet: (color) => `<path d="M12,2 L14,8 L14,10 L22,14 L22,16 L14,14 L14,19 L17,21 L17,23 L12,21 L7,23 L7,21 L10,19 L10,14 L2,16 L2,14 L10,10 L10,8 Z" fill="${color}" stroke="#000" stroke-width="0.4"/>`,
+    prop: (color) => `<path d="M12,3 L13.5,9 L13,10 L18,13 L18,14.5 L13,13 L13,19 L15,21 L15,22.5 L12,21 L9,22.5 L9,21 L11,19 L11,13 L6,14.5 L6,13 L11,10 L10.5,9 Z" fill="${color}" stroke="#000" stroke-width="0.4"/>`,
+    turboprop: (color) => `<path d="M12,2.5 L13.5,8.5 L13.5,10 L20,13.5 L20,15 L13.5,13 L13.5,19 L16,21 L16,22.5 L12,21 L8,22.5 L8,21 L10.5,19 L10.5,13 L4,15 L4,13.5 L10.5,10 L10.5,8.5 Z" fill="${color}" stroke="#000" stroke-width="0.4"/>`,
+    helicopter: (color) => `<circle cx="12" cy="13" r="4" fill="${color}" stroke="#000" stroke-width="0.4"/>
+        <line x1="4" y1="9" x2="20" y2="9" stroke="${color}" stroke-width="1.5"/>
+        <line x1="12" y1="9" x2="12" y2="13" stroke="${color}" stroke-width="1"/>
+        <line x1="10" y1="17" x2="14" y2="17" stroke="${color}" stroke-width="1"/>
+        <line x1="12" y1="17" x2="12" y2="21" stroke="${color}" stroke-width="1"/>
+        <line x1="9" y1="21" x2="15" y2="21" stroke="${color}" stroke-width="1.2"/>`,
+    military: (color) => `<path d="M12,1 L14.5,7 L14,9 L22,12 L22,14 L14,12.5 L14,18 L17,20.5 L17,22 L12,20 L7,22 L7,20.5 L10,18 L10,12.5 L2,14 L2,12 L10,9 L9.5,7 Z" fill="${color}" stroke="#000" stroke-width="0.5"/>`,
+};
+
+function acIcon(heading, isMilitary, acType) {
     const color = isMilitary ? '#ff4444' : '#00ff88';
+    const type = acType || (isMilitary ? 'military' : 'jet');
+    const svgBody = (acSvgs[type] || acSvgs.jet)(color);
     const rotation = heading || 0;
     return L.divIcon({
         className: '',
-        html: `<svg width="20" height="20" viewBox="0 0 24 24" style="transform:rotate(${rotation}deg)">
-            <polygon points="12,1 15,9 22,10 15,15 16,22 12,18 8,22 9,15 2,10 9,9" fill="${color}" opacity="0.9" stroke="#000" stroke-width="0.5"/>
-        </svg>`,
-        iconSize: [20, 20],
-        iconAnchor: [10, 10],
+        html: `<svg width="24" height="24" viewBox="0 0 24 24" style="transform:rotate(${rotation}deg)">${svgBody}</svg>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
     });
 }
 
@@ -129,12 +157,13 @@ function updateDisplay() {
     const seen = new Set();
     Object.entries(latest).forEach(([icao, p]) => {
         seen.add(icao);
+        const acType = classifyAircraft(p);
         if (markers[icao]) {
             markers[icao].setLatLng([p.lat, p.lon]);
-            markers[icao].setIcon(acIcon(p.heading_deg, p.is_military));
+            markers[icao].setIcon(acIcon(p.heading_deg, p.is_military, acType));
         } else {
             markers[icao] = L.marker([p.lat, p.lon], {
-                icon: acIcon(p.heading_deg, p.is_military),
+                icon: acIcon(p.heading_deg, p.is_military, acType),
             }).addTo(map);
         }
         const label = p.callsign || p.registration || p.icao;
