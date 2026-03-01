@@ -42,6 +42,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Rust
+rust/target/
+
 # Test / coverage
 .coverage
 htmlcov/

@@ -1,0 +1,11 @@
+[package]
+name = "adsb-feeder"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "adsb-feeder"
+path = "src/main.rs"
+
+[dependencies]
+adsb-core = { path = "../adsb-core" }
