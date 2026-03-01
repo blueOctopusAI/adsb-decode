@@ -165,17 +165,20 @@ src/
 ├── database.py      # SQLite with WAL mode, multi-receiver schema (6 tables)
 ├── filters.py       # Military, emergency, circling, holding, proximity, unusual altitude, geofence
 ├── enrichment.py    # Aircraft type classification, operator lookup, 3,642 airports
+├── notifications.py # Webhook dispatch for events (configurable URL + event type filter)
+├── config.py        # Config file management (~/.adsb-decode/config.yaml)
+├── hardware.py      # RTL-SDR dongle detection, driver checks, test capture
 ├── exporters.py     # CSV, JSON, KML (Google Earth), GeoJSON
 ├── feeder.py        # Remote receiver agent — captures + forwards to central server
-├── cli.py           # Click CLI — decode, track, stats, history, export, serve
+├── cli.py           # Click CLI — setup, decode, track, stats, history, export, serve
 └── web/
     ├── app.py       # Flask app factory
     ├── ingest.py    # Frame ingestion API for remote feeders
-    ├── routes.py    # 14 REST API endpoints + 9 page routes
+    ├── routes.py    # 16 REST API endpoints + 9 page routes
     └── templates/   # Map, table, detail, events, query, replay, receivers, stats
 ```
 
-**365 tests** covering every module. 19 Python modules, 9 HTML templates, ~6,300 lines. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
+**386 tests** covering every module. 22 Python modules, 9 HTML templates, ~7,300 lines. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
 
 ## License
 

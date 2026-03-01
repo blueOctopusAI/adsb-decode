@@ -20,24 +20,27 @@ Each stage has a dedicated module in `src/`. See HOW-IT-WORKS.md for the full si
 
 ```
 src/
-├── cli.py           # Click CLI — capture, decode, track, stats, export, serve
+├── cli.py           # Click CLI — setup, capture, decode, track, stats, export, serve
 ├── capture.py       # IQ file readers, frame readers, live capture (native demod + fallback)
+├── config.py        # Config file management (~/.adsb-decode/config.yaml)
 ├── demodulator.py   # IQ → bits (PPM demod, preamble detection, numpy DSP)
 ├── frame_parser.py  # Raw bits → ModeFrame objects (DF classification)
 ├── decoder.py       # Frames → typed messages (callsign, position, velocity)
 ├── cpr.py           # Compact Position Reporting math (global + local decode)
 ├── crc.py           # CRC-24 validation (ICAO standard polynomial)
+├── hardware.py      # RTL-SDR dongle detection, driver checks, test capture
 ├── icao.py          # ICAO address → country, military block detection, N-number
 ├── tracker.py       # Per-aircraft state machine with CPR pairing, heading/position history
 ├── database.py      # SQLite persistence (WAL mode, 6 tables)
 ├── filters.py       # Military, emergency, circling, holding, proximity, unusual altitude, geofence
 ├── enrichment.py    # Aircraft type classification, operator lookup, 3,642 airports
+├── notifications.py # Webhook dispatch for events (configurable URL + event type filter)
 ├── exporters.py     # CSV, JSON, KML (Google Earth), GeoJSON output
 ├── feeder.py        # Remote receiver agent — captures frames, POSTs to central server
 └── web/
     ├── app.py       # Flask app factory
     ├── ingest.py    # Frame ingestion API for remote feeders (auth, heartbeat)
-    ├── routes.py    # REST API + page routes (14 endpoints, 9 pages)
+    ├── routes.py    # REST API + page routes (16 endpoints, 9 pages)
     └── templates/   # Jinja2 — map, table, detail, events, query, replay, receivers, stats
 data/
 └── airports.csv     # 3,642 US airports from OurAirports (public domain)

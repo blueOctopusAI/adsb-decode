@@ -321,6 +321,10 @@ What makes this more than a radio scanner:
 | GET | `/api/lookup/<icao>` | External aircraft metadata via hexdb.io (manufacturer, type, owner) |
 | GET | `/api/query` | Filtered positions (min/max alt, ICAO, military, limit) |
 | GET | `/api/airports` | 3,642 US airports with type classification |
+| GET | `/api/heatmap` | Position density data for heatmap layer (`?minutes=` window, max 50k points) |
+| GET | `/api/geofences` | List configured geofence zones |
+| POST | `/api/geofences` | Create a geofence zone (name, lat, lon, radius_nm) |
+| DELETE | `/api/geofences/<id>` | Delete a geofence zone |
 | GET | `/api/events` | Recent events (optional `?type=` filter) |
 | GET | `/api/stats` | Database stats, receiver info, capture start time |
 | POST | `/api/v1/frames` | Ingest frames from remote feeder (auth required) |
@@ -346,8 +350,11 @@ What makes this more than a radio scanner:
 | `src/enrichment.py` | ~310 | Aircraft type classification, operator lookup, 3,642 airports |
 | `src/exporters.py` | ~150 | CSV, JSON, KML, GeoJSON output |
 | `src/feeder.py` | ~190 | Remote receiver agent |
-| `src/cli.py` | ~280 | Click CLI entry points |
+| `src/config.py` | ~145 | Config file management (~/.adsb-decode/config.yaml) |
+| `src/hardware.py` | ~160 | RTL-SDR dongle detection, driver checks, test capture |
+| `src/notifications.py` | ~65 | Webhook dispatch for events |
+| `src/cli.py` | ~460 | Click CLI entry points (setup, capture, decode, track, stats, export, serve) |
 | `src/web/app.py` | ~50 | Flask app factory |
 | `src/web/ingest.py` | ~185 | Frame ingestion API for remote feeders |
-| `src/web/routes.py` | ~400 | REST API + page routes (15 endpoints, 9 pages) |
+| `src/web/routes.py` | ~500 | REST API + page routes (16 endpoints, 9 pages) |
 | `data/airports.csv` | 3,643 | OurAirports US airport database |
