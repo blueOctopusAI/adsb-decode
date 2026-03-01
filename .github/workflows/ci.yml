@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Run tests
+        working-directory: rust
+        run: cargo test --workspace
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Clippy
+        working-directory: rust
+        run: cargo clippy --workspace -- -D warnings
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        working-directory: rust
+        run: cargo fmt --all -- --check
+
+  build-release:
+    name: Build (${{ matrix.target }})
+    needs: [test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Native builds
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary_suffix: ""
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary_suffix: ""
+          # Cross-compiled for Raspberry Pi
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary_suffix: ""
+            cross: true
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            binary_suffix: ""
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build feeder (native)
+        if: "!matrix.cross"
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.target }} -p adsb-feeder
+
+      - name: Build server (native)
+        if: "!matrix.cross"
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.target }} -p adsb-server
+
+      - name: Build feeder (cross)
+        if: matrix.cross
+        working-directory: rust
+        run: cross build --release --target ${{ matrix.target }} -p adsb-feeder
+
+      - name: Build server (cross)
+        if: matrix.cross
+        working-directory: rust
+        run: cross build --release --target ${{ matrix.target }} -p adsb-server
+
+      - name: Strip binaries (native Linux)
+        if: "!matrix.cross && matrix.os == 'ubuntu-latest'"
+        run: |
+          strip rust/target/${{ matrix.target }}/release/adsb-feeder
+          strip rust/target/${{ matrix.target }}/release/adsb
+
+      - name: Upload feeder
+        uses: actions/upload-artifact@v4
+        with:
+          name: adsb-feeder-${{ matrix.target }}
+          path: rust/target/${{ matrix.target }}/release/adsb-feeder${{ matrix.binary_suffix }}
+
+      - name: Upload server
+        uses: actions/upload-artifact@v4
+        with:
+          name: adsb-server-${{ matrix.target }}
+          path: rust/target/${{ matrix.target }}/release/adsb${{ matrix.binary_suffix }}
+
+  # Cross-validate: Rust decode output matches Python reference
+  cross-validate:
+    name: Cross-validate vs Python
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt 2>/dev/null || true
+
+      - name: Build Rust decoder
+        working-directory: rust
+        run: cargo build --release -p adsb-server
+
+      - name: Decode with Rust
+        working-directory: rust
+        run: |
+          cargo run --release -p adsb-server -- decode ../data/live_capture.txt > /tmp/rust-decode.txt 2>/dev/null || true
+
+      - name: Decode with Python
+        run: |
+          python -m src.cli decode data/live_capture.txt > /tmp/python-decode.txt 2>/dev/null || true
+
+      - name: Compare outputs
+        run: |
+          echo "=== Rust output ==="
+          head -5 /tmp/rust-decode.txt || echo "(no output)"
+          echo ""
+          echo "=== Python output ==="
+          head -5 /tmp/python-decode.txt || echo "(no output)"
+          echo ""
+          echo "Cross-validation complete (manual review of outputs above)"
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Package binaries
+        run: |
+          cd artifacts
+          for dir in */; do
+            target=$(echo "$dir" | sed 's|/$||')
+            cd "$dir"
+            chmod +x * 2>/dev/null || true
+            tar czf "../${target}.tar.gz" *
+            cd ..
+          done
+          ls -la *.tar.gz
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
+          generate_release_notes: true

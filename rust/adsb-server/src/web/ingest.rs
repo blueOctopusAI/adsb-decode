@@ -93,7 +93,7 @@ fn now() -> f64 {
 
 /// POST /api/v1/frames — batch ingest from a feeder.
 pub async fn api_ingest_frames(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Json(body): Json<IngestRequest>,
 ) -> impl IntoResponse {
     let base_ts = body.timestamp.unwrap_or_else(now);
@@ -139,17 +139,15 @@ pub async fn api_ingest_frames(
             // In a real implementation, we'd use a channel or connection pool
             // For now, we collect and apply after
             for te in &track_events {
-                match te {
-                    adsb_core::tracker::TrackEvent::NewAircraft {
-                        icao, timestamp, ..
-                    } => {
-                        events_out.push(json!({
-                            "type": "new_aircraft",
-                            "icao": icao_to_string(icao),
-                            "timestamp": timestamp,
-                        }));
-                    }
-                    _ => {}
+                if let adsb_core::tracker::TrackEvent::NewAircraft {
+                    icao, timestamp, ..
+                } = te
+                {
+                    events_out.push(json!({
+                        "type": "new_aircraft",
+                        "icao": icao_to_string(icao),
+                        "timestamp": timestamp,
+                    }));
                 }
             }
         }

@@ -61,7 +61,8 @@ impl IcaoCache {
     /// Remove expired entries.
     pub fn prune(&mut self, now: f64) {
         let ttl = self.ttl;
-        self.cache.retain(|_, &mut last_seen| now - last_seen <= ttl);
+        self.cache
+            .retain(|_, &mut last_seen| now - last_seen <= ttl);
     }
 
     pub fn len(&self) -> usize {
@@ -107,9 +108,7 @@ pub struct ModeFrame {
 impl ModeFrame {
     /// Human-readable Downlink Format name.
     pub fn df_name(&self) -> &'static str {
-        df_info(self.df)
-            .map(|info| info.name)
-            .unwrap_or("Unknown")
+        df_info(self.df).map(|info| info.name).unwrap_or("Unknown")
     }
 
     /// True if this is an ADS-B extended squitter (DF17).
@@ -268,8 +267,7 @@ mod tests {
 
     #[test]
     fn test_parse_df17_position() {
-        let frame =
-            parse_frame_uncached("8D40621D58C382D690C8AC2863A7", 1.0, None).unwrap();
+        let frame = parse_frame_uncached("8D40621D58C382D690C8AC2863A7", 1.0, None).unwrap();
         assert_eq!(frame.df, 17);
         assert_eq!(icao_to_string(&frame.icao), "40621D");
         assert!(frame.crc_ok);
@@ -281,8 +279,7 @@ mod tests {
 
     #[test]
     fn test_parse_df17_velocity() {
-        let frame =
-            parse_frame_uncached("8D485020994409940838175B284F", 1.0, None).unwrap();
+        let frame = parse_frame_uncached("8D485020994409940838175B284F", 1.0, None).unwrap();
         assert_eq!(frame.df, 17);
         assert_eq!(icao_to_string(&frame.icao), "485020");
         assert_eq!(frame.type_code(), Some(19));
@@ -301,16 +298,14 @@ mod tests {
 
     #[test]
     fn test_me_field() {
-        let frame =
-            parse_frame_uncached("8D4840D6202CC371C32CE0576098", 1.0, None).unwrap();
+        let frame = parse_frame_uncached("8D4840D6202CC371C32CE0576098", 1.0, None).unwrap();
         let me = frame.me();
         assert_eq!(me.len(), 7); // 56 bits = 7 bytes
     }
 
     #[test]
     fn test_type_code_identification() {
-        let frame =
-            parse_frame_uncached("8D4840D6202CC371C32CE0576098", 1.0, None).unwrap();
+        let frame = parse_frame_uncached("8D4840D6202CC371C32CE0576098", 1.0, None).unwrap();
         let tc = frame.type_code().unwrap();
         assert!(tc >= 1 && tc <= 4, "TC={tc} should be identification");
     }
@@ -345,13 +340,7 @@ mod tests {
         let mut cache = IcaoCache::new(60.0);
 
         // DF17 should succeed without prior cache entry (explicit ICAO)
-        let frame = parse_frame(
-            "8D4840D6202CC371C32CE0576098",
-            1.0,
-            None,
-            true,
-            &mut cache,
-        );
+        let frame = parse_frame("8D4840D6202CC371C32CE0576098", 1.0, None, true, &mut cache);
         assert!(frame.is_some());
 
         // ICAO should now be in cache
@@ -366,7 +355,10 @@ mod tests {
         let corrupted = hex_encode(&data);
 
         let frame = parse_frame_uncached(&corrupted, 1.0, None);
-        assert!(frame.is_some(), "Error correction should fix single-bit error");
+        assert!(
+            frame.is_some(),
+            "Error correction should fix single-bit error"
+        );
         let frame = frame.unwrap();
         assert!(frame.crc_ok);
         assert!(frame.corrected);

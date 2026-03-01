@@ -34,10 +34,7 @@ pub enum TrackEvent {
         timestamp: f64,
     },
     /// Aircraft record should be updated (last_seen).
-    AircraftUpdate {
-        icao: Icao,
-        timestamp: f64,
-    },
+    AircraftUpdate { icao: Icao, timestamp: f64 },
     /// Sighting record should be updated.
     SightingUpdate {
         icao: Icao,
@@ -99,7 +96,7 @@ pub struct AircraftState {
     pub message_count: u64,
 
     // History buffers for pattern detection
-    pub heading_history: Vec<(f64, f64)>,   // (timestamp, heading_deg)
+    pub heading_history: Vec<(f64, f64)>, // (timestamp, heading_deg)
     pub position_history: Vec<(f64, f64, f64, Option<i32>)>, // (ts, lat, lon, alt)
 }
 
@@ -262,7 +259,8 @@ impl Tracker {
                     self.position_decodes += 1;
 
                     // Record for pattern detection (always)
-                    ac.position_history.push((timestamp, lat, lon, ac.altitude_ft));
+                    ac.position_history
+                        .push((timestamp, lat, lon, ac.altitude_ft));
                     if ac.position_history.len() > MAX_HISTORY {
                         let start = ac.position_history.len() - MAX_HISTORY;
                         ac.position_history = ac.position_history[start..].to_vec();
@@ -437,7 +435,9 @@ mod tests {
 
         assert!(msg.is_some());
         assert!(
-            events.iter().any(|e| matches!(e, TrackEvent::NewAircraft { .. })),
+            events
+                .iter()
+                .any(|e| matches!(e, TrackEvent::NewAircraft { .. })),
             "Should emit NewAircraft event"
         );
     }
@@ -464,10 +464,7 @@ mod tests {
         tracker.update(&frame);
 
         let icao = [0x48, 0x40, 0xD6];
-        assert_eq!(
-            tracker.aircraft[&icao].callsign.as_deref(),
-            Some("KLM1023")
-        );
+        assert_eq!(tracker.aircraft[&icao].callsign.as_deref(), Some("KLM1023"));
     }
 
     #[test]

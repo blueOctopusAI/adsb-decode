@@ -186,14 +186,7 @@ impl AircraftState {
                     self.even_ts = Some(m.timestamp);
                 }
                 // Attempt global CPR decode
-                if let (
-                    Some(elat),
-                    Some(elon),
-                    Some(ets),
-                    Some(olat),
-                    Some(olon),
-                    Some(ots),
-                ) = (
+                if let (Some(elat), Some(elon), Some(ets), Some(olat), Some(olon), Some(ots)) = (
                     self.even_lat,
                     self.even_lon,
                     self.even_ts,
@@ -201,9 +194,7 @@ impl AircraftState {
                     self.odd_lon,
                     self.odd_ts,
                 ) {
-                    if let Some((lat, lon)) =
-                        cpr::global_decode(elat, elon, olat, olon, ets, ots)
-                    {
+                    if let Some((lat, lon)) = cpr::global_decode(elat, elon, olat, olon, ets, ots) {
                         self.lat = Some(lat);
                         self.lon = Some(lon);
                     }
@@ -435,11 +426,7 @@ fn cmd_track(file: PathBuf, db_path: &str, min_interval: f64) {
                 Cell::new(icao_to_string(&ac.icao)),
                 Cell::new(ac.callsign.as_deref().unwrap_or("-")),
                 Cell::new(ac.squawk.as_deref().unwrap_or("-")),
-                Cell::new(
-                    ac.altitude_ft
-                        .map(|a| a.to_string())
-                        .unwrap_or("-".into()),
-                ),
+                Cell::new(ac.altitude_ft.map(|a| a.to_string()).unwrap_or("-".into())),
                 Cell::new(
                     ac.speed_kts
                         .map(|s| format!("{s:.0}"))
@@ -450,16 +437,8 @@ fn cmd_track(file: PathBuf, db_path: &str, min_interval: f64) {
                         .map(|h| format!("{h:.1}"))
                         .unwrap_or("-".into()),
                 ),
-                Cell::new(
-                    ac.lat
-                        .map(|l| format!("{l:.4}"))
-                        .unwrap_or("-".into()),
-                ),
-                Cell::new(
-                    ac.lon
-                        .map(|l| format!("{l:.4}"))
-                        .unwrap_or("-".into()),
-                ),
+                Cell::new(ac.lat.map(|l| format!("{l:.4}")).unwrap_or("-".into())),
+                Cell::new(ac.lon.map(|l| format!("{l:.4}")).unwrap_or("-".into())),
                 Cell::new(ac.country.unwrap_or("-")),
                 Cell::new(ac.message_count),
             ]);
@@ -524,11 +503,7 @@ fn cmd_history(db_path: &str, hours: f64, icao_filter: Option<&str>) {
                             Cell::new(format!("{:.4}", p.lat)),
                             Cell::new(format!("{:.4}", p.lon)),
                             Cell::new(p.altitude_ft.map(|a| a.to_string()).unwrap_or("-".into())),
-                            Cell::new(
-                                p.speed_kts
-                                    .map(|s| format!("{s:.0}"))
-                                    .unwrap_or("-".into()),
-                            ),
+                            Cell::new(p.speed_kts.map(|s| format!("{s:.0}")).unwrap_or("-".into())),
                             Cell::new(
                                 p.heading_deg
                                     .map(|h| format!("{h:.1}"))
@@ -543,7 +518,10 @@ fn cmd_history(db_path: &str, hours: f64, icao_filter: Option<&str>) {
                     println!();
                     println!("  Events ({}):", events.len());
                     for e in &events {
-                        println!("    [{:.0}] {}: {}", e.timestamp, e.event_type, e.description);
+                        println!(
+                            "    [{:.0}] {}: {}",
+                            e.timestamp, e.event_type, e.description
+                        );
                     }
                 }
             }
@@ -612,9 +590,10 @@ fn cmd_export(
 
     let content = match format {
         "csv" => {
-            let mut lines =
-                vec!["icao,lat,lon,altitude_ft,speed_kts,heading_deg,vertical_rate_fpm,timestamp"
-                    .to_string()];
+            let mut lines = vec![
+                "icao,lat,lon,altitude_ft,speed_kts,heading_deg,vertical_rate_fpm,timestamp"
+                    .to_string(),
+            ];
             for p in &positions {
                 lines.push(format!(
                     "{},{},{},{},{},{},{},{}",
@@ -622,12 +601,8 @@ fn cmd_export(
                     p.lat,
                     p.lon,
                     p.altitude_ft.map(|a| a.to_string()).unwrap_or_default(),
-                    p.speed_kts
-                        .map(|s| format!("{s:.1}"))
-                        .unwrap_or_default(),
-                    p.heading_deg
-                        .map(|h| format!("{h:.1}"))
-                        .unwrap_or_default(),
+                    p.speed_kts.map(|s| format!("{s:.1}")).unwrap_or_default(),
+                    p.heading_deg.map(|h| format!("{h:.1}")).unwrap_or_default(),
                     p.vertical_rate_fpm
                         .map(|v| v.to_string())
                         .unwrap_or_default(),
@@ -672,10 +647,7 @@ fn cmd_setup() {
     let mut config = existing.clone();
 
     // Receiver name
-    println!(
-        "Receiver name [{}]: ",
-        config.receiver.name
-    );
+    println!("Receiver name [{}]: ", config.receiver.name);
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
     let input = input.trim();
@@ -740,13 +712,25 @@ fn cmd_setup() {
             println!();
             println!("Configuration saved to {}", path.display());
             println!();
-            println!("  Receiver: {} ({}, {})",
+            println!(
+                "  Receiver: {} ({}, {})",
                 config.receiver.name,
-                config.receiver.lat.map(|l| format!("{l}")).unwrap_or("?".into()),
-                config.receiver.lon.map(|l| format!("{l}")).unwrap_or("?".into()),
+                config
+                    .receiver
+                    .lat
+                    .map(|l| format!("{l}"))
+                    .unwrap_or("?".into()),
+                config
+                    .receiver
+                    .lon
+                    .map(|l| format!("{l}"))
+                    .unwrap_or("?".into()),
             );
             println!("  Database: {}", config.database.path);
-            println!("  Dashboard: {}:{}", config.dashboard.host, config.dashboard.port);
+            println!(
+                "  Dashboard: {}:{}",
+                config.dashboard.host, config.dashboard.port
+            );
         }
         Err(e) => {
             eprintln!("Error saving config: {e}");
@@ -755,11 +739,7 @@ fn cmd_setup() {
     }
 }
 
-fn print_summary(
-    aircraft: &HashMap<Icao, AircraftState>,
-    total_frames: u64,
-    decoded_frames: u64,
-) {
+fn print_summary(aircraft: &HashMap<Icao, AircraftState>, total_frames: u64, decoded_frames: u64) {
     println!();
     println!(
         "Frames: {total_frames} parsed, {decoded_frames} decoded, {} aircraft",
@@ -773,8 +753,17 @@ fn print_summary(
 
     let mut table = Table::new();
     table.set_header(vec![
-        "ICAO", "Callsign", "Squawk", "Alt (ft)", "Speed (kts)", "Hdg", "VRate",
-        "Lat", "Lon", "Country", "Msgs",
+        "ICAO",
+        "Callsign",
+        "Squawk",
+        "Alt (ft)",
+        "Speed (kts)",
+        "Hdg",
+        "VRate",
+        "Lat",
+        "Lon",
+        "Country",
+        "Msgs",
     ]);
 
     let mut sorted: Vec<_> = aircraft.values().collect();
@@ -785,11 +774,7 @@ fn print_summary(
             Cell::new(icao_to_string(&ac.icao)),
             Cell::new(ac.callsign.as_deref().unwrap_or("-")),
             Cell::new(ac.squawk.as_deref().unwrap_or("-")),
-            Cell::new(
-                ac.altitude_ft
-                    .map(|a| a.to_string())
-                    .unwrap_or("-".into()),
-            ),
+            Cell::new(ac.altitude_ft.map(|a| a.to_string()).unwrap_or("-".into())),
             Cell::new(
                 ac.speed_kts
                     .map(|s| format!("{s:.0}"))
@@ -805,16 +790,8 @@ fn print_summary(
                     .map(|v| format!("{v:+}"))
                     .unwrap_or("-".into()),
             ),
-            Cell::new(
-                ac.lat
-                    .map(|l| format!("{l:.4}"))
-                    .unwrap_or("-".into()),
-            ),
-            Cell::new(
-                ac.lon
-                    .map(|l| format!("{l:.4}"))
-                    .unwrap_or("-".into()),
-            ),
+            Cell::new(ac.lat.map(|l| format!("{l:.4}")).unwrap_or("-".into())),
+            Cell::new(ac.lon.map(|l| format!("{l:.4}")).unwrap_or("-".into())),
             Cell::new(ac.country.unwrap_or("-")),
             Cell::new(ac.messages),
         ]);

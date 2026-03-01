@@ -149,20 +149,17 @@ impl FilterEngine {
                 let icao_b = icao_to_string(&b.icao);
                 let mut pair = [icao_a.clone(), icao_b.clone()];
                 pair.sort();
-                let key = (format!("{}:{}", pair[0], pair[1]), EVENT_PROXIMITY.to_string());
+                let key = (
+                    format!("{}:{}", pair[0], pair[1]),
+                    EVENT_PROXIMITY.to_string(),
+                );
                 if self.emitted.contains(&key) {
                     continue;
                 }
                 self.emitted.insert(key);
 
-                let label_a = a
-                    .callsign
-                    .as_deref()
-                    .unwrap_or(&icao_a);
-                let label_b = b
-                    .callsign
-                    .as_deref()
-                    .unwrap_or(&icao_b);
+                let label_a = a.callsign.as_deref().unwrap_or(&icao_a);
+                let label_b = b.callsign.as_deref().unwrap_or(&icao_b);
 
                 events.push(FilterEvent {
                     icao: a.icao,
@@ -188,10 +185,7 @@ impl FilterEngine {
     }
 
     fn emit(&mut self, event: FilterEvent) -> Option<FilterEvent> {
-        let key = (
-            icao_to_string(&event.icao),
-            event.event_type.to_string(),
-        );
+        let key = (icao_to_string(&event.icao), event.event_type.to_string());
         if self.emitted.contains(&key) {
             return None;
         }
@@ -252,17 +246,11 @@ impl FilterEngine {
         }
         let icao_str = icao_to_string(&ac.icao);
         let label = ac.callsign.as_deref().unwrap_or(&icao_str);
-        let alt_str = ac
-            .altitude_ft
-            .map(|a| a.to_string())
-            .unwrap_or("?".into());
+        let alt_str = ac.altitude_ft.map(|a| a.to_string()).unwrap_or("?".into());
         if let Some(e) = self.emit(FilterEvent {
             icao: ac.icao,
             event_type: EVENT_RAPID_DESCENT,
-            description: format!(
-                "Rapid descent {} ft/min - {} at {} ft",
-                vr, label, alt_str
-            ),
+            description: format!("Rapid descent {} ft/min - {} at {} ft", vr, label, alt_str),
             lat: ac.lat,
             lon: ac.lon,
             altitude_ft: ac.altitude_ft,
@@ -422,12 +410,7 @@ impl FilterEngine {
         }
 
         for fence in &self.geofences {
-            let dist = haversine_nm(
-                ac.lat.unwrap(),
-                ac.lon.unwrap(),
-                fence.lat,
-                fence.lon,
-            );
+            let dist = haversine_nm(ac.lat.unwrap(), ac.lon.unwrap(), fence.lat, fence.lon);
             if dist > fence.radius_nm {
                 continue;
             }

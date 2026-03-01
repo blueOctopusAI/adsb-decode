@@ -196,11 +196,7 @@ pub fn check_preamble(mag: &[f32], pos: usize, min_level: Option<f32>) -> Option
 
     let pulse_avg = pulse_values.iter().sum::<f32>() / 4.0;
     let gap_sum: f32 = gap_values.iter().sum();
-    let gap_avg = if gap_sum > 0.0 {
-        gap_sum / 6.0
-    } else {
-        0.001
-    };
+    let gap_avg = if gap_sum > 0.0 { gap_sum / 6.0 } else { 0.001 };
 
     if pulse_avg < effective_min {
         return None;
@@ -212,7 +208,10 @@ pub fn check_preamble(mag: &[f32], pos: usize, min_level: Option<f32>) -> Option
 
     // All pulses should be roughly similar amplitude
     let pulse_min = pulse_values.iter().cloned().fold(f32::INFINITY, f32::min);
-    let pulse_max = pulse_values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let pulse_max = pulse_values
+        .iter()
+        .cloned()
+        .fold(f32::NEG_INFINITY, f32::max);
     if pulse_max > 6.0 * pulse_min {
         return None;
     }
@@ -298,7 +297,11 @@ pub fn bits_to_hex(bits: &[u8]) -> String {
             break;
         }
         let value = (chunk[0] << 3) | (chunk[1] << 2) | (chunk[2] << 1) | chunk[3];
-        hex.push(char::from_digit(value as u32, 16).unwrap().to_ascii_uppercase());
+        hex.push(
+            char::from_digit(value as u32, 16)
+                .unwrap()
+                .to_ascii_uppercase(),
+        );
     }
     hex
 }
@@ -410,7 +413,10 @@ mod tests {
         // At center (127, 128): (127-127.5)² + (128-127.5)² = 0.25 + 0.25 = 0.5
         let lut = &*MAG_LUT;
         let val = lut[127 * 256 + 128];
-        assert!((val - 0.5).abs() < 0.01, "Center value should be ~0.5, got {val}");
+        assert!(
+            (val - 0.5).abs() < 0.01,
+            "Center value should be ~0.5, got {val}"
+        );
     }
 
     #[test]

@@ -323,9 +323,9 @@ impl AdsbDatabase for TimescaleDb {
         limit: i64,
     ) -> Vec<EventRow> {
         // Build dynamic query based on filters
-        let rows = match (event_type, icao) {
-            (Some(et), Some(ic)) => {
-                sqlx::query(
+        let rows =
+            match (event_type, icao) {
+                (Some(et), Some(ic)) => sqlx::query(
                     "SELECT 0::BIGINT as id, icao, event_type, description, lat, lon, altitude_ft,
                             EXTRACT(EPOCH FROM time) as timestamp
                      FROM events WHERE event_type = $1 AND icao = $2
@@ -335,10 +335,8 @@ impl AdsbDatabase for TimescaleDb {
                 .bind(ic)
                 .bind(limit)
                 .fetch_all(&self.pool)
-                .await
-            }
-            (Some(et), None) => {
-                sqlx::query(
+                .await,
+                (Some(et), None) => sqlx::query(
                     "SELECT 0::BIGINT as id, icao, event_type, description, lat, lon, altitude_ft,
                             EXTRACT(EPOCH FROM time) as timestamp
                      FROM events WHERE event_type = $1
@@ -347,10 +345,8 @@ impl AdsbDatabase for TimescaleDb {
                 .bind(et)
                 .bind(limit)
                 .fetch_all(&self.pool)
-                .await
-            }
-            (None, Some(ic)) => {
-                sqlx::query(
+                .await,
+                (None, Some(ic)) => sqlx::query(
                     "SELECT 0::BIGINT as id, icao, event_type, description, lat, lon, altitude_ft,
                             EXTRACT(EPOCH FROM time) as timestamp
                      FROM events WHERE icao = $1
@@ -359,19 +355,16 @@ impl AdsbDatabase for TimescaleDb {
                 .bind(ic)
                 .bind(limit)
                 .fetch_all(&self.pool)
-                .await
-            }
-            (None, None) => {
-                sqlx::query(
+                .await,
+                (None, None) => sqlx::query(
                     "SELECT 0::BIGINT as id, icao, event_type, description, lat, lon, altitude_ft,
                             EXTRACT(EPOCH FROM time) as timestamp
                      FROM events ORDER BY time DESC LIMIT $1",
                 )
                 .bind(limit)
                 .fetch_all(&self.pool)
-                .await
-            }
-        };
+                .await,
+            };
 
         rows.unwrap_or_default()
             .iter()
@@ -379,7 +372,9 @@ impl AdsbDatabase for TimescaleDb {
                 id: r.get("id"),
                 icao: r.get("icao"),
                 event_type: r.get("event_type"),
-                description: r.get::<Option<String>, _>("description").unwrap_or_default(),
+                description: r
+                    .get::<Option<String>, _>("description")
+                    .unwrap_or_default(),
                 lat: r.get("lat"),
                 lon: r.get("lon"),
                 altitude_ft: r.get("altitude_ft"),

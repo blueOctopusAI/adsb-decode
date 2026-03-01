@@ -128,8 +128,7 @@ pub fn local_decode(
     let cpr_lon_norm = cpr_lon as f64 / CPR_MAX;
 
     // Compute latitude zone index from reference
-    let j = (ref_lat / dlat).floor()
-        + (modulo(ref_lat, dlat) / dlat - cpr_lat_norm + 0.5).floor();
+    let j = (ref_lat / dlat).floor() + (modulo(ref_lat, dlat) / dlat - cpr_lat_norm + 0.5).floor();
     let lat = dlat * (j + cpr_lat_norm);
 
     // Compute longitude zone size at this latitude
@@ -138,8 +137,7 @@ pub fn local_decode(
     let dlon = 360.0 / n_lon as f64;
 
     // Compute longitude zone index from reference
-    let m = (ref_lon / dlon).floor()
-        + (modulo(ref_lon, dlon) / dlon - cpr_lon_norm + 0.5).floor();
+    let m = (ref_lon / dlon).floor() + (modulo(ref_lon, dlon) / dlon - cpr_lon_norm + 0.5).floor();
     let mut lon = dlon * (m + cpr_lon_norm);
 
     // Normalize

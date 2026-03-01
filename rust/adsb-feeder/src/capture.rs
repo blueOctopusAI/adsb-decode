@@ -6,6 +6,8 @@
 //!
 //! Live RTL-SDR capture will be added when `rtlsdr_mt` integration is done.
 
+#![allow(dead_code)]
+
 use std::fs;
 use std::io::{self, Read};
 

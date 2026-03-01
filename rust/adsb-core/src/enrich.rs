@@ -80,7 +80,7 @@ pub fn classify_from_profile(
     if let Some(cs) = callsign {
         if cs.len() >= 3 {
             let prefix = cs[..3].to_ascii_uppercase();
-            if CARGO_PREFIXES.iter().any(|p| *p == prefix.as_str()) {
+            if CARGO_PREFIXES.contains(&prefix.as_str()) {
                 return CAT_CARGO;
             }
         }
@@ -173,15 +173,17 @@ const BUILTIN_AIRPORTS: &[Airport] = &[
 /// Find nearest airport within max_nm nautical miles.
 ///
 /// Returns (icao, name, distance_nm) or None.
-pub fn nearest_airport(lat: f64, lon: f64, max_nm: f64) -> Option<(&'static str, &'static str, f64)> {
+pub fn nearest_airport(
+    lat: f64,
+    lon: f64,
+    max_nm: f64,
+) -> Option<(&'static str, &'static str, f64)> {
     let mut best: Option<(&str, &str, f64)> = None;
 
     for apt in BUILTIN_AIRPORTS {
         let dist = haversine_nm(lat, lon, apt.lat, apt.lon);
-        if dist < max_nm {
-            if best.is_none() || dist < best.unwrap().2 {
-                best = Some((apt.icao, apt.name, dist));
-            }
+        if dist < max_nm && (best.is_none() || dist < best.unwrap().2) {
+            best = Some((apt.icao, apt.name, dist));
         }
     }
 
@@ -224,12 +226,18 @@ mod tests {
 
     #[test]
     fn test_classify_jet() {
-        assert_eq!(classify_from_profile(Some(300.0), Some(35000), false, None), CAT_JET);
+        assert_eq!(
+            classify_from_profile(Some(300.0), Some(35000), false, None),
+            CAT_JET
+        );
     }
 
     #[test]
     fn test_classify_prop() {
-        assert_eq!(classify_from_profile(Some(120.0), Some(5000), false, None), CAT_PROP);
+        assert_eq!(
+            classify_from_profile(Some(120.0), Some(5000), false, None),
+            CAT_PROP
+        );
     }
 
     #[test]
@@ -250,7 +258,10 @@ mod tests {
 
     #[test]
     fn test_classify_military() {
-        assert_eq!(classify_from_profile(Some(300.0), Some(35000), true, None), CAT_MILITARY);
+        assert_eq!(
+            classify_from_profile(Some(300.0), Some(35000), true, None),
+            CAT_MILITARY
+        );
     }
 
     #[test]
@@ -263,12 +274,18 @@ mod tests {
 
     #[test]
     fn test_classify_altitude_only_jet() {
-        assert_eq!(classify_from_profile(None, Some(35000), false, None), CAT_JET);
+        assert_eq!(
+            classify_from_profile(None, Some(35000), false, None),
+            CAT_JET
+        );
     }
 
     #[test]
     fn test_classify_altitude_only_prop() {
-        assert_eq!(classify_from_profile(None, Some(3000), false, None), CAT_PROP);
+        assert_eq!(
+            classify_from_profile(None, Some(3000), false, None),
+            CAT_PROP
+        );
     }
 
     #[test]

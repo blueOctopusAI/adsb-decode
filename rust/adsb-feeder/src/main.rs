@@ -16,7 +16,11 @@ use adsb_core::frame::{self, IcaoCache};
 mod capture;
 
 #[derive(Parser)]
-#[command(name = "adsb-feeder", version, about = "ADS-B capture and demodulation")]
+#[command(
+    name = "adsb-feeder",
+    version,
+    about = "ADS-B capture and demodulation"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -81,7 +85,8 @@ fn cmd_demod(file: PathBuf, sample_rate: u32, do_decode: bool) {
         let mut decoded_count = 0u64;
 
         for raw in &frames {
-            let parsed = frame::parse_frame(&raw.hex_str, raw.timestamp, None, false, &mut icao_cache);
+            let parsed =
+                frame::parse_frame(&raw.hex_str, raw.timestamp, None, false, &mut icao_cache);
             if let Some(f) = parsed {
                 if let Some(msg) = decode::decode(&f) {
                     decoded_count += 1;
@@ -93,7 +98,10 @@ fn cmd_demod(file: PathBuf, sample_rate: u32, do_decode: bool) {
         eprintln!("{decoded_count} decoded messages");
     } else {
         for raw in &frames {
-            println!("{:.6} {} signal={:.0}", raw.timestamp, raw.hex_str, raw.signal_level);
+            println!(
+                "{:.6} {} signal={:.0}",
+                raw.timestamp, raw.hex_str, raw.signal_level
+            );
         }
     }
 }

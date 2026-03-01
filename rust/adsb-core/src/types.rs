@@ -37,20 +37,77 @@ pub struct DfInfo {
 
 /// Known Downlink Format table.
 pub const DF_TABLE: &[(u8, DfInfo)] = &[
-    (0, DfInfo { name: "Short air-air surveillance", bits: 56 }),
-    (4, DfInfo { name: "Surveillance altitude reply", bits: 56 }),
-    (5, DfInfo { name: "Surveillance identity reply", bits: 56 }),
-    (11, DfInfo { name: "All-call reply", bits: 56 }),
-    (16, DfInfo { name: "Long air-air surveillance", bits: 112 }),
-    (17, DfInfo { name: "ADS-B extended squitter", bits: 112 }),
-    (18, DfInfo { name: "TIS-B / ADS-R", bits: 112 }),
-    (20, DfInfo { name: "Comm-B altitude reply", bits: 112 }),
-    (21, DfInfo { name: "Comm-B identity reply", bits: 112 }),
+    (
+        0,
+        DfInfo {
+            name: "Short air-air surveillance",
+            bits: 56,
+        },
+    ),
+    (
+        4,
+        DfInfo {
+            name: "Surveillance altitude reply",
+            bits: 56,
+        },
+    ),
+    (
+        5,
+        DfInfo {
+            name: "Surveillance identity reply",
+            bits: 56,
+        },
+    ),
+    (
+        11,
+        DfInfo {
+            name: "All-call reply",
+            bits: 56,
+        },
+    ),
+    (
+        16,
+        DfInfo {
+            name: "Long air-air surveillance",
+            bits: 112,
+        },
+    ),
+    (
+        17,
+        DfInfo {
+            name: "ADS-B extended squitter",
+            bits: 112,
+        },
+    ),
+    (
+        18,
+        DfInfo {
+            name: "TIS-B / ADS-R",
+            bits: 112,
+        },
+    ),
+    (
+        20,
+        DfInfo {
+            name: "Comm-B altitude reply",
+            bits: 112,
+        },
+    ),
+    (
+        21,
+        DfInfo {
+            name: "Comm-B identity reply",
+            bits: 112,
+        },
+    ),
 ];
 
 /// Look up DF metadata. Returns `None` for unrecognized DFs.
 pub fn df_info(df: u8) -> Option<&'static DfInfo> {
-    DF_TABLE.iter().find(|(d, _)| *d == df).map(|(_, info)| info)
+    DF_TABLE
+        .iter()
+        .find(|(d, _)| *d == df)
+        .map(|(_, info)| info)
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +156,7 @@ pub fn icao_from_u32(val: u32) -> Icao {
 /// Decode a hex string into bytes. Case-insensitive, must be even length.
 pub fn hex_decode(hex: &str) -> Option<Vec<u8>> {
     let hex = hex.trim();
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut bytes = Vec::with_capacity(hex.len() / 2);

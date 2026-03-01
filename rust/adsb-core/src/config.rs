@@ -133,9 +133,8 @@ fn parse_config(text: &str) -> Option<Config> {
                 } else {
                     current_section = None;
                     // Top-level key with value
-                    match key {
-                        "webhook" => config.webhook = parse_string_value(val),
-                        _ => {}
+                    if key == "webhook" {
+                        config.webhook = parse_string_value(val);
                     }
                 }
             } else if let Some(ref section) = current_section {
@@ -176,7 +175,7 @@ fn parse_config(text: &str) -> Option<Config> {
                             }
                         }
                         "port" => {
-                            if let Some(v) = val.parse::<u16>().ok() {
+                            if let Ok(v) = val.parse::<u16>() {
                                 config.dashboard.port = v;
                             }
                         }

@@ -66,8 +66,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/geofences",
-            axum::routing::get(routes::api_geofences_list)
-                .post(routes::api_geofences_add),
+            axum::routing::get(routes::api_geofences_list).post(routes::api_geofences_add),
         )
         .route(
             "/api/geofences/:id",

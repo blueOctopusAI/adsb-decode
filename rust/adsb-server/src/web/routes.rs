@@ -227,15 +227,12 @@ pub async fn api_trails(
     let mut trails: std::collections::HashMap<String, Vec<Value>> =
         std::collections::HashMap::new();
     for pos in &positions {
-        trails
-            .entry(pos.icao.clone())
-            .or_default()
-            .push(json!({
-                "lat": pos.lat,
-                "lon": pos.lon,
-                "altitude_ft": pos.altitude_ft,
-                "timestamp": pos.timestamp,
-            }));
+        trails.entry(pos.icao.clone()).or_default().push(json!({
+            "lat": pos.lat,
+            "lon": pos.lon,
+            "altitude_ft": pos.altitude_ft,
+            "timestamp": pos.timestamp,
+        }));
     }
 
     Json(json!(trails))
@@ -419,8 +416,26 @@ mod tests {
         let mut db = Database::open(&db_path).unwrap();
         let icao = adsb_core::types::icao_from_hex("4840D6").unwrap();
         db.upsert_aircraft(&icao, Some("Netherlands"), None, false, 1.0);
-        db.add_position(&icao, 52.25, 3.92, Some(38000), Some(450.0), Some(90.0), None, None, 1.0);
-        db.add_event(&icao, "military", "Test event", Some(52.25), Some(3.92), Some(38000), 1.0);
+        db.add_position(
+            &icao,
+            52.25,
+            3.92,
+            Some(38000),
+            Some(450.0),
+            Some(90.0),
+            None,
+            None,
+            1.0,
+        );
+        db.add_event(
+            &icao,
+            "military",
+            "Test event",
+            Some(52.25),
+            Some(3.92),
+            Some(38000),
+            1.0,
+        );
         drop(db);
 
         let state = Arc::new(AppState {
@@ -438,7 +453,12 @@ mod tests {
         let app = crate::web::build_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/stats").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

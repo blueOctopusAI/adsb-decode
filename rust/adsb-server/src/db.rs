@@ -104,6 +104,7 @@ pub struct Database {
     pending: u32,
 }
 
+#[allow(dead_code)]
 impl Database {
     /// Open or create a database at the given path.
     pub fn open(path: &str) -> SqlResult<Self> {
@@ -244,9 +245,11 @@ impl Database {
         self.maybe_commit();
 
         self.conn
-            .query_row("SELECT id FROM receivers WHERE name = ?1", params![name], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT id FROM receivers WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
             .unwrap_or(0)
     }
 
@@ -272,7 +275,13 @@ impl Database {
                  registration = COALESCE(excluded.registration, registration),
                  is_military = MAX(is_military, excluded.is_military),
                  last_seen = MAX(last_seen, excluded.last_seen)",
-            params![icao_str, country, registration, is_military as i32, timestamp],
+            params![
+                icao_str,
+                country,
+                registration,
+                is_military as i32,
+                timestamp
+            ],
         );
         self.maybe_commit();
     }
@@ -307,6 +316,7 @@ impl Database {
     // Positions
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_position(
         &mut self,
         icao: &Icao,
@@ -396,6 +406,7 @@ impl Database {
     // Events
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_event(
         &mut self,
         icao: &Icao,
@@ -410,7 +421,15 @@ impl Database {
         let _ = self.conn.execute(
             "INSERT INTO events (icao, event_type, description, lat, lon, altitude_ft, timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![icao_str, event_type, description, lat, lon, altitude_ft, timestamp],
+            params![
+                icao_str,
+                event_type,
+                description,
+                lat,
+                lon,
+                altitude_ft,
+                timestamp
+            ],
         );
         self.maybe_commit();
     }
@@ -491,7 +510,10 @@ impl Database {
         let cutoff = now() - (max_age_hours as f64 * 3600.0);
         let count = self
             .conn
-            .execute("DELETE FROM positions WHERE timestamp < ?1", params![cutoff])
+            .execute(
+                "DELETE FROM positions WHERE timestamp < ?1",
+                params![cutoff],
+            )
             .unwrap_or(0);
         let _ = self.conn.execute_batch("COMMIT; BEGIN;");
         count
@@ -649,6 +671,7 @@ pub struct EventRow {
     pub timestamp: f64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct ReceiverRow {
     pub id: i64,
@@ -663,6 +686,7 @@ pub struct ReceiverRow {
 // Web query methods
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 impl Database {
     /// Get all aircraft ordered by last_seen DESC.
     pub fn get_all_aircraft(&self) -> Vec<AircraftRow> {
@@ -861,7 +885,8 @@ impl Database {
         bind_values.push(Box::new(limit));
 
         let mut stmt = self.conn.prepare(&sql).unwrap();
-        let refs: Vec<&dyn rusqlite::types::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+        let refs: Vec<&dyn rusqlite::types::ToSql> =
+            bind_values.iter().map(|b| b.as_ref()).collect();
 
         stmt.query_map(refs.as_slice(), |r| {
             Ok(PositionRow {
@@ -977,7 +1002,8 @@ impl Database {
         bind_values.push(Box::new(limit));
 
         let mut stmt = self.conn.prepare(&sql).unwrap();
-        let refs: Vec<&dyn rusqlite::types::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+        let refs: Vec<&dyn rusqlite::types::ToSql> =
+            bind_values.iter().map(|b| b.as_ref()).collect();
 
         stmt.query_map(refs.as_slice(), |r| {
             Ok(PositionRow {
@@ -1029,6 +1055,7 @@ impl Database {
 ///
 /// The CLI uses `Database` directly (synchronous, single connection).
 /// The web server uses `Arc<dyn AdsbDatabase>` for backend-agnostic access.
+#[allow(dead_code)]
 #[async_trait::async_trait]
 pub trait AdsbDatabase: Send + Sync {
     async fn stats(&self) -> DbStats;
@@ -1043,11 +1070,8 @@ pub trait AdsbDatabase: Send + Sync {
         limit: i64,
     ) -> Vec<EventRow>;
     async fn get_trails(&self, minutes: f64, limit_per_aircraft: i64) -> Vec<PositionRow>;
-    async fn get_heatmap_positions(
-        &self,
-        minutes: f64,
-        limit: i64,
-    ) -> Vec<(f64, f64, Option<i32>)>;
+    async fn get_heatmap_positions(&self, minutes: f64, limit: i64)
+        -> Vec<(f64, f64, Option<i32>)>;
     async fn query_positions(
         &self,
         min_alt: Option<i32>,
@@ -1269,7 +1293,15 @@ mod tests {
         let mut db = test_db();
         let icao = icao_from_hex("ADF7C8").unwrap();
         db.upsert_aircraft(&icao, Some("United States"), None, true, 1.0);
-        db.add_event(&icao, "military", "US military aircraft", None, None, None, 1.0);
+        db.add_event(
+            &icao,
+            "military",
+            "US military aircraft",
+            None,
+            None,
+            None,
+            1.0,
+        );
 
         assert_eq!(db.count_events(), 1);
     }

@@ -81,7 +81,7 @@ fn decode_gillham_altitude(alt_code: u32) -> Option<i32> {
 
     let altitude = ab_bin as i32 * 500 + c_bin as i32 * 100 - 1200;
 
-    if altitude < -1200 || altitude > 126750 {
+    if !(-1200..=126750).contains(&altitude) {
         return None;
     }
 
@@ -108,9 +108,8 @@ pub fn decode_altitude_13bit(alt_code_13: u32) -> Option<i32> {
 
     if q_bit == 1 {
         // 25-ft mode: remove M and Q bits to get 11-bit code
-        let n = ((alt_code_13 & 0x1F80) >> 2)
-            | ((alt_code_13 & 0x0020) >> 1)
-            | (alt_code_13 & 0x000F);
+        let n =
+            ((alt_code_13 & 0x1F80) >> 2) | ((alt_code_13 & 0x0020) >> 1) | (alt_code_13 & 0x000F);
         Some(n as i32 * 25 - 1000)
     } else {
         decode_gillham_altitude(alt_code_13)
