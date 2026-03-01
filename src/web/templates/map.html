@@ -3,41 +3,46 @@
 
 {% block extra_style %}
 #map { width: 100%; height: calc(100vh - 41px); }
-#sidebar {
-    position: absolute;
-    top: 49px;
-    right: 0;
-    width: 360px;
-    height: calc(100vh - 41px);
-    background: rgba(10,10,10,0.92);
-    border-left: 1px solid #333;
-    overflow-y: auto;
-    z-index: 1000;
-    font-size: 12px;
-    padding: 8px;
-}
-#sidebar h3 { color: #00ff88; margin: 8px 0 4px; font-size: 13px; }
-#sidebar table { width: 100%; }
-#sidebar td { padding: 3px 6px; }
-#sidebar td a { cursor: pointer; }
 
-/* Stats overlay - top left under zoom controls */
-#stats-overlay {
+/* Unified control panel — top right */
+#control-panel {
     position: absolute;
     top: 56px;
-    left: 56px;
-    background: rgba(0,0,0,0.85);
+    right: 12px;
+    width: 300px;
+    max-height: calc(100vh - 110px);
+    background: rgba(10,10,10,0.92);
     color: #e0e0e0;
-    padding: 10px 14px;
     border-radius: 4px;
     font-size: 12px;
     z-index: 1000;
     border: 1px solid #333;
-    line-height: 1.6;
-    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
-#stats-overlay .stat-label { color: #888; }
-#stats-overlay .stat-value { color: #00ff88; font-weight: bold; float: right; }
+#panel-header {
+    padding: 8px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #333;
+    cursor: pointer;
+    user-select: none;
+}
+#panel-header:hover { background: rgba(255,255,255,0.03); }
+#panel-header .stat-row { display: flex; gap: 12px; }
+.stat-label { color: #888; }
+.stat-value { color: #00ff88; font-weight: bold; }
+#panel-toggle { color: #666; font-size: 10px; }
+#panel-body { overflow-y: auto; }
+#panel-body.collapsed { display: none; }
+#controls-section { padding: 8px 12px; border-bottom: 1px solid #222; }
+#ac-list-section { padding: 4px 8px; overflow-y: auto; }
+#ac-list-section h3 { color: #00ff88; margin: 4px 0; font-size: 12px; }
+#ac-list-section table { width: 100%; }
+#ac-list-section td { padding: 2px 5px; }
+#ac-list-section td a { cursor: pointer; }
 
 .leaflet-container { background: #0a0a0a; }
 
@@ -92,22 +97,45 @@
 
 {% block content %}
 <div id="map"></div>
-<div id="stats-overlay">
-    <div><span class="stat-label">Aircraft:</span> <span class="stat-value" id="so-aircraft">0</span></div>
-    <div><span class="stat-label">Positions:</span> <span class="stat-value" id="so-positions">0</span></div>
-    <div><span class="stat-label">Events:</span> <span class="stat-value" id="so-events">0</span></div>
-    <div><span class="stat-label">Uptime:</span> <span class="stat-value" id="so-uptime">--</span></div>
-    <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;">
-        <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="trail-toggle" checked> Trails</label>
-        <label style="cursor:pointer;font-size:11px;margin-left:8px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
-        <label style="cursor:pointer;font-size:11px;margin-left:8px;"><input type="checkbox" id="apt-large"> Major</label>
-        <label style="cursor:pointer;font-size:11px;margin-left:6px;"><input type="checkbox" id="apt-medium"> Medium</label>
-        <label style="cursor:pointer;font-size:11px;margin-left:6px;"><input type="checkbox" id="apt-small"> Small</label>
+<div id="control-panel">
+    <div id="panel-header">
+        <div class="stat-row">
+            <span><span class="stat-value" id="so-aircraft">0</span> <span class="stat-label">ac</span></span>
+            <span><span class="stat-value" id="so-positions">0</span> <span class="stat-label">pos</span></span>
+            <span><span class="stat-value" id="so-events">0</span> <span class="stat-label">evt</span></span>
+            <span><span class="stat-value" id="so-uptime">--</span></span>
+        </div>
+        <span id="panel-toggle">&#9660;</span>
     </div>
-    <div id="trail-duration" style="margin-top:6px;border-top:1px solid #333;padding-top:6px;">
-        <span style="font-size:10px;color:#888;">Trail duration:</span>
-        <span style="font-size:11px;color:#00ff88;float:right;" id="trail-dur-label">1h</span>
-        <input type="range" id="trail-dur-slider" min="0" max="7" value="3" style="width:100%;accent-color:#00ff88;margin-top:2px;">
+    <div id="panel-body">
+        <div id="controls-section">
+            <div style="display:flex;gap:10px;">
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="trail-toggle" checked> Trails</label>
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
+            </div>
+            <div style="margin-top:5px;">
+                <span style="font-size:10px;color:#888;text-transform:uppercase;">Airports:</span>
+                <span style="display:inline-flex;gap:8px;margin-left:6px;">
+                    <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="apt-large"> Major</label>
+                    <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="apt-medium"> Medium</label>
+                    <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="apt-small"> Small</label>
+                </span>
+            </div>
+            <div style="margin-top:6px;">
+                <span style="font-size:10px;color:#888;">Trail:</span>
+                <span style="font-size:11px;color:#00ff88;float:right;" id="trail-dur-label">1h</span>
+                <input type="range" id="trail-dur-slider" min="0" max="7" value="3" style="width:100%;accent-color:#00ff88;margin-top:2px;">
+            </div>
+        </div>
+        <div id="ac-list-section">
+            <h3>Aircraft (<span id="ac-count">0</span>)</h3>
+            <table id="ac-table">
+                <thead>
+                    <tr><th>ICAO</th><th>Call</th><th>Alt</th><th>Spd</th><th>Hdg</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
     </div>
 </div>
 <div id="alt-legend">
@@ -122,15 +150,6 @@
             <span>0 ft</span>
         </div>
     </div>
-</div>
-<div id="sidebar">
-    <h3>Aircraft (<span id="ac-count">0</span>)</h3>
-    <table id="ac-table">
-        <thead>
-            <tr><th>ICAO</th><th>Call</th><th>Alt</th><th>Spd</th><th>Hdg</th></tr>
-        </thead>
-        <tbody></tbody>
-    </table>
 </div>
 {% endblock %}
 
@@ -569,6 +588,14 @@ function restoreState() {
 map.on('moveend', saveState);
 ['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small'].forEach(id => {
     document.getElementById(id).addEventListener('change', saveState);
+});
+
+// --- Panel toggle ---
+document.getElementById('panel-header').addEventListener('click', function() {
+    const body = document.getElementById('panel-body');
+    const toggle = document.getElementById('panel-toggle');
+    body.classList.toggle('collapsed');
+    toggle.innerHTML = body.classList.contains('collapsed') ? '&#9650;' : '&#9660;';
 });
 
 // --- Initialize ---
