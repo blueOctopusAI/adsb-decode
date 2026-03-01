@@ -132,6 +132,17 @@
                 <button id="add-geofence-btn" style="font-size:10px;padding:2px 6px;background:#222;color:#00ff88;border:1px solid #444;border-radius:3px;cursor:pointer;" title="Click map to place geofence">+ Fence</button>
             </div>
             <div id="geofence-list" style="margin-top:4px;font-size:10px;color:#888;max-height:60px;overflow-y:auto;"></div>
+            <div style="margin-top:6px;">
+                <span style="font-size:10px;color:#888;text-transform:uppercase;">Map:</span>
+                <select id="map-style" style="font-size:11px;background:#222;color:#ccc;border:1px solid #444;border-radius:3px;padding:1px 4px;margin-left:4px;">
+                    <option value="dark">Dark</option>
+                    <option value="satellite">Satellite</option>
+                    <option value="topo">Topo</option>
+                    <option value="streets">Streets</option>
+                    <option value="dark-matter">Dark Matter</option>
+                    <option value="voyager">Voyager</option>
+                </select>
+            </div>
         </div>
         <div id="ac-list-section">
             <h3>Aircraft (<span id="ac-count">0</span>)</h3>
@@ -170,10 +181,23 @@ const map = L.map('map', {
     zoomControl: true,
 });
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; OSM &copy; CARTO',
-    maxZoom: 19,
-}).addTo(map);
+// --- Map tile styles ---
+const tileSets = {
+    'dark': { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', attr: '&copy; OSM &copy; CARTO', maxZoom: 19 },
+    'satellite': { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr: '&copy; Esri', maxZoom: 19 },
+    'topo': { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attr: '&copy; OSM &copy; OpenTopoMap', maxZoom: 17 },
+    'streets': { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', attr: '&copy; OSM', maxZoom: 19 },
+    'dark-matter': { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', attr: '&copy; OSM &copy; CARTO', maxZoom: 19 },
+    'voyager': { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attr: '&copy; OSM &copy; CARTO', maxZoom: 19 },
+};
+let currentTileLayer = null;
+function setMapStyle(style) {
+    const ts = tileSets[style] || tileSets['dark'];
+    if (currentTileLayer) map.removeLayer(currentTileLayer);
+    currentTileLayer = L.tileLayer(ts.url, { attribution: ts.attr, maxZoom: ts.maxZoom }).addTo(map);
+    document.getElementById('map-style').value = style;
+}
+setMapStyle('dark');
 
 const markers = {};
 const trailLines = {};
@@ -556,6 +580,7 @@ function saveState() {
         aptSmall: document.getElementById('apt-small').checked,
         notify: document.getElementById('notify-toggle').checked,
         audio: document.getElementById('audio-toggle').checked,
+        mapStyle: document.getElementById('map-style').value,
         zoom: map.getZoom(),
         center: [map.getCenter().lat, map.getCenter().lng],
     };
@@ -580,6 +605,7 @@ function restoreState() {
             document.getElementById('notify-toggle').checked = true; notificationsEnabled = true;
         }
         if (s.audio) { document.getElementById('audio-toggle').checked = true; audioEnabled = true; }
+        if (s.mapStyle && tileSets[s.mapStyle]) setMapStyle(s.mapStyle);
         if (s.center && s.zoom) { map.setView(s.center, s.zoom); mapCentered = true; }
         // Trigger airport + heatmap load if restored
         if (s.aptLarge || s.aptMedium || s.aptSmall) {
@@ -597,6 +623,10 @@ function restoreState() {
 map.on('moveend', saveState);
 ['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small', 'notify-toggle', 'audio-toggle'].forEach(id => {
     document.getElementById(id).addEventListener('change', saveState);
+});
+document.getElementById('map-style').addEventListener('change', function() {
+    setMapStyle(this.value);
+    saveState();
 });
 
 // --- Geofence management ---

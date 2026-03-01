@@ -274,6 +274,7 @@ What makes this more than a radio scanner:
 - Stats overlay: aircraft count, positions, events, uptime
 - Altitude legend (color bar with labeled scale 0–40,000 ft)
 - Heatmap layer toggle (Leaflet.heat plugin for position density)
+- Switchable map styles: Dark, Satellite (Esri), Topo, Streets (OSM), Dark Matter, Voyager (CARTO)
 - Airport overlay: 3,642 US airports with Major/Medium/Small toggles, viewport-filtered rendering. Click for popup with elevation, coords, AirNav + SkyVector links.
 - Dynamic map centering from receiver location via `/api/stats`
 - Events dashboard with type filter buttons (military, emergency, anomaly)

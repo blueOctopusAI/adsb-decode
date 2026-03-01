@@ -26,6 +26,7 @@ def create_app(db_path: str = "data/adsb.db") -> Flask:
 
     # Store database in app config for route access
     app.config["DB_PATH"] = db_path
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
 
     @app.before_request
     def _open_db():
