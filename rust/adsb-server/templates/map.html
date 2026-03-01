@@ -437,6 +437,7 @@ const aptIcons = {
     small_airport: L.divIcon({ className: '', html: `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3" fill="#997700" opacity="0.7"/></svg>`, iconSize: [10, 10], iconAnchor: [5, 5] }),
     major: L.divIcon({ className: '', html: `<svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="8" width="12" height="2.5" rx="1" fill="#ffaa00" opacity="0.9"/><rect x="7.5" y="2" width="2.5" height="14" rx="1" fill="#ffaa00" opacity="0.9"/></svg>`, iconSize: [18, 18], iconAnchor: [9, 9] }),
     medium: L.divIcon({ className: '', html: `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="2" y="6" width="10" height="2" rx="1" fill="#cc8800" opacity="0.8"/><rect x="6" y="1" width="2" height="12" rx="1" fill="#cc8800" opacity="0.8"/></svg>`, iconSize: [14, 14], iconAnchor: [7, 7] }),
+    small: L.divIcon({ className: '', html: `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3" fill="#997700" opacity="0.7"/></svg>`, iconSize: [10, 10], iconAnchor: [5, 5] }),
 };
 
 function getAptFilters() {
@@ -446,6 +447,7 @@ function getAptFilters() {
         small_airport: document.getElementById('apt-small').checked,
         major: document.getElementById('apt-large').checked,
         medium: document.getElementById('apt-medium').checked,
+        small: document.getElementById('apt-small').checked,
     };
 }
 

@@ -115,6 +115,7 @@ impl FilterEngine {
         self.check_low_altitude(ac, &mut events);
         self.check_circling(ac, &mut events);
         self.check_holding(ac, &mut events);
+        self.check_unusual_altitude(ac, &mut events);
         self.check_geofences(ac, &mut events);
         events
     }
@@ -404,6 +405,45 @@ impl FilterEngine {
         }
     }
 
+    fn check_unusual_altitude(
+        &mut self,
+        ac: &AircraftState,
+        events: &mut Vec<FilterEvent>,
+    ) {
+        // Fast aircraft flying unusually low, far from any airport
+        let speed = match ac.speed_kts {
+            Some(s) if s > 200.0 => s,
+            _ => return,
+        };
+        let alt = match ac.altitude_ft {
+            Some(a) if a > 0 && a < 3000 => a,
+            _ => return,
+        };
+        if !ac.has_position() {
+            return;
+        }
+        // Suppress if near an airport (within 15 nm)
+        if crate::enrich::nearest_airport(ac.lat.unwrap(), ac.lon.unwrap(), 15.0).is_some() {
+            return;
+        }
+        let icao_str = icao_to_string(&ac.icao);
+        let label = ac.callsign.as_deref().unwrap_or(&icao_str);
+        if let Some(e) = self.emit(FilterEvent {
+            icao: ac.icao,
+            event_type: EVENT_UNUSUAL_ALTITUDE,
+            description: format!(
+                "Unusual altitude: {} at {} ft, {:.0} kts, far from airports",
+                label, alt, speed
+            ),
+            lat: ac.lat,
+            lon: ac.lon,
+            altitude_ft: ac.altitude_ft,
+            timestamp: ac.last_seen,
+        }) {
+            events.push(e);
+        }
+    }
+
     fn check_geofences(&mut self, ac: &AircraftState, events: &mut Vec<FilterEvent>) {
         if !ac.has_position() {
             return;
@@ -650,5 +690,80 @@ mod tests {
 
         let events = engine.check(&ac); // should emit again
         assert!(events.iter().any(|e| e.event_type == EVENT_MILITARY));
+    }
+
+    #[test]
+    fn test_unusual_altitude_fast_low_no_airport() {
+        let mut engine = FilterEngine::new();
+        let mut ac = make_ac([0x48, 0x40, 0xD6]);
+        ac.speed_kts = Some(300.0);
+        ac.altitude_ft = Some(1500);
+        ac.lat = Some(0.0); // middle of ocean — no airports
+        ac.lon = Some(0.0);
+        ac.last_seen = 1.0;
+
+        let events = engine.check(&ac);
+        assert!(
+            events.iter().any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
+            "Fast + low + far from airport should trigger"
+        );
+    }
+
+    #[test]
+    fn test_unusual_altitude_suppressed_near_airport() {
+        let mut engine = FilterEngine::new();
+        let mut ac = make_ac([0x48, 0x40, 0xD6]);
+        ac.speed_kts = Some(300.0);
+        ac.altitude_ft = Some(1500);
+        ac.lat = Some(35.44); // near KAVL
+        ac.lon = Some(-82.54);
+        ac.last_seen = 1.0;
+
+        let events = engine.check(&ac);
+        assert!(
+            !events.iter().any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
+            "Should suppress near airport"
+        );
+    }
+
+    #[test]
+    fn test_unusual_altitude_slow_ignored() {
+        let mut engine = FilterEngine::new();
+        let mut ac = make_ac([0x48, 0x40, 0xD6]);
+        ac.speed_kts = Some(100.0); // slow
+        ac.altitude_ft = Some(1500);
+        ac.lat = Some(0.0);
+        ac.lon = Some(0.0);
+        ac.last_seen = 1.0;
+
+        let events = engine.check(&ac);
+        assert!(
+            !events.iter().any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
+            "Slow aircraft should not trigger"
+        );
+    }
+
+    #[test]
+    fn test_unusual_altitude_high_ignored() {
+        let mut engine = FilterEngine::new();
+        let mut ac = make_ac([0x48, 0x40, 0xD6]);
+        ac.speed_kts = Some(400.0);
+        ac.altitude_ft = Some(35000); // high altitude is normal
+        ac.lat = Some(0.0);
+        ac.lon = Some(0.0);
+        ac.last_seen = 1.0;
+
+        let events = engine.check(&ac);
+        assert!(
+            !events.iter().any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
+            "High altitude should not trigger"
+        );
+    }
+
+    #[test]
+    fn test_haversine_symmetric() {
+        let d1 = haversine_nm(35.0, -82.0, 36.0, -83.0);
+        let d2 = haversine_nm(36.0, -83.0, 35.0, -82.0);
+        assert!((d1 - d2).abs() < 0.001, "Haversine should be symmetric");
     }
 }

@@ -38,10 +38,14 @@ enum Commands {
         raw: bool,
     },
 
-    /// Track aircraft from a capture file with database persistence
+    /// Track aircraft from a capture file or live RTL-SDR
     Track {
         /// Path to file containing hex frames (one per line)
-        file: PathBuf,
+        file: Option<PathBuf>,
+
+        /// Live capture from RTL-SDR dongle (via rtl_adsb)
+        #[arg(long)]
+        live: bool,
 
         /// SQLite database path
         #[arg(long, default_value = "data/adsb.db")]
@@ -50,6 +54,10 @@ enum Commands {
         /// Minimum seconds between stored positions per aircraft
         #[arg(long, default_value = "2.0")]
         min_interval: f64,
+
+        /// Launch web dashboard on this port
+        #[arg(short, long)]
+        port: Option<u16>,
     },
 
     /// Show database statistics
@@ -223,9 +231,21 @@ async fn main() {
         Commands::Decode { file, raw } => cmd_decode(file, raw),
         Commands::Track {
             file,
+            live,
             db_path,
             min_interval,
-        } => cmd_track(file, &db_path, min_interval),
+            port,
+        } => {
+            if !live && file.is_none() {
+                eprintln!("Error: provide a FILE or use --live for RTL-SDR capture");
+                std::process::exit(1);
+            }
+            if live {
+                cmd_track_live(&db_path, min_interval, port).await;
+            } else {
+                cmd_track(file.unwrap(), &db_path, min_interval);
+            }
+        }
         Commands::Stats { db_path } => cmd_stats(&db_path),
         Commands::History {
             db_path,
@@ -440,6 +460,138 @@ fn cmd_track(file: PathBuf, db_path: &str, min_interval: f64) {
 
         println!("{table}");
     }
+}
+
+async fn cmd_track_live(db_path: &str, min_interval: f64, port: Option<u16>) {
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, RwLock};
+
+    let mut database = db::Database::open(db_path).unwrap_or_else(|e| {
+        eprintln!("Error opening database {db_path}: {e}");
+        std::process::exit(1);
+    });
+
+    let source = "rtl_adsb:live";
+    let capture_id = database.start_capture(source, None);
+    database.set_autocommit(false);
+
+    let tracker = Arc::new(RwLock::new(Tracker::new(
+        None,
+        Some(capture_id),
+        None,
+        None,
+        min_interval,
+    )));
+    let mut icao_cache = IcaoCache::new(60.0);
+
+    // Start web server if --port given
+    // SqliteDb opens fresh connections per request, so it sees writes from our Database
+    if let Some(p) = port {
+        let web_db: Arc<dyn db::AdsbDatabase> = Arc::new(db::SqliteDb::new(db_path.to_string()));
+        let state = Arc::new(web::AppState {
+            db: web_db,
+            tracker: Some(tracker.clone()),
+            geofences: RwLock::new(Vec::new()),
+            geofence_next_id: RwLock::new(1),
+        });
+        let app = web::build_router(state);
+        let addr = format!("0.0.0.0:{p}");
+        eprintln!("Dashboard → http://127.0.0.1:{p}");
+        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+    }
+
+    // Spawn rtl_adsb subprocess
+    eprintln!("Starting rtl_adsb...");
+    let mut child = Command::new("rtl_adsb")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to start rtl_adsb: {e}");
+            eprintln!("Make sure rtl-sdr tools are installed (brew install librtlsdr)");
+            std::process::exit(1);
+        });
+
+    let stdout = child.stdout.take().unwrap();
+    let reader = io::BufReader::new(stdout);
+
+    eprintln!("Live tracking started — Ctrl+C to stop\n");
+
+    let mut last_print = std::time::Instant::now();
+    let mut last_flush = std::time::Instant::now();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        let hex = line.trim();
+        if hex.is_empty() || hex.starts_with('#') {
+            continue;
+        }
+
+        // rtl_adsb outputs lines like "*8D4840D6202CC371C32CE0576098;"
+        let hex_clean = if hex.starts_with('*') && hex.ends_with(';') {
+            &hex[1..hex.len() - 1]
+        } else {
+            hex
+        };
+
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        let frame = match frame::parse_frame(hex_clean, now_ts, None, true, &mut icao_cache) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        let events = {
+            let mut t = tracker.write().unwrap();
+            let (_msg, events) = t.update(&frame);
+            events
+        };
+
+        database.apply_events(&events);
+
+        // Periodic status + flush
+        if last_print.elapsed().as_secs_f64() > 10.0 {
+            let mut t = tracker.write().unwrap();
+            let active = t.get_active(now_ts);
+            eprintln!(
+                "  {} frames, {} valid, {} active aircraft, {} positions",
+                t.total_frames, t.valid_frames, active.len(), t.position_decodes
+            );
+            t.prune_stale(now_ts);
+            last_print = std::time::Instant::now();
+        }
+
+        if last_flush.elapsed().as_secs_f64() > 5.0 {
+            database.flush();
+            last_flush = std::time::Instant::now();
+        }
+    }
+
+    // Cleanup
+    let _ = child.kill();
+    database.flush();
+    let t = tracker.read().unwrap();
+    database.end_capture(
+        capture_id,
+        t.total_frames,
+        t.valid_frames,
+        t.aircraft.len() as u64,
+    );
+    database.flush();
+    eprintln!(
+        "\nStopped. {} frames, {} valid, {} aircraft",
+        t.total_frames, t.valid_frames, t.aircraft.len()
+    );
 }
 
 fn cmd_stats(db_path: &str) {

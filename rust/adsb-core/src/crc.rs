@@ -332,6 +332,79 @@ mod tests {
         assert!(!SYNDROME_TABLE_56.is_empty());
         // Single-bit entries should exist for all bit positions
         assert!(SYNDROME_TABLE_112.len() > 100);
+        assert!(SYNDROME_TABLE_112.len() <= 7000);
         assert!(SYNDROME_TABLE_56.len() > 50);
+    }
+
+    #[test]
+    fn test_try_fix_double_bit_error() {
+        // Corrupt two bits in the payload area
+        let mut data = hex_decode(VALID_FRAMES[0]).unwrap();
+        data[5] ^= 0x01; // flip bit in byte 5
+        data[8] ^= 0x10; // flip bit in byte 8
+        let corrupted = hex_encode(&data);
+
+        let fixed = try_fix(&corrupted);
+        assert!(fixed.is_some(), "Should fix double-bit error");
+        assert_eq!(fixed.unwrap(), VALID_FRAMES[0]);
+    }
+
+    #[test]
+    fn test_try_fix_triple_bit_not_correctable() {
+        // Corrupt three bits — beyond syndrome table coverage
+        let mut data = hex_decode(VALID_FRAMES[0]).unwrap();
+        data[5] ^= 0x01;
+        data[8] ^= 0x10;
+        data[10] ^= 0x04;
+        let corrupted = hex_encode(&data);
+
+        assert!(try_fix(&corrupted).is_none(), "Triple-bit should not be fixable");
+    }
+
+    #[test]
+    fn test_try_fix_short_message() {
+        // Build a synthetic 56-bit (7-byte) frame with valid CRC (remainder 0).
+        // Payload = first 4 bytes, CRC = last 3 bytes.
+        let payload = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let crc = crc24_raw(&payload);
+        let frame = [
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+            (crc >> 16) as u8,
+            (crc >> 8) as u8,
+            crc as u8,
+        ];
+
+        // Verify remainder is 0
+        assert_eq!(crc24(&frame), 0);
+        let hex = hex_encode(&frame);
+
+        // Corrupt one bit past the DF field and try to fix
+        let mut corrupted = frame;
+        corrupted[2] ^= 0x04; // bit 20 — well past bits 0-4
+        let corrupted_hex = hex_encode(&corrupted);
+
+        let fixed = try_fix(&corrupted_hex);
+        assert!(fixed.is_some(), "Should fix single-bit in short frame");
+        assert_eq!(fixed.unwrap(), hex);
+    }
+
+    #[test]
+    fn test_crc24_identity() {
+        assert_eq!(crc24_payload(&[0x00, 0x00, 0x00]), 0);
+    }
+
+    #[test]
+    fn test_correction_preserves_icao() {
+        let mut data = hex_decode(VALID_FRAMES[0]).unwrap();
+        let original_icao = [data[1], data[2], data[3]];
+        data[5] ^= 0x01; // corrupt payload, not ICAO
+        let corrupted = hex_encode(&data);
+
+        let fixed = try_fix(&corrupted).unwrap();
+        let fixed_data = hex_decode(&fixed).unwrap();
+        assert_eq!([fixed_data[1], fixed_data[2], fixed_data[3]], original_icao);
     }
 }

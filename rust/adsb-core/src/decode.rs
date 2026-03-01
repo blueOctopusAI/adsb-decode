@@ -515,6 +515,84 @@ mod tests {
     // -- Squawk --
 
     #[test]
+    fn test_decode_altitude_25ft_exact_value() {
+        // alt_code = 0xC38 (Q-bit set, n*25 - 1000 = 38000)
+        // 0xC38 = 0b_110000_1_11000
+        // Q-bit is at position 4 = 1 (set)
+        // n = upper 7 bits (0b_110000_1 >> 5 << 4) | lower 4 (0b_1000) = (0x18 << 4) | 8 = 392
+        // But let's compute: n = 0x30 << 4 | 0x8 = 0x308 = 776? No...
+        // Actually: 38000 + 1000 = 39000. 39000 / 25 = 1560
+        // 1560 in binary = 0b11000011000
+        // Insert Q-bit at position 4: 0b110000_1_1000 = 0xC38? Let's verify
+        // n = ((0xC38 >> 5) << 4) | (0xC38 & 0x0F) = (0x61 << 4) | 0x08 = 0x618 = 1560
+        // altitude = 1560 * 25 - 1000 = 39000 - 1000 = 38000
+        let alt = decode_altitude(0xC38);
+        assert_eq!(alt, Some(38000));
+    }
+
+    #[test]
+    fn test_decode_gillham_altitude() {
+        // Test the Gillham (gray code) path: Q-bit = 0
+        // Construct a code with Q-bit clear that produces a valid altitude
+        // A=1,B=0,C=1: c_bin=1 (100ft), ab_bin=8 (4000ft) → 4000+100-1200 = 2900
+        let alt_code = 0b_0_1_0_0_0_0_0_0_0_0_0_0_0u32; // A1=1, rest 0
+        // This gives c_digit=0 which is invalid. Let's try a known working pattern.
+        // C1=1: sets c_digit bit, making c_bin valid
+        // A1=1, C1=1: alt_code = (C1<<12)|(A1<<11) = 0x1800
+        let alt = decode_altitude(0x1800);
+        assert!(alt.is_some(), "Valid Gillham code should decode");
+        let val = alt.unwrap();
+        assert!((-1200..=126750).contains(&val), "Altitude {} out of range", val);
+    }
+
+    #[test]
+    fn test_decode_gillham_invalid_c_zero() {
+        // All zeros except some A/B bits → c_digit=0 → c_bin=0 → returns None
+        let alt = decode_altitude(0b_0_0_0_0_0_0_0_1_0_0_0_0_0); // only B1=1
+        assert!(alt.is_none(), "C=0 should be invalid in Gillham");
+    }
+
+    #[test]
+    fn test_decode_gillham_range() {
+        // Systematically test that all valid Gillham codes produce in-range altitudes
+        let mut valid_count = 0;
+        for code in 0..0x2000u32 {
+            let q_bit = (code >> 4) & 1;
+            if q_bit == 1 {
+                continue; // Skip 25ft mode
+            }
+            if let Some(alt) = decode_altitude(code) {
+                assert!(
+                    (-1200..=126750).contains(&alt),
+                    "Gillham code 0x{:04X} gave altitude {} out of range",
+                    code,
+                    alt
+                );
+                valid_count += 1;
+            }
+        }
+        assert!(valid_count > 0, "Should have some valid Gillham codes");
+    }
+
+    #[test]
+    fn test_decode_squawk_7500() {
+        // 7500 = A=7, B=5, C=0, D=0
+        // A: a4=1,a2=1,a1=1 -> 7
+        // B: b4=1,b2=0,b1=1 -> 5
+        // C: c4=0,c2=0,c1=0 -> 0
+        // D: d4=0,d2=0,d1=0 -> 0
+        let id_code = 0b0_1_0_1_0_1_0_1_0_0_0_1_0;
+        assert_eq!(decode_squawk(id_code), "7500");
+    }
+
+    #[test]
+    fn test_decode_squawk_7600() {
+        // 7600 = A=7, B=6, C=0, D=0
+        let id_code = 0b0_1_0_1_0_1_0_0_0_1_0_1_0;
+        assert_eq!(decode_squawk(id_code), "7600");
+    }
+
+    #[test]
     fn test_decode_squawk_7700() {
         // 7700 = A=7, B=7, C=0, D=0
         // A: a4=1,a2=1,a1=1 -> 7

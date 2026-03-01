@@ -1420,6 +1420,196 @@ mod tests {
     }
 
     #[test]
+    fn test_military_sticky_flag() {
+        // is_military = MAX(is_military, excluded.is_military)
+        // Once set to true, it should never revert to false.
+        let mut db = test_db();
+        let icao = icao_from_hex("ADF7C8").unwrap();
+
+        // First insert as military
+        db.upsert_aircraft(&icao, Some("United States"), None, true, 1.0);
+        assert!(db.get_aircraft("ADF7C8").unwrap().is_military);
+
+        // Re-upsert with is_military=false — should stay true
+        db.upsert_aircraft(&icao, None, None, false, 2.0);
+        assert!(
+            db.get_aircraft("ADF7C8").unwrap().is_military,
+            "Military flag should be sticky (MAX)"
+        );
+    }
+
+    #[test]
+    fn test_country_preserved_on_reupsert() {
+        // country = COALESCE(excluded.country, country)
+        // If new insert has NULL country, the existing value should survive.
+        let mut db = test_db();
+        let icao = icao_from_hex("4840D6").unwrap();
+
+        db.upsert_aircraft(&icao, Some("Netherlands"), None, false, 1.0);
+        assert_eq!(
+            db.get_aircraft("4840D6").unwrap().country.as_deref(),
+            Some("Netherlands")
+        );
+
+        // Re-upsert with no country — should preserve "Netherlands"
+        db.upsert_aircraft(&icao, None, None, false, 2.0);
+        assert_eq!(
+            db.get_aircraft("4840D6").unwrap().country.as_deref(),
+            Some("Netherlands"),
+            "Country should be preserved via COALESCE"
+        );
+
+        // Re-upsert with a different country — should overwrite
+        db.upsert_aircraft(&icao, Some("Germany"), None, false, 3.0);
+        assert_eq!(
+            db.get_aircraft("4840D6").unwrap().country.as_deref(),
+            Some("Germany")
+        );
+    }
+
+    #[test]
+    fn test_registration_preserved_on_reupsert() {
+        let mut db = test_db();
+        let icao = icao_from_hex("A12345").unwrap();
+
+        db.upsert_aircraft(&icao, None, Some("N12345"), false, 1.0);
+        assert_eq!(
+            db.get_aircraft("A12345").unwrap().registration.as_deref(),
+            Some("N12345")
+        );
+
+        // Re-upsert with no registration — should preserve
+        db.upsert_aircraft(&icao, None, None, false, 2.0);
+        assert_eq!(
+            db.get_aircraft("A12345").unwrap().registration.as_deref(),
+            Some("N12345"),
+            "Registration should be preserved via COALESCE"
+        );
+    }
+
+    #[test]
+    fn test_downsample_positions() {
+        let mut db = test_db();
+        let icao = icao_from_hex("4840D6").unwrap();
+        db.upsert_aircraft(&icao, None, None, false, 1.0);
+
+        // Insert 10 positions at 1-second intervals, with old timestamps
+        // (well before "now" so they qualify for downsampling)
+        let base_ts = 1000.0; // ancient timestamp
+        for i in 0..10 {
+            db.add_position(
+                &icao,
+                52.0 + (i as f64) * 0.001,
+                3.0,
+                Some(38000),
+                None,
+                None,
+                None,
+                None,
+                base_ts + (i as f64),
+            );
+        }
+        assert_eq!(db.count_positions(), 10);
+
+        // Downsample: keep one per 5-second bucket for data older than 0 hours
+        // 10 positions over 9 seconds → 2 buckets (0-4s, 5-9s) → keep 2, delete 8
+        let deleted = db.downsample_positions(0, 5);
+        assert!(deleted > 0, "Should have thinned some positions");
+        let remaining = db.count_positions();
+        assert_eq!(remaining, 2, "Should keep one per 5-second bucket");
+    }
+
+    #[test]
+    fn test_downsample_preserves_recent() {
+        let mut db = test_db();
+        let icao = icao_from_hex("4840D6").unwrap();
+        db.upsert_aircraft(&icao, None, None, false, now());
+
+        // Insert positions with current timestamps
+        let base_ts = now();
+        for i in 0..5 {
+            db.add_position(
+                &icao,
+                52.0,
+                3.0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                base_ts + (i as f64),
+            );
+        }
+        assert_eq!(db.count_positions(), 5);
+
+        // Downsample only data older than 24 hours — these are fresh, none should be deleted
+        let deleted = db.downsample_positions(24, 30);
+        assert_eq!(deleted, 0, "Recent positions should not be downsampled");
+        assert_eq!(db.count_positions(), 5);
+    }
+
+    #[test]
+    fn test_prune_positions() {
+        let mut db = test_db();
+        let icao = icao_from_hex("4840D6").unwrap();
+        db.upsert_aircraft(&icao, None, None, false, 1.0);
+
+        // Old position
+        db.add_position(&icao, 52.0, 3.0, None, None, None, None, None, 1000.0);
+        // Recent position
+        db.add_position(&icao, 52.1, 3.1, None, None, None, None, None, now());
+
+        assert_eq!(db.count_positions(), 2);
+
+        // Prune positions older than 1 hour — the ancient one should go
+        let deleted = db.prune_positions(1);
+        assert_eq!(deleted, 1);
+        assert_eq!(db.count_positions(), 1);
+    }
+
+    #[test]
+    fn test_prune_events() {
+        let mut db = test_db();
+        let icao = icao_from_hex("ADF7C8").unwrap();
+        db.upsert_aircraft(&icao, None, None, true, 1.0);
+
+        // Old event
+        db.add_event(&icao, "military", "Old", None, None, None, 1000.0);
+        // Recent event
+        db.add_event(&icao, "military", "New", None, None, None, now());
+
+        assert_eq!(db.count_events(), 2);
+
+        let deleted = db.prune_events(1);
+        assert_eq!(deleted, 1);
+        assert_eq!(db.count_events(), 1);
+    }
+
+    #[test]
+    fn test_sighting_altitude_tracking() {
+        let mut db = test_db();
+        let icao = icao_from_hex("4840D6").unwrap();
+        db.upsert_aircraft(&icao, None, None, false, 1.0);
+
+        // Multiple altitude updates
+        db.upsert_sighting(&icao, None, Some("KLM1023"), None, Some(38000), 1.0);
+        db.upsert_sighting(&icao, None, None, None, Some(35000), 2.0);
+        db.upsert_sighting(&icao, None, None, None, Some(41000), 3.0);
+
+        let (min_alt, max_alt, msg_count): (Option<i32>, Option<i32>, i64) = db
+            .conn
+            .query_row(
+                "SELECT min_altitude_ft, max_altitude_ft, message_count FROM sightings WHERE icao = '4840D6'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(min_alt, Some(35000));
+        assert_eq!(max_alt, Some(41000));
+        assert_eq!(msg_count, 3);
+    }
+
+    #[test]
     fn test_prune_phantom_aircraft() {
         let mut db = test_db();
 

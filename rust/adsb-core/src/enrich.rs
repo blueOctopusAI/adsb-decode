@@ -129,61 +129,75 @@ pub fn classify_from_profile(
 // ---------------------------------------------------------------------------
 
 /// A known airport.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Airport {
-    pub icao: &'static str,
-    pub name: &'static str,
+    pub icao: String,
+    pub name: String,
     pub lat: f64,
     pub lon: f64,
     pub elevation_ft: i32,
+    #[serde(rename = "type")]
+    pub airport_type: String,
 }
 
-/// Minimal built-in airports (used when CSV not available).
-const BUILTIN_AIRPORTS: &[Airport] = &[
-    Airport {
-        icao: "KATL",
-        name: "Atlanta Hartsfield-Jackson",
-        lat: 33.6367,
-        lon: -84.4281,
-        elevation_ft: 1026,
-    },
-    Airport {
-        icao: "KCLT",
-        name: "Charlotte Douglas",
-        lat: 35.2140,
-        lon: -80.9431,
-        elevation_ft: 748,
-    },
-    Airport {
-        icao: "KAVL",
-        name: "Asheville Regional",
-        lat: 35.4362,
-        lon: -82.5418,
-        elevation_ft: 2165,
-    },
-    Airport {
-        icao: "KTYS",
-        name: "Knoxville McGhee Tyson",
-        lat: 35.8110,
-        lon: -83.9940,
-        elevation_ft: 981,
-    },
-];
+/// Embedded CSV data (3,642 US airports from OurAirports).
+const AIRPORTS_CSV: &str = include_str!("airports.csv");
+
+/// Parse the embedded airports CSV. Cached via LazyLock.
+fn parse_airports() -> Vec<Airport> {
+    let mut airports = Vec::with_capacity(3700);
+    for line in AIRPORTS_CSV.lines().skip(1) {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        let lat = match fields[2].parse::<f64>() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let lon = match fields[3].parse::<f64>() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let elevation_ft = fields[4].parse::<i32>().unwrap_or(0);
+        let raw_type = fields[5].trim();
+        // Normalize type names for the frontend
+        let airport_type = match raw_type {
+            "large_airport" => "major",
+            "medium_airport" => "medium",
+            "small_airport" => "small",
+            other => other,
+        };
+        airports.push(Airport {
+            icao: fields[0].to_string(),
+            name: fields[1].to_string(),
+            lat,
+            lon,
+            elevation_ft,
+            airport_type: airport_type.to_string(),
+        });
+    }
+    airports
+}
+
+static AIRPORTS: std::sync::LazyLock<Vec<Airport>> =
+    std::sync::LazyLock::new(parse_airports);
+
+/// Get all airports.
+pub fn all_airports() -> &'static [Airport] {
+    &AIRPORTS
+}
 
 /// Find nearest airport within max_nm nautical miles.
 ///
 /// Returns (icao, name, distance_nm) or None.
-pub fn nearest_airport(
-    lat: f64,
-    lon: f64,
-    max_nm: f64,
-) -> Option<(&'static str, &'static str, f64)> {
-    let mut best: Option<(&str, &str, f64)> = None;
+pub fn nearest_airport(lat: f64, lon: f64, max_nm: f64) -> Option<(String, String, f64)> {
+    let mut best: Option<(String, String, f64)> = None;
 
-    for apt in BUILTIN_AIRPORTS {
+    for apt in AIRPORTS.iter() {
         let dist = haversine_nm(lat, lon, apt.lat, apt.lon);
-        if dist < max_nm && (best.is_none() || dist < best.unwrap().2) {
-            best = Some((apt.icao, apt.name, dist));
+        if dist < max_nm && best.as_ref().map_or(true, |b| dist < b.2) {
+            best = Some((apt.icao.clone(), apt.name.clone(), dist));
         }
     }
 
@@ -198,7 +212,7 @@ pub fn classify_flight_phase(
     vertical_rate_fpm: Option<i32>,
     max_airport_nm: f64,
 ) -> Option<String> {
-    let (code, _name, dist) = nearest_airport(lat, lon, max_airport_nm)?;
+    let (ref code, _name, dist) = nearest_airport(lat, lon, max_airport_nm)?;
 
     if let (Some(alt), Some(vr)) = (altitude_ft, vertical_rate_fpm) {
         if dist < 15.0 && vr < -200 && alt < 10000 {
@@ -308,6 +322,17 @@ mod tests {
     #[test]
     fn test_lookup_operator_too_short() {
         assert_eq!(lookup_operator("AA"), None);
+    }
+
+    #[test]
+    fn test_all_airports_loaded() {
+        let airports = all_airports();
+        assert!(airports.len() > 3600, "Expected 3600+ airports, got {}", airports.len());
+        // Check KAVL exists
+        assert!(airports.iter().any(|a| a.icao == "KAVL"));
+        // Check types are normalized
+        assert!(airports.iter().any(|a| a.airport_type == "major"));
+        assert!(airports.iter().any(|a| a.airport_type == "small"));
     }
 
     #[test]

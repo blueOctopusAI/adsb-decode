@@ -321,13 +321,7 @@ pub async fn api_heatmap(
 
 /// GET /api/airports — built-in airport list.
 pub async fn api_airports() -> impl IntoResponse {
-    // Return the 4 built-in airports from the enrich module
-    let airports = vec![
-        json!({"icao": "KATL", "name": "Atlanta Hartsfield-Jackson", "lat": 33.6367, "lon": -84.4281, "elevation_ft": 1026, "type": "major"}),
-        json!({"icao": "KCLT", "name": "Charlotte Douglas", "lat": 35.2140, "lon": -80.9431, "elevation_ft": 748, "type": "major"}),
-        json!({"icao": "KAVL", "name": "Asheville Regional", "lat": 35.4362, "lon": -82.5418, "elevation_ft": 2165, "type": "medium"}),
-        json!({"icao": "KTYS", "name": "Knoxville McGhee Tyson", "lat": 35.8110, "lon": -83.9940, "elevation_ft": 981, "type": "medium"}),
-    ];
+    let airports = adsb_core::enrich::all_airports();
     Json(json!(airports))
 }
 
@@ -657,7 +651,13 @@ mod tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.as_array().unwrap().len(), 4);
+        let airports = json.as_array().unwrap();
+        assert!(airports.len() > 3600, "Expected 3600+ airports, got {}", airports.len());
+        // Verify types are normalized
+        let types: Vec<&str> = airports.iter().filter_map(|a| a["type"].as_str()).collect();
+        assert!(types.contains(&"major"));
+        assert!(types.contains(&"medium"));
+        assert!(types.contains(&"small"));
     }
 
     #[tokio::test]
