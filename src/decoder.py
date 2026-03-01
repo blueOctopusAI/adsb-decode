@@ -142,8 +142,6 @@ def decode_altitude_13bit(alt_code_13: int) -> int | None:
 
     if q_bit:
         # 25-ft mode: remove M and Q bits to get 11-bit code
-        n = ((alt_code_13 >> 7) << 4) | (alt_code_13 & 0x0F)
-        # Also remove the M-bit position
         n = ((alt_code_13 & 0x1F80) >> 2) | ((alt_code_13 & 0x0020) >> 1) | (alt_code_13 & 0x000F)
         return n * 25 - 1000
     else:

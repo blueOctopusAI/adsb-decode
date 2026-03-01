@@ -1,11 +1,15 @@
 """Tests for web dashboard — Flask routes and API endpoints."""
 
 import json
+import time
 
 import pytest
 
 from src.database import Database
 from src.web.app import create_app
+
+# Use recent timestamps so time-windowed queries work
+_NOW = time.time()
 
 
 @pytest.fixture
@@ -13,12 +17,12 @@ def app(tmp_path):
     """Flask test app with sample data."""
     db_path = str(tmp_path / "web.db")
     db = Database(db_path)
-    db.upsert_aircraft("A00001", country="United States", registration="N12345", timestamp=1000.0)
-    db.upsert_aircraft("ADF7C8", country="United States", is_military=True, timestamp=1000.0)
+    db.upsert_aircraft("A00001", country="United States", registration="N12345", timestamp=_NOW)
+    db.upsert_aircraft("ADF7C8", country="United States", is_military=True, timestamp=_NOW)
     db.add_position("A00001", lat=35.18, lon=-83.38, altitude_ft=38000,
-                   speed_kts=450.0, heading_deg=90.0, timestamp=1000.0)
-    db.add_position("A00001", lat=35.20, lon=-83.30, altitude_ft=37500, timestamp=1001.0)
-    db.add_event("A00001", "military_detected", "Test event", timestamp=1000.0)
+                   speed_kts=450.0, heading_deg=90.0, timestamp=_NOW)
+    db.add_position("A00001", lat=35.20, lon=-83.30, altitude_ft=37500, timestamp=_NOW + 1)
+    db.add_event("A00001", "military_detected", "Test event", timestamp=_NOW)
     db.add_receiver("test-rx")
     db.start_capture(source="test")
     db.close()
@@ -132,12 +136,11 @@ class TestPageRoutes:
 
 class TestAPITrails:
     def test_trails_endpoint(self, client):
-        # Use large minutes window since test data has old timestamps
-        resp = client.get("/api/trails?minutes=999999999")
+        resp = client.get("/api/trails")
         assert resp.status_code == 200
         data = resp.get_json()
         assert "trails" in data
-        # A00001 has 2 positions
+        # A00001 has 2 positions (recent timestamps within default 60-min window)
         assert "A00001" in data["trails"]
         trail = data["trails"]["A00001"]
         assert len(trail) == 2
@@ -145,24 +148,25 @@ class TestAPITrails:
         assert len(trail[0]) == 5
 
     def test_trails_limit(self, client):
-        resp = client.get("/api/trails?limit=1&minutes=999999999")
+        resp = client.get("/api/trails?limit=1")
         data = resp.get_json()
         trail = data["trails"]["A00001"]
         assert len(trail) == 1
 
     def test_trails_ordered_oldest_first(self, client):
-        resp = client.get("/api/trails?minutes=999999999")
+        resp = client.get("/api/trails")
         data = resp.get_json()
         trail = data["trails"]["A00001"]
-        # Oldest first (timestamp 1000 has alt 38000, timestamp 1001 has 37500)
+        # Oldest first (first position has alt 38000, second has 37500)
         assert trail[0][2] == 38000
         assert trail[1][2] == 37500
 
-    def test_trails_default_filters_old_data(self, client):
-        """Default 60-min window excludes ancient test timestamps."""
-        resp = client.get("/api/trails")
+    def test_trails_narrow_window_excludes_data(self, client):
+        """A very short minutes window (1 min) should still include recent data."""
+        resp = client.get("/api/trails?minutes=1")
         data = resp.get_json()
-        assert data["trails"] == {}
+        # Data was just inserted, should still be within 1-minute window
+        assert "A00001" in data["trails"]
 
 
 class TestStatsReceiver:

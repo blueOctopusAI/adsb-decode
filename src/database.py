@@ -91,6 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_positions_icao ON positions(icao);
 CREATE INDEX IF NOT EXISTS idx_positions_timestamp ON positions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_positions_receiver ON positions(receiver_id);
 CREATE INDEX IF NOT EXISTS idx_sightings_icao ON sightings(icao);
+CREATE INDEX IF NOT EXISTS idx_sightings_icao_capture ON sightings(icao, capture_id);
 CREATE INDEX IF NOT EXISTS idx_events_icao ON events(icao);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_aircraft_last_seen ON aircraft(last_seen);
@@ -100,9 +101,11 @@ CREATE INDEX IF NOT EXISTS idx_aircraft_last_seen ON aircraft(last_seen);
 class Database:
     """SQLite database for ADS-B aircraft tracking data."""
 
-    def __init__(self, path: str | Path = ":memory:"):
+    def __init__(self, path: str | Path = ":memory:", autocommit: bool = True):
         self.path = str(path)
         self._conn: sqlite3.Connection | None = None
+        self._autocommit = autocommit
+        self._pending = 0
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -114,8 +117,22 @@ class Database:
             self._conn.executescript(SCHEMA)
         return self._conn
 
+    def _maybe_commit(self):
+        """Commit immediately if autocommit, otherwise batch."""
+        self._pending += 1
+        if self._autocommit:
+            self.conn.commit()
+            self._pending = 0
+
+    def flush(self):
+        """Commit any pending writes."""
+        if self._conn and self._pending > 0:
+            self._conn.commit()
+            self._pending = 0
+
     def close(self):
         if self._conn:
+            self.flush()
             self._conn.close()
             self._conn = None
 
@@ -135,7 +152,7 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?)""",
             (name, lat, lon, altitude_ft, description, time.time()),
         )
-        self.conn.commit()
+        self._maybe_commit()
         if cur.lastrowid and cur.rowcount > 0:
             return cur.lastrowid
         # Already exists — fetch id
@@ -172,7 +189,7 @@ class Database:
                    last_seen = MAX(last_seen, excluded.last_seen)""",
             (icao, country, registration, int(is_military), ts, ts),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def get_aircraft(self, icao: str) -> dict | None:
         row = self.conn.execute(
@@ -206,7 +223,7 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (icao, receiver_id, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, ts),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def get_positions(self, icao: str, limit: int = 100) -> list[dict]:
         rows = self.conn.execute(
@@ -232,7 +249,7 @@ class Database:
                VALUES (?, ?, ?, 0, 0, 0)""",
             (receiver_id, source, time.time()),
         )
-        self.conn.commit()
+        self._maybe_commit()
         return cur.lastrowid
 
     def end_capture(
@@ -248,7 +265,7 @@ class Database:
                WHERE id = ?""",
             (time.time(), total_frames, valid_frames, aircraft_count, capture_id),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     # --- Events ---
 
@@ -269,19 +286,28 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (icao, event_type, description, lat, lon, altitude_ft, ts),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
-    def get_events(self, event_type: str | None = None, limit: int = 100) -> list[dict]:
+    def get_events(
+        self,
+        event_type: str | None = None,
+        icao: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        clauses = []
+        params: list = []
         if event_type:
-            rows = self.conn.execute(
-                "SELECT * FROM events WHERE event_type = ? ORDER BY timestamp DESC LIMIT ?",
-                (event_type, limit),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM events ORDER BY timestamp DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if icao:
+            clauses.append("icao = ?")
+            params.append(icao)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        params.append(limit)
+        rows = self.conn.execute(
+            f"SELECT * FROM events WHERE {where} ORDER BY timestamp DESC LIMIT ?",
+            params,
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def count_events(self) -> int:
@@ -331,7 +357,33 @@ class Database:
                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                 (icao, capture_id, callsign, squawk, altitude_ft, altitude_ft, ts, ts),
             )
+        self._maybe_commit()
+
+    # --- Maintenance ---
+
+    def prune_positions(self, max_age_hours: int = 168) -> int:
+        """Delete positions older than max_age_hours (default 7 days).
+
+        Returns the number of rows deleted.
+        """
+        cutoff = time.time() - (max_age_hours * 3600)
+        cur = self.conn.execute(
+            "DELETE FROM positions WHERE timestamp < ?", (cutoff,)
+        )
         self.conn.commit()
+        return cur.rowcount
+
+    def prune_events(self, max_age_hours: int = 720) -> int:
+        """Delete events older than max_age_hours (default 30 days).
+
+        Returns the number of rows deleted.
+        """
+        cutoff = time.time() - (max_age_hours * 3600)
+        cur = self.conn.execute(
+            "DELETE FROM events WHERE timestamp < ?", (cutoff,)
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     # --- Stats ---
 

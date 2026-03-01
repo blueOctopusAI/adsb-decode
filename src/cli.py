@@ -77,7 +77,7 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
     import os
     os.makedirs(Path(db_path).parent, exist_ok=True)
 
-    db = Database(db_path)
+    db = Database(db_path, autocommit=False)
     source = "rtl_adsb:live" if live else file
     rid = db.add_receiver(receiver, lat=ref_lat, lon=ref_lon)
     cap_id = db.start_capture(source=source, receiver_id=rid)
@@ -107,6 +107,7 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
             console.print("[bold green]Live tracking started[/] — Ctrl+C to stop\n")
 
         last_print = 0.0
+        last_prune = 0.0
         for raw_frame in frame_source:
             frame = parse_frame(raw_frame.hex_str, timestamp=raw_frame.timestamp)
             if frame:
@@ -155,12 +156,21 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
 
                     last_print = now
                     tracker.prune_stale()
+                    db.flush()
+
+                    # Prune old data every 10 minutes
+                    if now - last_prune > 600:
+                        pruned = db.prune_positions(max_age_hours=168)
+                        if pruned:
+                            console.print(f"  [dim]Pruned {pruned} positions older than 7 days[/]")
+                        last_prune = now
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopping...[/]")
         if live and isinstance(frame_source, LiveCapture):
             frame_source.stop()
 
+    db.flush()
     db.end_capture(
         cap_id,
         total_frames=tracker.total_frames,
@@ -238,8 +248,7 @@ def history(icao: str, db_path: str, limit: int):
     else:
         console.print("  No positions recorded.")
 
-    events = db.get_events()
-    ac_events = [e for e in events if e["icao"] == icao]
+    ac_events = db.get_events(icao=icao)
     if ac_events:
         console.print(f"\n[bold]Events ({len(ac_events)})[/]")
         for e in ac_events:

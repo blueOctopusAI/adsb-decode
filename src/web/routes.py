@@ -22,6 +22,10 @@ import time
 
 from flask import Blueprint, Flask, g, jsonify, render_template, request
 
+# Module-level lookup cache: {icao: (result_dict, timestamp)}
+_lookup_cache: dict[str, tuple[dict, float]] = {}
+_LOOKUP_CACHE_TTL = 3600  # 1 hour
+
 from ..enrichment import AIRPORTS
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -65,10 +69,7 @@ def get_aircraft(icao: str):
         return jsonify({"error": "Aircraft not found"}), 404
 
     positions = db.get_positions(icao, limit=100)
-    events = [
-        dict(e) for e in db.get_events()
-        if e["icao"] == icao
-    ]
+    events = db.get_events(icao=icao)
 
     return jsonify({
         "aircraft": {**ac, "is_military": bool(ac["is_military"])},
@@ -85,12 +86,11 @@ def recent_positions():
     Query params:
         minutes: Only show aircraft seen within the last N minutes
     """
-    import time
-
     db = _db()
-    minutes = request.args.get("minutes")
-    if minutes:
-        cutoff = time.time() - (int(minutes) * 60)
+    minutes = request.args.get("minutes", type=int)
+    if minutes is not None:
+        minutes = max(1, min(minutes, 525600))  # 1 min to 1 year
+        cutoff = time.time() - (minutes * 60)
         rows = db.conn.execute("""
             SELECT p.*, a.registration, a.country, a.is_military
             FROM positions p
@@ -139,7 +139,7 @@ def query_positions():
     max_alt = request.args.get("max_alt", type=int)
     icao_filter = request.args.get("icao", "").upper()
     military = request.args.get("military")
-    limit = request.args.get("limit", 5000, type=int)
+    limit = min(request.args.get("limit", 5000, type=int), 50000)
 
     if min_alt is not None:
         clauses.append("p.altitude_ft >= ?")
@@ -195,7 +195,7 @@ def all_positions():
     Used by the replay page. Returns all position records with aircraft info.
     """
     db = _db()
-    limit = int(request.args.get("limit", 10000))
+    limit = min(request.args.get("limit", 10000, type=int), 50000)
 
     rows = db.conn.execute("""
         SELECT p.*, a.registration, a.country, a.is_military,
@@ -226,10 +226,8 @@ def get_trails():
         limit: Max positions per aircraft (default: 500)
     """
     db = _db()
-    limit = int(request.args.get("limit", 500))
-    minutes = int(request.args.get("minutes", 60))
-
-    import time
+    limit = min(request.args.get("limit", 500, type=int), 5000)
+    minutes = max(1, min(request.args.get("minutes", 60, type=int), 525600))
 
     cutoff = time.time() - (minutes * 60)
 
@@ -261,7 +259,7 @@ def list_events():
     """Recent events."""
     db = _db()
     event_type = request.args.get("type")
-    limit = int(request.args.get("limit", 50))
+    limit = min(request.args.get("limit", 50, type=int), 5000)
     events = db.get_events(event_type=event_type, limit=limit)
     return jsonify({"events": events, "count": len(events)})
 
@@ -301,11 +299,10 @@ def lookup_aircraft(icao: str):
     Cached in-memory for the session to avoid repeated external calls.
     """
     icao = icao.upper()
-    # Simple in-memory cache
-    if not hasattr(g, "_lookup_cache"):
-        g._lookup_cache = {}
-    if icao in g._lookup_cache:
-        return jsonify(g._lookup_cache[icao])
+    # Module-level cache with TTL
+    cached = _lookup_cache.get(icao)
+    if cached and time.time() - cached[1] < _LOOKUP_CACHE_TTL:
+        return jsonify(cached[0])
 
     import urllib.request
     import json as _json
@@ -327,7 +324,7 @@ def lookup_aircraft(icao: str):
     except Exception:
         result["error"] = "Lookup failed"
 
-    g._lookup_cache[icao] = result
+    _lookup_cache[icao] = (result, time.time())
     return jsonify(result)
 
 
@@ -359,7 +356,7 @@ def aircraft_detail(icao: str):
     if not ac:
         return "Aircraft not found", 404
     positions = db.get_positions(icao, limit=500)
-    events = [dict(e) for e in db.get_events() if e["icao"] == icao]
+    events = db.get_events(icao=icao)
     # Get sighting info (callsign, squawk)
     sighting = db.conn.execute(
         "SELECT callsign, squawk FROM sightings WHERE icao = ? ORDER BY id DESC LIMIT 1",
