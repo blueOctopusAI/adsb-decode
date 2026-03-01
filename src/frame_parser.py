@@ -5,10 +5,13 @@ Responsibilities:
 - Extract ICAO address (bytes 1-3 for DF11/17/18, or from CRC residual)
 - Package into ModeFrame dataclass
 - Reject frames that fail CRC validation
+- Attempt 1-2 bit error correction on CRC failures (syndrome table)
+- Validate residual-recovered ICAOs against a time-windowed cache
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from . import crc
@@ -28,6 +31,60 @@ DF_INFO: dict[int, tuple[str, int]] = {
     21: ("Comm-B identity reply", 112),
 }
 
+# DFs where ICAO is explicit in bytes 1-3 (trusted source for cache)
+_DF_EXPLICIT_ICAO = frozenset({11, 17, 18})
+
+# DFs where ICAO is recovered from CRC residual (needs cache validation)
+_DF_RESIDUAL_ICAO = frozenset({0, 4, 5, 16, 20, 21})
+
+
+class IcaoCache:
+    """Time-windowed cache of validated ICAO addresses.
+
+    ICAOs are registered when seen in DF11/17/18 frames (where the address
+    is explicit and CRC-validated). For DF0/4/5/16/20/21, the ICAO is
+    recovered from the CRC residual — any noise produces a fake address.
+    The cache rejects residual-recovered ICAOs not recently seen in a
+    validated frame, eliminating ~99% of phantom aircraft.
+    """
+
+    def __init__(self, ttl: float = 60.0):
+        self.ttl = ttl
+        self._cache: dict[str, float] = {}  # icao -> last_seen timestamp
+
+    def register(self, icao: str, timestamp: float) -> None:
+        """Register a validated ICAO (from DF11/17/18)."""
+        self._cache[icao] = timestamp
+
+    def is_known(self, icao: str, timestamp: float) -> bool:
+        """Check if an ICAO was recently seen in a validated frame."""
+        if icao not in self._cache:
+            return False
+        age = timestamp - self._cache[icao]
+        if age > self.ttl:
+            del self._cache[icao]
+            return False
+        return True
+
+    def prune(self, now: float) -> None:
+        """Remove expired entries."""
+        expired = [k for k, v in self._cache.items() if now - v > self.ttl]
+        for k in expired:
+            del self._cache[k]
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+
+# Module-level cache instance
+_icao_cache = IcaoCache()
+
+
+def reset_icao_cache() -> None:
+    """Reset the ICAO cache. Used for test isolation."""
+    global _icao_cache
+    _icao_cache = IcaoCache()
+
 
 @dataclass(frozen=True)
 class ModeFrame:
@@ -40,6 +97,7 @@ class ModeFrame:
     signal_level: float | None  # Signal strength if available
     msg_bits: int  # 56 or 112
     crc_ok: bool  # CRC validation passed
+    corrected: bool = False  # True if error correction was applied
 
     @property
     def df_name(self) -> str:
@@ -77,6 +135,7 @@ def parse_frame(
     hex_str: str,
     timestamp: float = 0.0,
     signal_level: float | None = None,
+    validate_icao: bool = True,
 ) -> ModeFrame | None:
     """Parse a hex string into a ModeFrame.
 
@@ -84,6 +143,7 @@ def parse_frame(
         hex_str: Hex-encoded Mode S message (14 or 28 hex chars).
         timestamp: Unix timestamp of reception.
         signal_level: Signal strength (arbitrary units).
+        validate_icao: If True, reject residual-recovered ICAOs not in cache.
 
     Returns:
         ModeFrame if valid, None if the frame is malformed or unrecognized DF.
@@ -113,18 +173,36 @@ def parse_frame(
 
     # CRC check
     crc_remainder = crc.crc24(raw)
+    corrected = False
 
     # Extract ICAO address
-    if df in (11, 17, 18):
+    if df in _DF_EXPLICIT_ICAO:
         # ICAO explicitly in bytes 1-3
         icao = f"{raw[1]:02X}{raw[2]:02X}{raw[3]:02X}"
         crc_ok = crc_remainder == 0
-    elif df in (0, 4, 5, 16, 20, 21):
+
+        # Attempt error correction for DF17/18 if CRC fails
+        if not crc_ok and df in (17, 18):
+            fixed_hex = crc.try_fix(hex_str)
+            if fixed_hex is not None:
+                raw = bytes.fromhex(fixed_hex)
+                # Re-extract ICAO (should be same for DF17/18)
+                icao = f"{raw[1]:02X}{raw[2]:02X}{raw[3]:02X}"
+                crc_ok = True
+                corrected = True
+
+        # Register validated ICAOs in cache
+        if crc_ok and validate_icao:
+            _icao_cache.register(icao, timestamp)
+
+    elif df in _DF_RESIDUAL_ICAO:
         # ICAO recovered from CRC residual
         icao = f"{crc_remainder:06X}"
         # We can't directly validate CRC for these — the residual IS the address.
-        # We accept the frame and let downstream logic validate the ICAO.
-        crc_ok = True  # Assumed valid; ICAO plausibility checked later
+        # Validate against ICAO cache if enabled.
+        if validate_icao and not _icao_cache.is_known(icao, timestamp):
+            return None
+        crc_ok = True
     else:
         return None
 
@@ -136,4 +214,5 @@ def parse_frame(
         signal_level=signal_level,
         msg_bits=msg_bits,
         crc_ok=crc_ok,
+        corrected=corrected,
     )

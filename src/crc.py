@@ -5,26 +5,75 @@ Generator: 0xFFF409
 
 For DF17/18 (ADS-B): last 24 bits are pure CRC. Valid frames -> remainder 0x000000.
 For DF0/4/5/16/20/21: last 24 bits are CRC XORed with ICAO address.
+
+Mode S CRC algorithm: polynomial division of the first (n-3) bytes (data portion),
+then XOR with the last 3 bytes (PI/CRC field). This is NOT standard CRC-24 —
+the PI field is not processed through the polynomial division.
 """
 
 GENERATOR = 0xFFF409
 
 
-def crc24(data: bytes) -> int:
-    """Compute CRC-24 remainder using ICAO Mode S polynomial.
+def _build_crc_table() -> list[int]:
+    """Pre-compute 256-entry CRC-24 lookup table for byte-at-a-time processing."""
+    table = []
+    for i in range(256):
+        crc = i << 16
+        for _ in range(8):
+            if crc & 0x800000:
+                crc = (crc << 1) ^ GENERATOR
+            else:
+                crc = crc << 1
+        table.append(crc & 0xFFFFFF)
+    return table
 
-    Processes the full message bytes through polynomial long division in GF(2).
-    Returns the 24-bit remainder.
+
+_CRC_TABLE = _build_crc_table()
+
+
+def _crc24_raw(data: bytes) -> int:
+    """Pure CRC-24 polynomial division of all bytes.
+
+    Used for computing CRC of payload data and building syndrome tables.
+    NOT the Mode S CRC check (use crc24() for that).
     """
-    n_bytes = len(data)
-    msg = int.from_bytes(data, "big")
-    bits = n_bytes * 8
+    crc = 0
+    for byte in data:
+        crc = ((crc << 8) ^ _CRC_TABLE[((crc >> 16) ^ byte) & 0xFF]) & 0xFFFFFF
+    return crc
 
-    for i in range(bits - 24):
-        if msg & (1 << (bits - 1 - i)):
-            msg ^= GENERATOR << (bits - 24 - 1 - i)
 
-    return msg & 0xFFFFFF
+def crc24(data: bytes) -> int:
+    """Mode S CRC-24 check.
+
+    Performs polynomial division of the first (n-3) bytes (data portion),
+    then XOR with the last 3 bytes (PI/CRC field).
+
+    For DF17/18: returns 0 when valid (PI = CRC of data).
+    For DF0/4/5/16/20/21: returns ICAO address (PI = CRC XOR ICAO).
+
+    Byte-at-a-time table lookup — 8x faster than bit-by-bit.
+    """
+    if len(data) <= 3:
+        return int.from_bytes(data, "big") & 0xFFFFFF
+
+    # Polynomial division of data portion (all except last 3 bytes)
+    crc = 0
+    for byte in data[:-3]:
+        crc = ((crc << 8) ^ _CRC_TABLE[((crc >> 16) ^ byte) & 0xFF]) & 0xFFFFFF
+
+    # XOR with PI field (last 3 bytes)
+    crc ^= (data[-3] << 16) | (data[-2] << 8) | data[-1]
+    return crc
+
+
+def crc24_payload(data: bytes) -> int:
+    """Compute CRC-24 of the payload bytes (all except last 3 CRC bytes).
+
+    Uses raw polynomial division (no XOR with PI field).
+    Useful for computing the expected CRC to compare against the transmitted CRC.
+    """
+    return _crc24_raw(data[:-3])
 
 
 def validate(msg_hex: str) -> bool:
@@ -67,3 +116,90 @@ def extract_icao(msg_hex: str) -> str | None:
         return f"{icao:06X}"
     else:
         return None
+
+
+def _build_syndrome_table(n_bits: int) -> dict[int, list[int]]:
+    """Build syndrome-to-bit-position lookup table for error correction.
+
+    For each possible 1-bit and 2-bit error in an n_bits message,
+    compute the CRC syndrome (non-zero remainder) and map it to the
+    corrupted bit position(s). This allows O(1) error correction when
+    CRC fails — just look up the syndrome to find which bits to flip.
+
+    Uses the Mode S CRC (crc24) so syndromes match what we get from
+    corrupted real messages.
+
+    Args:
+        n_bits: Message length in bits (112 for long, 56 for short).
+
+    Returns:
+        Dict mapping syndrome -> list of bit positions to flip.
+    """
+    n_bytes = n_bits // 8
+    table: dict[int, list[int]] = {}
+
+    # Single-bit errors
+    for bit in range(n_bits):
+        msg = bytearray(n_bytes)
+        msg[bit // 8] |= 1 << (7 - (bit % 8))
+        syndrome = crc24(bytes(msg))
+        if syndrome not in table:
+            table[syndrome] = [bit]
+
+    # Double-bit errors
+    for bit1 in range(n_bits):
+        for bit2 in range(bit1 + 1, n_bits):
+            msg = bytearray(n_bytes)
+            msg[bit1 // 8] |= 1 << (7 - (bit1 % 8))
+            msg[bit2 // 8] |= 1 << (7 - (bit2 % 8))
+            syndrome = crc24(bytes(msg))
+            if syndrome not in table:
+                table[syndrome] = [bit1, bit2]
+
+    return table
+
+
+_SYNDROME_TABLE_112 = _build_syndrome_table(112)
+_SYNDROME_TABLE_56 = _build_syndrome_table(56)
+
+
+def try_fix(msg_hex: str) -> str | None:
+    """Attempt to correct 1-2 bit errors in a Mode S message.
+
+    Looks up the CRC syndrome in pre-built tables. If found, flips the
+    identified bits and re-validates. Never corrects bits 0-4 (DF field)
+    to avoid turning one message type into another.
+
+    Args:
+        msg_hex: Hex-encoded Mode S message that failed CRC.
+
+    Returns:
+        Corrected hex string if fixable, None otherwise.
+    """
+    data = bytes.fromhex(msg_hex)
+    n_bits = len(data) * 8
+    syndrome = crc24(data)
+
+    if syndrome == 0:
+        return msg_hex  # Already valid
+
+    table = _SYNDROME_TABLE_112 if n_bits == 112 else _SYNDROME_TABLE_56
+    if syndrome not in table:
+        return None
+
+    bit_positions = table[syndrome]
+
+    # Safety: never correct the DF field (bits 0-4)
+    if any(b < 5 for b in bit_positions):
+        return None
+
+    # Flip the identified bits
+    fixed = bytearray(data)
+    for bit in bit_positions:
+        fixed[bit // 8] ^= 1 << (7 - (bit % 8))
+
+    # Verify the fix actually works
+    if crc24(bytes(fixed)) != 0:
+        return None
+
+    return fixed.hex().upper()

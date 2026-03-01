@@ -66,8 +66,16 @@ class TestTrackerBasic:
         assert ac.cpr_even_lat is not None
         assert ac.cpr_even_lon is not None
 
-    def test_corrupted_frame_rejected(self, tracker):
-        frame = parse_frame("8D4840D6202CC371C32CE0576099", timestamp=1000.0)
+    def test_corrected_frame_accepted(self, tracker):
+        """Single-bit error correction allows the frame through."""
+        frame = parse_frame("8D4840D6202CC371C32CE0576099", timestamp=1000.0, validate_icao=False)
+        msg = tracker.update(frame)
+        assert msg is not None  # Error correction recovered this frame
+        assert frame.corrected is True
+
+    def test_heavily_corrupted_frame_rejected(self, tracker):
+        """3+ bit errors cannot be corrected."""
+        frame = parse_frame("8D4840D6202CC371C32CE0576000", timestamp=1000.0, validate_icao=False)
         msg = tracker.update(frame)
         assert msg is None
         assert tracker.valid_frames == 0
