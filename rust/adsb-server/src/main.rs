@@ -62,6 +62,10 @@ enum Commands {
         /// Launch web dashboard on this port
         #[arg(short, long)]
         port: Option<u16>,
+
+        /// CORS allowed origin (e.g. "https://example.com"). Omit for same-origin only.
+        #[arg(long)]
+        cors_origin: Option<String>,
     },
 
     /// Show database statistics
@@ -126,6 +130,10 @@ enum Commands {
         /// Host to bind to
         #[arg(long, default_value = "0.0.0.0")]
         host: String,
+
+        /// CORS allowed origin (e.g. "https://example.com"). Omit for same-origin only.
+        #[arg(long)]
+        cors_origin: Option<String>,
     },
 
     /// Interactive setup wizard — configure receiver, database, and server
@@ -240,6 +248,7 @@ async fn main() {
             db_path,
             min_interval,
             port,
+            cors_origin,
         } => {
             if !live && file.is_none() {
                 eprintln!("Error: provide a FILE or use --live for RTL-SDR capture");
@@ -251,9 +260,10 @@ async fn main() {
             }
             if live {
                 if native_demod {
-                    cmd_track_live_native(&db_path, min_interval, port).await;
+                    cmd_track_live_native(&db_path, min_interval, port, cors_origin.as_deref())
+                        .await;
                 } else {
-                    cmd_track_live(&db_path, min_interval, port).await;
+                    cmd_track_live(&db_path, min_interval, port, cors_origin.as_deref()).await;
                 }
             } else {
                 cmd_track(file.unwrap(), &db_path, min_interval);
@@ -277,10 +287,11 @@ async fn main() {
             db_path,
             port,
             host,
+            cors_origin,
         } => {
             let db: std::sync::Arc<dyn db::AdsbDatabase> =
                 std::sync::Arc::new(db::SqliteDb::new(db_path));
-            web::serve(db, host, port).await;
+            web::serve(db, host, port, cors_origin.as_deref()).await;
         }
         Commands::Setup => cmd_setup(),
     }
@@ -475,9 +486,14 @@ fn cmd_track(file: PathBuf, db_path: &str, min_interval: f64) {
     }
 }
 
-async fn cmd_track_live(db_path: &str, min_interval: f64, port: Option<u16>) {
+async fn cmd_track_live(
+    db_path: &str,
+    min_interval: f64,
+    port: Option<u16>,
+    cors_origin: Option<&str>,
+) {
     use std::process::{Command, Stdio};
-    use std::sync::{Arc, RwLock};
+    use std::sync::{Arc, Mutex, RwLock};
 
     let mut database = db::Database::open(db_path).unwrap_or_else(|e| {
         eprintln!("Error opening database {db_path}: {e}");
@@ -487,6 +503,8 @@ async fn cmd_track_live(db_path: &str, min_interval: f64, port: Option<u16>) {
     let source = "rtl_adsb:live";
     let capture_id = database.start_capture(source, None);
     database.set_autocommit(false);
+
+    let database = Arc::new(Mutex::new(database));
 
     let tracker = Arc::new(RwLock::new(Tracker::new(
         None,
@@ -507,14 +525,43 @@ async fn cmd_track_live(db_path: &str, min_interval: f64, port: Option<u16>) {
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
         });
-        let app = web::build_router(state);
+        let app = web::build_router(state, cors_origin);
         let addr = format!("0.0.0.0:{p}");
         eprintln!("Dashboard → http://127.0.0.1:{p}");
-        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        let listener = match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Error: cannot bind to {addr}: {e}");
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    eprintln!("Hint: port {p} is already in use. Try a different --port.");
+                }
+                std::process::exit(1);
+            }
+        };
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
     }
+
+    // Background data retention task (every 60 minutes)
+    let retention_db = database.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await; // skip immediate first tick
+        loop {
+            interval.tick().await;
+            let mut db = retention_db.lock().unwrap();
+            let pruned_pos = db.prune_positions(72);
+            let downsampled = db.downsample_positions(24, 30);
+            let phantoms = db.prune_phantom_aircraft(24.0);
+            let pruned_evt = db.prune_events(168);
+            db.flush();
+            eprintln!(
+                "  [retention] pruned {pruned_pos} positions, downsampled {downsampled}, \
+                 removed {phantoms} phantom aircraft, pruned {pruned_evt} events"
+            );
+        }
+    });
 
     // Spawn rtl_adsb subprocess
     eprintln!("Starting rtl_adsb...");
@@ -539,7 +586,7 @@ async fn cmd_track_live(db_path: &str, min_interval: f64, port: Option<u16>) {
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
-            Err(_) => continue,
+            Err(_) => break,
         };
 
         let hex = line.trim();
@@ -570,7 +617,7 @@ async fn cmd_track_live(db_path: &str, min_interval: f64, port: Option<u16>) {
             events
         };
 
-        database.apply_events(&events);
+        database.lock().unwrap().apply_events(&events);
 
         // Periodic status + flush
         if last_print.elapsed().as_secs_f64() > 10.0 {
@@ -585,31 +632,38 @@ async fn cmd_track_live(db_path: &str, min_interval: f64, port: Option<u16>) {
         }
 
         if last_flush.elapsed().as_secs_f64() > 5.0 {
-            database.flush();
+            database.lock().unwrap().flush();
             last_flush = std::time::Instant::now();
         }
     }
 
-    // Cleanup
+    // Cleanup — runs on Ctrl+C (child gets SIGINT, stdout closes, loop exits)
     let _ = child.kill();
-    database.flush();
+    let _ = child.wait();
+    let mut db = database.lock().unwrap();
+    db.flush();
     let t = tracker.read().unwrap();
-    database.end_capture(
+    db.end_capture(
         capture_id,
         t.total_frames,
         t.valid_frames,
         t.aircraft.len() as u64,
     );
-    database.flush();
+    db.flush();
     eprintln!(
         "\nStopped. {} frames, {} valid, {} aircraft",
         t.total_frames, t.valid_frames, t.aircraft.len()
     );
 }
 
-async fn cmd_track_live_native(db_path: &str, min_interval: f64, port: Option<u16>) {
+async fn cmd_track_live_native(
+    db_path: &str,
+    min_interval: f64,
+    port: Option<u16>,
+    cors_origin: Option<&str>,
+) {
     use std::process::{Command, Stdio};
-    use std::sync::{Arc, RwLock};
+    use std::sync::{Arc, Mutex, RwLock};
 
     let mut database = db::Database::open(db_path).unwrap_or_else(|e| {
         eprintln!("Error opening database {db_path}: {e}");
@@ -619,6 +673,8 @@ async fn cmd_track_live_native(db_path: &str, min_interval: f64, port: Option<u1
     let source = "rtl_sdr:native_demod";
     let capture_id = database.start_capture(source, None);
     database.set_autocommit(false);
+
+    let database = Arc::new(Mutex::new(database));
 
     let tracker = Arc::new(RwLock::new(Tracker::new(
         None,
@@ -638,14 +694,43 @@ async fn cmd_track_live_native(db_path: &str, min_interval: f64, port: Option<u1
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
         });
-        let app = web::build_router(state);
+        let app = web::build_router(state, cors_origin);
         let addr = format!("0.0.0.0:{p}");
         eprintln!("Dashboard → http://127.0.0.1:{p}");
-        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        let listener = match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Error: cannot bind to {addr}: {e}");
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    eprintln!("Hint: port {p} is already in use. Try a different --port.");
+                }
+                std::process::exit(1);
+            }
+        };
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
     }
+
+    // Background data retention task (every 60 minutes)
+    let retention_db = database.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await; // skip immediate first tick
+        loop {
+            interval.tick().await;
+            let mut db = retention_db.lock().unwrap();
+            let pruned_pos = db.prune_positions(72);
+            let downsampled = db.downsample_positions(24, 30);
+            let phantoms = db.prune_phantom_aircraft(24.0);
+            let pruned_evt = db.prune_events(168);
+            db.flush();
+            eprintln!(
+                "  [retention] pruned {pruned_pos} positions, downsampled {downsampled}, \
+                 removed {phantoms} phantom aircraft, pruned {pruned_evt} events"
+            );
+        }
+    });
 
     // Spawn rtl_sdr — outputs raw interleaved uint8 IQ pairs to stdout
     eprintln!("Starting rtl_sdr (native demod)...");
@@ -669,6 +754,7 @@ async fn cmd_track_live_native(db_path: &str, min_interval: f64, port: Option<u1
     let mut last_print = std::time::Instant::now();
     let mut last_flush = std::time::Instant::now();
     let tracker_ref = tracker.clone();
+    let loop_db = database.clone();
 
     let result = adsb_feeder::capture::demodulate_stream(
         &mut stdout,
@@ -697,7 +783,7 @@ async fn cmd_track_live_native(db_path: &str, min_interval: f64, port: Option<u1
                 events
             };
 
-            database.apply_events(&events);
+            loop_db.lock().unwrap().apply_events(&events);
 
             if last_print.elapsed().as_secs_f64() > 10.0 {
                 let mut t = tracker_ref.write().unwrap();
@@ -711,7 +797,7 @@ async fn cmd_track_live_native(db_path: &str, min_interval: f64, port: Option<u1
             }
 
             if last_flush.elapsed().as_secs_f64() > 5.0 {
-                database.flush();
+                loop_db.lock().unwrap().flush();
                 last_flush = std::time::Instant::now();
             }
         },
@@ -721,18 +807,19 @@ async fn cmd_track_live_native(db_path: &str, min_interval: f64, port: Option<u1
         eprintln!("Stream error: {e}");
     }
 
-    // Cleanup
+    // Cleanup — runs on Ctrl+C (child gets SIGINT, stdout closes, stream exits)
     let _ = child.kill();
     let _ = child.wait();
-    database.flush();
+    let mut db = database.lock().unwrap();
+    db.flush();
     let t = tracker.read().unwrap();
-    database.end_capture(
+    db.end_capture(
         capture_id,
         t.total_frames,
         t.valid_frames,
         t.aircraft.len() as u64,
     );
-    database.flush();
+    db.flush();
     eprintln!(
         "\nStopped. {} frames, {} valid, {} aircraft [native demod]",
         t.total_frames, t.valid_frames, t.aircraft.len()

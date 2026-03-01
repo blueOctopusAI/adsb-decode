@@ -6,7 +6,8 @@
 use std::sync::{Arc, RwLock};
 
 use axum::Router;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use adsb_core::tracker::Tracker;
 
@@ -41,13 +42,10 @@ pub struct GeofenceEntry {
 // Router
 // ---------------------------------------------------------------------------
 
-pub fn build_router(state: Arc<AppState>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
+    use http::HeaderValue;
 
-    Router::new()
+    let mut app = Router::new()
         // Page routes
         .route("/", axum::routing::get(pages::page_map))
         .route("/table", axum::routing::get(pages::page_table))
@@ -95,12 +93,44 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/v1/receivers",
             axum::routing::get(ingest::api_receivers),
         )
-        .with_state(state)
-        .layer(cors)
+        .with_state(state);
+
+    // CORS — only add when explicitly configured
+    if let Some(origin) = cors_origin {
+        let cors = CorsLayer::new()
+            .allow_origin(AllowOrigin::exact(
+                HeaderValue::from_str(origin).expect("invalid CORS origin"),
+            ))
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any);
+        app = app.layer(cors);
+    }
+
+    // Security headers (match Caddyfile, safe even without reverse proxy)
+    app = app
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ));
+
+    app
 }
 
 /// Start the web server.
-pub async fn serve(db: Arc<dyn AdsbDatabase>, host: String, port: u16) {
+pub async fn serve(
+    db: Arc<dyn AdsbDatabase>,
+    host: String,
+    port: u16,
+    cors_origin: Option<&str>,
+) {
     let state = Arc::new(AppState {
         db,
         tracker: None,
@@ -108,11 +138,20 @@ pub async fn serve(db: Arc<dyn AdsbDatabase>, host: String, port: u16) {
         geofence_next_id: RwLock::new(1),
     });
 
-    let app = build_router(state);
+    let app = build_router(state, cors_origin);
     let addr = format!("{host}:{port}");
 
     eprintln!("ADS-B server listening on http://{addr}");
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Error: cannot bind to {addr}: {e}");
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                eprintln!("Hint: port {port} is already in use. Try a different --port.");
+            }
+            std::process::exit(1);
+        }
+    };
     axum::serve(listener, app).await.unwrap();
 }

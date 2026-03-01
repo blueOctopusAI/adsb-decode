@@ -447,7 +447,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_stats() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -471,7 +471,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_aircraft() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -494,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_aircraft_detail() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -517,7 +517,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_aircraft_not_found() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -535,7 +535,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_events() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -567,7 +567,7 @@ mod tests {
         });
 
         // Create geofence
-        let app = crate::web::build_router(state.clone());
+        let app = crate::web::build_router(state.clone(), None);
         let response = app
             .oneshot(
                 Request::builder()
@@ -590,7 +590,7 @@ mod tests {
         assert_eq!(json["id"], 1);
 
         // List geofences
-        let app = crate::web::build_router(state.clone());
+        let app = crate::web::build_router(state.clone(), None);
         let response = app
             .oneshot(
                 Request::builder()
@@ -608,7 +608,7 @@ mod tests {
         assert_eq!(json.as_array().unwrap().len(), 1);
 
         // Delete geofence
-        let app = crate::web::build_router(state.clone());
+        let app = crate::web::build_router(state.clone(), None);
         let response = app
             .oneshot(
                 Request::builder()
@@ -629,12 +629,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db").to_str().unwrap().to_string();
         let _keep = &dir;
-        let app = crate::web::build_router(Arc::new(AppState {
-            db: Arc::new(SqliteDb::new(db_path)),
-            tracker: None,
-            geofences: RwLock::new(Vec::new()),
-            geofence_next_id: RwLock::new(1),
-        }));
+        let app = crate::web::build_router(
+            Arc::new(AppState {
+                db: Arc::new(SqliteDb::new(db_path)),
+                tracker: None,
+                geofences: RwLock::new(Vec::new()),
+                geofence_next_id: RwLock::new(1),
+            }),
+            None,
+        );
 
         let response = app
             .oneshot(
@@ -663,7 +666,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_positions_clamped() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         // Minutes clamped to valid range
         let response = app
@@ -682,7 +685,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_heatmap() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -700,7 +703,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_query() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -721,7 +724,7 @@ mod tests {
 
         let pages = ["/", "/table", "/stats", "/events", "/query", "/replay", "/receivers"];
         for page in pages {
-            let app = crate::web::build_router(state.clone());
+            let app = crate::web::build_router(state.clone(), None);
             let response = app
                 .oneshot(
                     Request::builder()
@@ -745,7 +748,7 @@ mod tests {
     #[tokio::test]
     async fn test_page_detail() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(

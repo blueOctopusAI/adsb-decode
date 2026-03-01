@@ -270,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_receivers_empty() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -288,7 +288,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_heartbeat() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(
@@ -310,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_ingest_frames() {
         let (state, _dir) = test_state();
-        let app = crate::web::build_router(state);
+        let app = crate::web::build_router(state, None);
 
         let response = app
             .oneshot(

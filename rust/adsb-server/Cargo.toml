@@ -2,6 +2,9 @@
 name = "adsb-server"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ADS-B tracking CLI and web dashboard with SQLite persistence"
 
 [[bin]]
 name = "adsb"
@@ -24,7 +27,8 @@ serde_json = "1"
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio"], optional = true }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+http = "1"
+tower-http = { version = "0.6", features = ["cors", "set-header"] }
 
 [dev-dependencies]
 tempfile = "3"

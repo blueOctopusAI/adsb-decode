@@ -6,12 +6,9 @@ After=network.target
 Type=simple
 User=adsb
 WorkingDirectory=/opt/adsb-decode
-ExecStart=/opt/adsb-decode/venv/bin/gunicorn -c deploy/gunicorn.conf.py deploy.wsgi:app
+ExecStart=/opt/adsb-decode/adsb serve --db-path /opt/adsb-decode/data/adsb.db --port 8000 --host 127.0.0.1
 Restart=always
 RestartSec=5
-
-Environment=ADSB_DB_PATH=/opt/adsb-decode/data/adsb.db
-Environment=ADSB_INGEST_KEY=CHANGE_ME
 
 [Install]
 WantedBy=multi-user.target

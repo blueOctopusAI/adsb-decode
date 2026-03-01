@@ -7,7 +7,7 @@ echo "=== adsb-decode server setup ==="
 
 # System packages
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git ufw fail2ban
+apt-get install -y curl git ufw fail2ban
 
 # Install Caddy
 apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
@@ -19,30 +19,45 @@ apt-get install -y caddy
 # Create service user
 useradd -r -s /bin/false adsb || true
 
-# Clone repo
-mkdir -p /opt/adsb-decode
-cd /opt/adsb-decode
-if [ ! -d .git ]; then
-    git clone https://github.com/blueOctopusAI/adsb-decode.git .
-else
-    git pull origin main
-fi
-
-# Python environment
-python3 -m venv venv
-./venv/bin/pip install -e ".[web]"
-
-# Data directory
+# Setup directories
 mkdir -p /opt/adsb-decode/data
 chown -R adsb:adsb /opt/adsb-decode
 
-# Install service
-cp deploy/adsb-decode.service /etc/systemd/system/
+# Download latest release binary
+ARCH=$(uname -m)
+case "$ARCH" in
+    aarch64) TARGET="aarch64-unknown-linux-musl" ;;
+    x86_64)  TARGET="x86_64-unknown-linux-musl" ;;
+    *)       echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+REPO="blueOctopusAI/adsb-decode"
+ASSET="adsb-${TARGET}"
+
+DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep "browser_download_url.*${ASSET}" \
+    | head -1 \
+    | cut -d '"' -f 4)
+
+if [ -n "$DOWNLOAD_URL" ]; then
+    echo "Downloading binary..."
+    curl -sL -o /opt/adsb-decode/adsb "$DOWNLOAD_URL"
+    chmod +x /opt/adsb-decode/adsb
+else
+    echo "Warning: no release binary found. Upload manually to /opt/adsb-decode/adsb"
+fi
+
+# Install systemd service
+cp deploy/adsb-decode.service /etc/systemd/system/ 2>/dev/null || \
+    curl -sL "https://raw.githubusercontent.com/${REPO}/main/deploy/adsb-decode.service" \
+        -o /etc/systemd/system/adsb-decode.service
 systemctl daemon-reload
 systemctl enable adsb-decode
 
 # Install Caddy config
-cp deploy/Caddyfile /etc/caddy/Caddyfile
+cp deploy/Caddyfile /etc/caddy/Caddyfile 2>/dev/null || \
+    curl -sL "https://raw.githubusercontent.com/${REPO}/main/deploy/Caddyfile" \
+        -o /etc/caddy/Caddyfile
 # IMPORTANT: Edit /etc/caddy/Caddyfile to set your domain before starting
 
 # Firewall
@@ -59,8 +74,6 @@ echo ""
 echo "=== Setup complete ==="
 echo "Next steps:"
 echo "  1. Edit /etc/caddy/Caddyfile — set your domain"
-echo "  2. Edit /etc/systemd/system/adsb-decode.service — set ADSB_INGEST_KEY"
-echo "  3. sudo systemctl daemon-reload"
-echo "  4. sudo systemctl start caddy"
-echo "  5. sudo systemctl start adsb-decode"
-echo "  6. Point your domain's DNS A record to this server's IP"
+echo "  2. sudo systemctl start caddy"
+echo "  3. sudo systemctl start adsb-decode"
+echo "  4. Point your domain's DNS A record to this server's IP"

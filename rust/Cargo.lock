@@ -28,6 +28,7 @@ dependencies = [
  "axum",
  "clap",
  "comfy-table",
+ "http",
  "rusqlite",
  "serde",
  "serde_json",

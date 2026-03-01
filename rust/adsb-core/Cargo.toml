@@ -2,6 +2,9 @@
 name = "adsb-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ADS-B frame parsing, decoding, CPR position resolution, and aircraft tracking"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

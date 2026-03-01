@@ -2,6 +2,9 @@
 name = "adsb-feeder"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ADS-B IQ sample demodulation and RTL-SDR data ingestion"
 
 [[bin]]
 name = "adsb-feeder"
