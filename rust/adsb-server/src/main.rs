@@ -287,17 +287,11 @@ fn cmd_decode(file: PathBuf, raw: bool) {
         } else {
             (hex, timestamp)
         };
-        timestamp = ts + 0.1; // Auto-increment for files without timestamps
+        timestamp = ts + 0.001; // Auto-increment for files without timestamps
 
         let frame = match frame::parse_frame(hex_part, ts, None, true, &mut icao_cache) {
             Some(f) => f,
-            None => {
-                // Try without ICAO validation for standalone files
-                match frame::parse_frame(hex_part, ts, None, false, &mut icao_cache) {
-                    Some(f) => f,
-                    None => continue,
-                }
-            }
+            None => continue,
         };
 
         total_frames += 1;
@@ -777,7 +771,7 @@ fn print_summary(aircraft: &HashMap<Icao, AircraftState>, total_frames: u64, dec
             Cell::new(ac.altitude_ft.map(|a| a.to_string()).unwrap_or("-".into())),
             Cell::new(
                 ac.speed_kts
-                    .map(|s| format!("{s:.0}"))
+                    .map(|s| format!("{s:.1}"))
                     .unwrap_or("-".into()),
             ),
             Cell::new(
