@@ -4,6 +4,7 @@
 //! Every position and capture records which receiver heard it.
 
 use rusqlite::{params, Connection, Result as SqlResult};
+use serde::Serialize;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -592,7 +593,7 @@ impl Database {
 // Row types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct AircraftRow {
     pub icao: String,
     pub registration: Option<String>,
@@ -602,7 +603,7 @@ pub struct AircraftRow {
     pub last_seen: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct PositionRow {
     pub icao: String,
     pub lat: f64,
@@ -614,13 +615,308 @@ pub struct PositionRow {
     pub timestamp: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct DbStats {
     pub aircraft: i64,
     pub positions: i64,
     pub events: i64,
     pub receivers: i64,
     pub captures: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventRow {
+    pub id: i64,
+    pub icao: String,
+    pub event_type: String,
+    pub description: String,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub altitude_ft: Option<i32>,
+    pub timestamp: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReceiverRow {
+    pub id: i64,
+    pub name: String,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub description: Option<String>,
+    pub created_at: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Web query methods
+// ---------------------------------------------------------------------------
+
+impl Database {
+    /// Get all aircraft ordered by last_seen DESC.
+    pub fn get_all_aircraft(&self) -> Vec<AircraftRow> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT icao, registration, country, is_military, first_seen, last_seen
+                 FROM aircraft ORDER BY last_seen DESC",
+            )
+            .unwrap();
+
+        stmt.query_map([], |r| {
+            Ok(AircraftRow {
+                icao: r.get(0)?,
+                registration: r.get(1)?,
+                country: r.get(2)?,
+                is_military: r.get::<_, i32>(3)? != 0,
+                first_seen: r.get(4)?,
+                last_seen: r.get(5)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Get recent positions within a time window.
+    pub fn get_recent_positions(&self, minutes: f64, limit: i64) -> Vec<PositionRow> {
+        let cutoff = now() - (minutes * 60.0);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
+                 FROM positions WHERE timestamp >= ?1 ORDER BY timestamp DESC LIMIT ?2",
+            )
+            .unwrap();
+
+        stmt.query_map(params![cutoff, limit], |r| {
+            Ok(PositionRow {
+                icao: r.get(0)?,
+                lat: r.get(1)?,
+                lon: r.get(2)?,
+                altitude_ft: r.get(3)?,
+                speed_kts: r.get(4)?,
+                heading_deg: r.get(5)?,
+                vertical_rate_fpm: r.get(6)?,
+                timestamp: r.get(7)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Get events with optional type and ICAO filters.
+    pub fn get_events(
+        &self,
+        event_type: Option<&str>,
+        icao: Option<&str>,
+        limit: i64,
+    ) -> Vec<EventRow> {
+        let sql = match (event_type, icao) {
+            (Some(_), Some(_)) => {
+                "SELECT id, icao, event_type, description, lat, lon, altitude_ft, timestamp
+                 FROM events WHERE event_type = ?1 AND icao = ?2
+                 ORDER BY timestamp DESC LIMIT ?3"
+            }
+            (Some(_), None) => {
+                "SELECT id, icao, event_type, description, lat, lon, altitude_ft, timestamp
+                 FROM events WHERE event_type = ?1
+                 ORDER BY timestamp DESC LIMIT ?3"
+            }
+            (None, Some(_)) => {
+                "SELECT id, icao, event_type, description, lat, lon, altitude_ft, timestamp
+                 FROM events WHERE icao = ?2
+                 ORDER BY timestamp DESC LIMIT ?3"
+            }
+            (None, None) => {
+                "SELECT id, icao, event_type, description, lat, lon, altitude_ft, timestamp
+                 FROM events ORDER BY timestamp DESC LIMIT ?3"
+            }
+        };
+
+        let mut stmt = self.conn.prepare(sql).unwrap();
+        let et = event_type.unwrap_or("");
+        let ic = icao.unwrap_or("");
+
+        stmt.query_map(params![et, ic, limit], |r| {
+            Ok(EventRow {
+                id: r.get(0)?,
+                icao: r.get(1)?,
+                event_type: r.get(2)?,
+                description: r.get(3)?,
+                lat: r.get(4)?,
+                lon: r.get(5)?,
+                altitude_ft: r.get(6)?,
+                timestamp: r.get(7)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Get position trails within a time window.
+    pub fn get_trails(&self, minutes: f64, limit_per_aircraft: i64) -> Vec<PositionRow> {
+        let cutoff = now() - (minutes * 60.0);
+        // Use window function to limit per aircraft
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
+                 FROM (
+                     SELECT *, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY timestamp DESC) as rn
+                     FROM positions WHERE timestamp >= ?1
+                 ) WHERE rn <= ?2
+                 ORDER BY icao, timestamp ASC",
+            )
+            .unwrap();
+
+        stmt.query_map(params![cutoff, limit_per_aircraft], |r| {
+            Ok(PositionRow {
+                icao: r.get(0)?,
+                lat: r.get(1)?,
+                lon: r.get(2)?,
+                altitude_ft: r.get(3)?,
+                speed_kts: r.get(4)?,
+                heading_deg: r.get(5)?,
+                vertical_rate_fpm: r.get(6)?,
+                timestamp: r.get(7)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Get heatmap data points.
+    pub fn get_heatmap_positions(&self, minutes: f64, limit: i64) -> Vec<(f64, f64, Option<i32>)> {
+        let cutoff = now() - (minutes * 60.0);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT lat, lon, altitude_ft FROM positions
+                 WHERE timestamp >= ?1
+                 ORDER BY RANDOM() LIMIT ?2",
+            )
+            .unwrap();
+
+        stmt.query_map(params![cutoff, limit], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Query positions with filters.
+    pub fn query_positions(
+        &self,
+        min_alt: Option<i32>,
+        max_alt: Option<i32>,
+        icao: Option<&str>,
+        military: bool,
+        limit: i64,
+    ) -> Vec<PositionRow> {
+        let mut conditions = vec!["1=1".to_string()];
+        let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(min) = min_alt {
+            conditions.push(format!("altitude_ft >= ?{}", bind_values.len() + 1));
+            bind_values.push(Box::new(min));
+        }
+        if let Some(max) = max_alt {
+            conditions.push(format!("altitude_ft <= ?{}", bind_values.len() + 1));
+            bind_values.push(Box::new(max));
+        }
+        if let Some(ic) = icao {
+            conditions.push(format!("p.icao = ?{}", bind_values.len() + 1));
+            bind_values.push(Box::new(ic.to_string()));
+        }
+        if military {
+            conditions.push("a.is_military = 1".to_string());
+        }
+
+        let where_clause = conditions.join(" AND ");
+        let sql = format!(
+            "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg, p.vertical_rate_fpm, p.timestamp
+             FROM positions p
+             LEFT JOIN aircraft a ON p.icao = a.icao
+             WHERE {where_clause}
+             ORDER BY p.timestamp DESC LIMIT ?{}",
+            bind_values.len() + 1
+        );
+
+        bind_values.push(Box::new(limit));
+
+        let mut stmt = self.conn.prepare(&sql).unwrap();
+        let refs: Vec<&dyn rusqlite::types::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+
+        stmt.query_map(refs.as_slice(), |r| {
+            Ok(PositionRow {
+                icao: r.get(0)?,
+                lat: r.get(1)?,
+                lon: r.get(2)?,
+                altitude_ft: r.get(3)?,
+                speed_kts: r.get(4)?,
+                heading_deg: r.get(5)?,
+                vertical_rate_fpm: r.get(6)?,
+                timestamp: r.get(7)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Get all positions for replay.
+    pub fn get_all_positions_ordered(&self, limit: i64) -> Vec<PositionRow> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
+                 FROM positions ORDER BY timestamp ASC LIMIT ?1",
+            )
+            .unwrap();
+
+        stmt.query_map(params![limit], |r| {
+            Ok(PositionRow {
+                icao: r.get(0)?,
+                lat: r.get(1)?,
+                lon: r.get(2)?,
+                altitude_ft: r.get(3)?,
+                speed_kts: r.get(4)?,
+                heading_deg: r.get(5)?,
+                vertical_rate_fpm: r.get(6)?,
+                timestamp: r.get(7)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Get all receivers.
+    pub fn get_receivers(&self) -> Vec<ReceiverRow> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, name, lat, lon, description, created_at FROM receivers ORDER BY id",
+            )
+            .unwrap();
+
+        stmt.query_map([], |r| {
+            Ok(ReceiverRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                lat: r.get(2)?,
+                lon: r.get(3)?,
+                description: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ use adsb_core::tracker::Tracker;
 use adsb_core::types::*;
 
 mod db;
+mod web;
 
 #[derive(Parser)]
 #[command(name = "adsb", version, about = "ADS-B decoder and tracker")]
@@ -54,6 +55,21 @@ enum Commands {
         /// SQLite database path
         #[arg(long, default_value = "data/adsb.db")]
         db_path: String,
+    },
+
+    /// Start the web server
+    Serve {
+        /// SQLite database path
+        #[arg(long, default_value = "data/adsb.db")]
+        db_path: String,
+
+        /// Port to listen on
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+
+        /// Host to bind to
+        #[arg(long, default_value = "0.0.0.0")]
+        host: String,
     },
 }
 
@@ -161,7 +177,8 @@ impl AircraftState {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
@@ -172,6 +189,11 @@ fn main() {
             min_interval,
         } => cmd_track(file, &db_path, min_interval),
         Commands::Stats { db_path } => cmd_stats(&db_path),
+        Commands::Serve {
+            db_path,
+            port,
+            host,
+        } => web::serve(db_path, host, port).await,
     }
 }
 
