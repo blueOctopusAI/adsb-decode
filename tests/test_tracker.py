@@ -211,6 +211,77 @@ class TestDatabaseIntegration:
         assert row is not None
 
 
+class TestIngestDownsampling:
+    """Position downsampling at ingest time."""
+
+    def test_skips_position_within_interval(self, tmp_path):
+        """Positions within min_position_interval are not stored in DB."""
+        db = Database(tmp_path / "ds.db")
+        rid = db.add_receiver("test-rx", lat=52.0, lon=4.0)
+        cap_id = db.start_capture(source="test", receiver_id=rid)
+        t = Tracker(db=db, receiver_id=rid, capture_id=cap_id,
+                    ref_lat=52.0, ref_lon=4.0, min_position_interval=2.0)
+
+        hex_even = POSITION_FRAMES[0][0]
+        hex_odd = POSITION_FRAMES[1][0]
+
+        # First pair — should store
+        t.update(parse_frame(hex_even, timestamp=1000.0))
+        t.update(parse_frame(hex_odd, timestamp=1000.5))
+
+        # Second pair 1s later — should skip (within 2s interval)
+        t.update(parse_frame(hex_even, timestamp=1001.0))
+        t.update(parse_frame(hex_odd, timestamp=1001.5))
+
+        # Third pair 3s after first — should store (past 2s interval)
+        t.update(parse_frame(hex_even, timestamp=1003.0))
+        t.update(parse_frame(hex_odd, timestamp=1003.5))
+
+        icao = POSITION_FRAMES[0][1]
+        positions = db.get_positions(icao)
+        assert len(positions) == 2  # Stored at 1000.5 and 1006.5
+        assert t.positions_skipped >= 1
+        db.close()
+
+    def test_zero_interval_stores_all(self, tmp_path):
+        """min_position_interval=0 stores every position (old behavior)."""
+        db = Database(tmp_path / "ds0.db")
+        rid = db.add_receiver("test-rx", lat=52.0, lon=4.0)
+        cap_id = db.start_capture(source="test", receiver_id=rid)
+        t = Tracker(db=db, receiver_id=rid, capture_id=cap_id,
+                    ref_lat=52.0, ref_lon=4.0, min_position_interval=0)
+
+        hex_even = POSITION_FRAMES[0][0]
+        hex_odd = POSITION_FRAMES[1][0]
+
+        t.update(parse_frame(hex_even, timestamp=1000.0))
+        t.update(parse_frame(hex_odd, timestamp=1000.5))
+        t.update(parse_frame(hex_even, timestamp=1001.0))
+        t.update(parse_frame(hex_odd, timestamp=1001.5))
+
+        icao = POSITION_FRAMES[0][1]
+        positions = db.get_positions(icao)
+        assert len(positions) >= 2
+        db.close()
+
+    def test_pattern_detection_not_affected(self):
+        """Position history buffer is filled even when DB write is skipped."""
+        t = Tracker(ref_lat=52.0, ref_lon=4.0, min_position_interval=2.0)
+
+        hex_even = POSITION_FRAMES[0][0]
+        hex_odd = POSITION_FRAMES[1][0]
+
+        t.update(parse_frame(hex_even, timestamp=1000.0))
+        t.update(parse_frame(hex_odd, timestamp=1000.5))
+        t.update(parse_frame(hex_even, timestamp=1001.0))
+        t.update(parse_frame(hex_odd, timestamp=1001.5))
+
+        icao = POSITION_FRAMES[0][1]
+        ac = t.aircraft[icao]
+        # Position history should have entries regardless of DB downsampling
+        assert len(ac.position_history) >= 2
+
+
 class TestMultiAircraft:
     """Tracking multiple aircraft simultaneously."""
 

@@ -103,6 +103,7 @@ class Tracker:
         capture_id: int | None = None,
         ref_lat: float | None = None,
         ref_lon: float | None = None,
+        min_position_interval: float = 2.0,
     ):
         """Initialize tracker.
 
@@ -112,6 +113,9 @@ class Tracker:
             capture_id: Current capture session ID.
             ref_lat: Receiver latitude for local CPR decode.
             ref_lon: Receiver longitude for local CPR decode.
+            min_position_interval: Minimum seconds between stored positions
+                per aircraft. Reduces DB size ~90%. Set to 0 to store every
+                position (old behavior). Default 5s.
         """
         self.aircraft: dict[str, AircraftState] = {}
         self.db = db
@@ -119,11 +123,16 @@ class Tracker:
         self.capture_id = capture_id
         self.ref_lat = ref_lat
         self.ref_lon = ref_lon
+        self.min_position_interval = min_position_interval
+
+        # Last stored position timestamp per ICAO (for downsampling)
+        self._last_stored: dict[str, float] = {}
 
         # Counters
         self.total_frames = 0
         self.valid_frames = 0
         self.position_decodes = 0
+        self.positions_skipped = 0
 
     def _get_or_create(self, icao_addr: str, timestamp: float) -> AircraftState:
         """Get existing aircraft state or create new one."""
@@ -229,23 +238,29 @@ class Tracker:
             ac.lat, ac.lon = position
             self.position_decodes += 1
 
-            # Record position for pattern detection
+            # Record position for pattern detection (always, regardless of downsampling)
             ac.position_history.append((msg.timestamp, ac.lat, ac.lon, ac.altitude_ft))
             if len(ac.position_history) > ac._MAX_HISTORY:
                 ac.position_history = ac.position_history[-ac._MAX_HISTORY:]
 
             if self.db:
-                self.db.add_position(
-                    icao=ac.icao,
-                    lat=ac.lat,
-                    lon=ac.lon,
-                    altitude_ft=ac.altitude_ft,
-                    speed_kts=ac.speed_kts,
-                    heading_deg=ac.heading_deg,
-                    vertical_rate_fpm=ac.vertical_rate_fpm,
-                    receiver_id=self.receiver_id,
-                    timestamp=msg.timestamp,
-                )
+                # Downsample: skip DB write if we stored one for this ICAO recently
+                last = self._last_stored.get(ac.icao, 0.0)
+                if msg.timestamp - last >= self.min_position_interval:
+                    self.db.add_position(
+                        icao=ac.icao,
+                        lat=ac.lat,
+                        lon=ac.lon,
+                        altitude_ft=ac.altitude_ft,
+                        speed_kts=ac.speed_kts,
+                        heading_deg=ac.heading_deg,
+                        vertical_rate_fpm=ac.vertical_rate_fpm,
+                        receiver_id=self.receiver_id,
+                        timestamp=msg.timestamp,
+                    )
+                    self._last_stored[ac.icao] = msg.timestamp
+                else:
+                    self.positions_skipped += 1
 
     def _try_cpr_decode(self, ac: AircraftState) -> tuple[float, float] | None:
         """Try to decode position from CPR frames.

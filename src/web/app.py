@@ -16,7 +16,7 @@ from .ingest import ingest
 from .routes import register_routes
 
 
-def create_app(db_path: str = "data/adsb.db") -> Flask:
+def create_app(db_path: str = "data/adsb.db", tracker=None) -> Flask:
     """Create and configure the Flask application."""
     app = Flask(
         __name__,
@@ -27,6 +27,10 @@ def create_app(db_path: str = "data/adsb.db") -> Flask:
     # Store database in app config for route access
     app.config["DB_PATH"] = db_path
     app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+    # Expose live tracker for real-time position serving
+    from . import routes as _routes
+    _routes._live_tracker = tracker
 
     @app.before_request
     def _open_db():

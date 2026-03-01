@@ -30,8 +30,8 @@ src/
 ├── crc.py           # CRC-24 validation (ICAO standard polynomial)
 ├── hardware.py      # RTL-SDR dongle detection, driver checks, test capture
 ├── icao.py          # ICAO address → country, military block detection, N-number
-├── tracker.py       # Per-aircraft state machine with CPR pairing, heading/position history
-├── database.py      # SQLite persistence (WAL mode, 6 tables)
+├── tracker.py       # Per-aircraft state machine with CPR pairing, ingest downsampling
+├── database.py      # SQLite persistence (WAL mode, 6 tables, tiered retention, VACUUM)
 ├── filters.py       # Military, emergency, circling, holding, proximity, unusual altitude, geofence
 ├── enrichment.py    # Aircraft type classification, operator lookup, 3,642 airports
 ├── notifications.py # Webhook dispatch for events (configurable URL + event type filter)
@@ -40,7 +40,7 @@ src/
 └── web/
     ├── app.py       # Flask app factory
     ├── ingest.py    # Frame ingestion API for remote feeders (auth, heartbeat)
-    ├── routes.py    # REST API + page routes (16 endpoints, 9 pages)
+    ├── routes.py    # REST API + page routes (16 endpoints, 9 pages, dual-path positions)
     └── templates/   # Jinja2 — map, table, detail, events, query, replay, receivers, stats
 data/
 └── airports.csv     # 3,642 US airports from OurAirports (public domain)

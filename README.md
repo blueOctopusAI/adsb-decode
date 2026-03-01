@@ -108,6 +108,7 @@ This isn't just a radio scanner. It's an intelligence tool.
 - **Aircraft type enrichment** — Speed/altitude profile classifies aircraft as jet, prop, turboprop, helicopter, military, or cargo. Airline operator lookup from callsign prefix.
 - **Airport awareness** — 3,642 US airports bundled. Nearest airport lookup, flight phase classification (approaching, departing, overflying).
 - **Historical queries** — SQLite database stores every position report. Query builder with preset and custom filters.
+- **Tiered data retention** — Ingest-side downsampling (2s), tiered historical thinning (30s/60s buckets), phantom aircraft pruning, auto-VACUUM. Sustainable for long-running deployments.
 
 ## Web Dashboard
 
@@ -162,8 +163,8 @@ src/
 ├── decoder.py       # ModeFrame → typed messages (identification, position, velocity)
 ├── cpr.py           # Compact Position Reporting — global + local decode
 ├── icao.py          # Country lookup, military detection, N-number conversion
-├── tracker.py       # Per-aircraft state machine with CPR frame pairing, history buffers
-├── database.py      # SQLite with WAL mode, multi-receiver schema (6 tables)
+├── tracker.py       # Per-aircraft state machine with CPR frame pairing, ingest downsampling
+├── database.py      # SQLite with WAL mode, multi-receiver schema, tiered retention
 ├── filters.py       # Military, emergency, circling, holding, proximity, unusual altitude, geofence
 ├── enrichment.py    # Aircraft type classification, operator lookup, 3,642 airports
 ├── notifications.py # Webhook dispatch for events (configurable URL + event type filter)
@@ -175,11 +176,11 @@ src/
 └── web/
     ├── app.py       # Flask app factory
     ├── ingest.py    # Frame ingestion API for remote feeders
-    ├── routes.py    # 16 REST API endpoints + 9 page routes
+    ├── routes.py    # 16 REST API endpoints + 9 page routes (dual-path: memory or DB)
     └── templates/   # Map, table, detail, events, query, replay, receivers, stats
 ```
 
-**386 tests** covering every module. 22 Python modules, 9 HTML templates, ~7,300 lines. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
+**394 tests** covering every module. 22 Python modules, 9 HTML templates, ~7,300 lines. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
 
 ## License
 

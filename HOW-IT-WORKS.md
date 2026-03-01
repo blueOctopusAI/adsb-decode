@@ -244,6 +244,16 @@ The schema is receiver-aware from day one. Every position report and capture ses
 
 A single-receiver deployment works identically — it just has one row in the receivers table. Adding receivers is adding data sources, not refactoring the schema.
 
+### Data Retention
+
+Left unchecked, position data grows ~6.9M rows/day (100 aircraft × 1 position/2s × 86,400s). The system implements tiered retention:
+
+- **Ingest downsampling**: Tracker skips DB writes if the same aircraft had a position stored within `min_position_interval` seconds (default 2s). In-memory state updates at full rate for real-time map display and pattern detection.
+- **Tiered thinning**: Positions older than 24h are thinned to one per 30-second bucket. Positions older than 7 days are thinned to one per 60-second bucket. Positions older than 30 days are deleted entirely.
+- **Phantom aircraft pruning**: CRC-residual ICAO extraction in DF5/DF21 frames creates millions of fake aircraft records with no positions. `prune_phantom_aircraft()` deletes orphaned aircraft/sightings/events.
+- **VACUUM**: After pruning, SQLite VACUUM reclaims disk space (DELETE frees logical space but doesn't shrink the file).
+- **Schedule**: Pruning runs every 10 minutes during live tracking. VACUUM runs only when rows were actually cleaned.
+
 ---
 
 ## Stage 7: Intelligence (`filters.py`, `enrichment.py`)
@@ -283,7 +293,8 @@ What makes this more than a radio scanner:
 - Receiver management page with coverage circles
 - Table view with sort/filter
 - Single aircraft detail page with position history
-- 1-second polling for real-time updates
+- 500ms polling for real-time updates (sub-second when live tracker attached)
+- **Dual-path position serving**: When a live tracker is attached (local dongle mode), `/api/positions` reads from in-memory aircraft state for sub-second latency. Remote server mode falls back to DB queries.
 - Dark theme (avionics tradition)
 
 ### Multi-Receiver Network (`feeder.py`, `web/ingest.py`)
@@ -345,8 +356,8 @@ What makes this more than a radio scanner:
 | `src/decoder.py` | ~400 | Frame→typed messages, all DF/TC types |
 | `src/cpr.py` | ~180 | Compact Position Reporting math |
 | `src/icao.py` | ~200 | Country lookup, military blocks, N-number |
-| `src/tracker.py` | ~330 | Per-aircraft state machine, heading/position history |
-| `src/database.py` | ~250 | SQLite schema, queries, WAL mode |
+| `src/tracker.py` | ~340 | Per-aircraft state machine, heading/position history, ingest downsampling |
+| `src/database.py` | ~460 | SQLite schema, queries, WAL mode, tiered retention, VACUUM |
 | `src/filters.py` | ~405 | Military, emergency, circling, holding, proximity, unusual alt, geofence |
 | `src/enrichment.py` | ~310 | Aircraft type classification, operator lookup, 3,642 airports |
 | `src/exporters.py` | ~150 | CSV, JSON, KML, GeoJSON output |
@@ -354,8 +365,8 @@ What makes this more than a radio scanner:
 | `src/config.py` | ~145 | Config file management (~/.adsb-decode/config.yaml) |
 | `src/hardware.py` | ~160 | RTL-SDR dongle detection, driver checks, test capture |
 | `src/notifications.py` | ~65 | Webhook dispatch for events |
-| `src/cli.py` | ~460 | Click CLI entry points (setup, capture, decode, track, stats, export, serve) |
-| `src/web/app.py` | ~50 | Flask app factory |
+| `src/cli.py` | ~475 | Click CLI entry points (setup, capture, decode, track, stats, export, serve) |
+| `src/web/app.py` | ~57 | Flask app factory (tracker injection, template auto-reload) |
 | `src/web/ingest.py` | ~185 | Frame ingestion API for remote feeders |
-| `src/web/routes.py` | ~500 | REST API + page routes (16 endpoints, 9 pages) |
+| `src/web/routes.py` | ~535 | REST API + page routes (16 endpoints, 9 pages, dual-path positions) |
 | `data/airports.csv` | 3,643 | OurAirports US airport database |

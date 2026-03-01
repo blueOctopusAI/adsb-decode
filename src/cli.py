@@ -113,7 +113,7 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
     if port:
         import threading
         from .web.app import create_app
-        app = create_app(db_path=db_path)
+        app = create_app(db_path=db_path, tracker=tracker)
         thread = threading.Thread(
             target=lambda: app.run(host="127.0.0.1", port=port, use_reloader=False),
             daemon=True,
@@ -187,11 +187,24 @@ def track(file: str | None, live: bool, db_path: str, ref_lat: float | None,
                     tracker.prune_stale()
                     db.flush()
 
-                    # Prune old data every 10 minutes
+                    # Prune + downsample old data every 10 minutes
                     if now - last_prune > 600:
-                        pruned = db.prune_positions(max_age_hours=168)
-                        if pruned:
-                            console.print(f"  [dim]Pruned {pruned} positions older than 7 days[/]")
+                        # Tier 1: >24h old → keep every 30s
+                        ds1 = db.downsample_positions(older_than_hours=24, keep_interval_sec=30)
+                        # Tier 2: >7d old → keep every 60s
+                        ds2 = db.downsample_positions(older_than_hours=168, keep_interval_sec=60)
+                        # Tier 3: >30d old → delete entirely
+                        pruned = db.prune_positions(max_age_hours=720)
+                        # Prune phantom aircraft (CRC ghosts with no positions)
+                        phantoms = db.prune_phantom_aircraft()
+                        total_cleaned = ds1 + ds2 + pruned + phantoms
+                        if total_cleaned:
+                            parts = []
+                            if ds1 + ds2: parts.append(f"downsample: {ds1+ds2}")
+                            if pruned: parts.append(f"old: {pruned}")
+                            if phantoms: parts.append(f"phantoms: {phantoms}")
+                            console.print(f"  [dim]Cleaned {total_cleaned} rows ({', '.join(parts)})[/]")
+                            db.vacuum()
                         last_prune = now
 
     except KeyboardInterrupt:

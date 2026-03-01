@@ -35,6 +35,11 @@ _LOOKUP_CACHE_TTL = 3600  # 1 hour
 _geofences: list[dict] = []
 _geofence_next_id = 1
 
+# Live tracker reference — set by app.py when running with a dongle.
+# When set, /api/positions serves from in-memory state (~0.5s latency).
+# When None, falls back to DB queries (~2s latency).
+_live_tracker = None
+
 from ..enrichment import AIRPORTS
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -91,15 +96,45 @@ def get_aircraft(icao: str):
 def recent_positions():
     """Recent positions for map updates (polling endpoint).
 
-    Returns the most recent position per aircraft.
+    When a live tracker is attached (local dongle mode), serves from
+    in-memory state for sub-second latency. Otherwise queries the DB.
+
     Query params:
         minutes: Only show aircraft seen within the last N minutes
     """
-    db = _db()
     minutes = request.args.get("minutes", type=int)
+    now = time.time()
+
+    # Fast path: serve from live tracker memory
+    if _live_tracker is not None:
+        cutoff = now - (max(1, min(minutes, 525600)) * 60) if minutes else 0
+        positions = []
+        for ac in _live_tracker.aircraft.values():
+            if ac.lat is None or ac.lon is None:
+                continue
+            if cutoff and ac.last_seen < cutoff:
+                continue
+            positions.append({
+                "icao": ac.icao,
+                "lat": ac.lat,
+                "lon": ac.lon,
+                "altitude_ft": ac.altitude_ft,
+                "speed_kts": ac.speed_kts,
+                "heading_deg": ac.heading_deg,
+                "vertical_rate_fpm": ac.vertical_rate_fpm,
+                "timestamp": ac.last_seen,
+                "registration": ac.registration,
+                "country": ac.country,
+                "is_military": ac.is_military,
+            })
+        positions.sort(key=lambda p: p["timestamp"], reverse=True)
+        return jsonify({"positions": positions, "count": len(positions)})
+
+    # Slow path: query DB
+    db = _db()
     if minutes is not None:
         minutes = max(1, min(minutes, 525600))  # 1 min to 1 year
-        cutoff = time.time() - (minutes * 60)
+        cutoff = now - (minutes * 60)
         rows = db.conn.execute("""
             SELECT p.*, a.registration, a.country, a.is_military
             FROM positions p

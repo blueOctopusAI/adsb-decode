@@ -1,5 +1,7 @@
 """Tests for SQLite database persistence."""
 
+import time
+
 import pytest
 
 from src.database import Database
@@ -185,6 +187,65 @@ class TestStats:
         assert s["aircraft"] == 1
         assert s["positions"] == 1
         assert s["receivers"] == 1
+
+
+class TestDownsampling:
+    def test_downsample_keeps_one_per_bucket(self, db):
+        """Positions within the same time bucket are thinned to one."""
+        db.upsert_aircraft("A00001", timestamp=1000.0)
+        now = time.time()
+        # Use a round base to avoid straddling a 30s bucket boundary
+        old = (int((now - 100000) / 30) * 30) + 1  # Align to start of a 30s bucket
+        # 10 positions within the same 30s bucket (span 9 seconds)
+        for i in range(10):
+            db.add_position("A00001", lat=35.0, lon=-83.0, altitude_ft=30000 + i,
+                           timestamp=old + i)
+        assert db.count_positions() == 10
+        removed = db.downsample_positions(older_than_hours=24, keep_interval_sec=30)
+        assert removed == 9  # Keep 1 per bucket
+        assert db.count_positions() == 1
+
+    def test_downsample_preserves_recent(self, db):
+        """Positions newer than the cutoff are untouched."""
+        db.upsert_aircraft("A00001", timestamp=1000.0)
+        now = time.time()
+        # Add recent positions (< 24h old)
+        for i in range(5):
+            db.add_position("A00001", lat=35.0, lon=-83.0, timestamp=now - i)
+        removed = db.downsample_positions(older_than_hours=24, keep_interval_sec=30)
+        assert removed == 0
+        assert db.count_positions() == 5
+
+    def test_downsample_multiple_aircraft(self, db):
+        """Each aircraft is downsampled independently."""
+        now = time.time()
+        old = (int((now - 100000) / 30) * 30) + 1  # Align to bucket
+        db.upsert_aircraft("A00001", timestamp=1000.0)
+        db.upsert_aircraft("A00002", timestamp=1000.0)
+        for i in range(10):
+            db.add_position("A00001", lat=35.0, lon=-83.0, timestamp=old + i)
+            db.add_position("A00002", lat=36.0, lon=-84.0, timestamp=old + i)
+        assert db.count_positions() == 20
+        db.downsample_positions(older_than_hours=24, keep_interval_sec=30)
+        assert db.count_positions() == 2  # 1 per aircraft
+
+    def test_downsample_separate_buckets_preserved(self, db):
+        """Positions in different time buckets are each kept."""
+        db.upsert_aircraft("A00001", timestamp=1000.0)
+        now = time.time()
+        old = now - 100000
+        # 3 positions in 3 separate 30s buckets
+        db.add_position("A00001", lat=35.0, lon=-83.0, timestamp=old)
+        db.add_position("A00001", lat=35.0, lon=-83.0, timestamp=old + 35)
+        db.add_position("A00001", lat=35.0, lon=-83.0, timestamp=old + 70)
+        db.downsample_positions(older_than_hours=24, keep_interval_sec=30)
+        assert db.count_positions() == 3  # Each in its own bucket
+
+    def test_vacuum(self, db):
+        """VACUUM runs without error."""
+        db.upsert_aircraft("A00001", timestamp=1000.0)
+        db.add_position("A00001", lat=35.0, lon=-83.0, timestamp=1000.0)
+        db.vacuum()  # Should not raise
 
 
 class TestWALMode:

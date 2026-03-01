@@ -385,6 +385,67 @@ class Database:
         self.conn.commit()
         return cur.rowcount
 
+    def downsample_positions(self, older_than_hours: int = 24, keep_interval_sec: int = 30) -> int:
+        """Thin old positions to one per aircraft per keep_interval_sec.
+
+        Keeps the most recent position in each time bucket. Positions newer
+        than older_than_hours are untouched (full resolution for recent data).
+
+        Tiered strategy (called from CLI with different params):
+          >24h old  → keep every 30s
+          >7d old   → keep every 60s
+          >30d old  → delete entirely (via prune_positions)
+
+        Returns the number of rows deleted.
+        """
+        cutoff = time.time() - (older_than_hours * 3600)
+        # For each (icao, time_bucket), keep only the row with the MAX id (most recent).
+        # Delete all others in that bucket that are older than the cutoff.
+        cur = self.conn.execute(
+            """DELETE FROM positions WHERE timestamp < ? AND id NOT IN (
+                SELECT MAX(id) FROM positions
+                WHERE timestamp < ?
+                GROUP BY icao, CAST(timestamp / ? AS INTEGER)
+            )""",
+            (cutoff, cutoff, keep_interval_sec),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def prune_phantom_aircraft(self) -> int:
+        """Delete aircraft that have never had a position decode.
+
+        These are phantom ICAOs from CRC-residual extraction in DF5/DF21 frames.
+        Also cleans up their sightings and events.
+
+        Returns total rows deleted across all tables.
+        """
+        # Find ICAOs that have positions (real aircraft)
+        real_icaos = "SELECT DISTINCT icao FROM positions"
+        # Delete sightings for phantoms
+        c1 = self.conn.execute(
+            f"DELETE FROM sightings WHERE icao NOT IN ({real_icaos})"
+        )
+        # Delete events for phantoms
+        c2 = self.conn.execute(
+            f"DELETE FROM events WHERE icao NOT IN ({real_icaos})"
+        )
+        # Delete phantom aircraft
+        c3 = self.conn.execute(
+            f"DELETE FROM aircraft WHERE icao NOT IN ({real_icaos})"
+        )
+        self.conn.commit()
+        return c1.rowcount + c2.rowcount + c3.rowcount
+
+    def vacuum(self):
+        """Reclaim disk space after deleting rows.
+
+        VACUUM rewrites the entire database file. Safe but briefly locks the DB.
+        Call after large prune/downsample operations.
+        """
+        self.conn.execute("VACUUM")
+        self.conn.commit()
+
     # --- Stats ---
 
     def stats(self) -> dict:
