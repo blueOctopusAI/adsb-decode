@@ -625,6 +625,19 @@ pub struct DbStats {
 }
 
 #[derive(Debug, Serialize)]
+pub struct HistoryRow {
+    pub icao: String,
+    pub callsign: Option<String>,
+    pub country: Option<String>,
+    pub is_military: bool,
+    pub min_altitude_ft: Option<i32>,
+    pub max_altitude_ft: Option<i32>,
+    pub message_count: i64,
+    pub first_seen: f64,
+    pub last_seen: f64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct EventRow {
     pub id: i64,
     pub icao: String,
@@ -878,6 +891,95 @@ impl Database {
             .unwrap();
 
         stmt.query_map(params![limit], |r| {
+            Ok(PositionRow {
+                icao: r.get(0)?,
+                lat: r.get(1)?,
+                lon: r.get(2)?,
+                altitude_ft: r.get(3)?,
+                speed_kts: r.get(4)?,
+                heading_deg: r.get(5)?,
+                vertical_rate_fpm: r.get(6)?,
+                timestamp: r.get(7)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Get aircraft seen within a time window, with latest sighting info.
+    pub fn get_aircraft_history(&self, hours: f64) -> Vec<HistoryRow> {
+        let cutoff = now() - (hours * 3600.0);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT a.icao, s.callsign, a.country, a.is_military,
+                        s.min_altitude_ft, s.max_altitude_ft,
+                        s.message_count, a.first_seen, a.last_seen
+                 FROM aircraft a
+                 LEFT JOIN sightings s ON a.icao = s.icao
+                 WHERE a.last_seen >= ?1
+                 ORDER BY a.last_seen DESC",
+            )
+            .unwrap();
+
+        stmt.query_map(params![cutoff], |r| {
+            Ok(HistoryRow {
+                icao: r.get(0)?,
+                callsign: r.get(1)?,
+                country: r.get(2)?,
+                is_military: r.get::<_, Option<i32>>(3)?.unwrap_or(0) != 0,
+                min_altitude_ft: r.get(4)?,
+                max_altitude_ft: r.get(5)?,
+                message_count: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                first_seen: r.get(7)?,
+                last_seen: r.get(8)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Export all positions as flat records.
+    pub fn export_positions(
+        &self,
+        hours: Option<f64>,
+        icao: Option<&str>,
+        limit: i64,
+    ) -> Vec<PositionRow> {
+        let mut conditions = Vec::new();
+        let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(h) = hours {
+            let cutoff = now() - (h * 3600.0);
+            conditions.push(format!("timestamp >= ?{}", bind_values.len() + 1));
+            bind_values.push(Box::new(cutoff));
+        }
+        if let Some(ic) = icao {
+            conditions.push(format!("icao = ?{}", bind_values.len() + 1));
+            bind_values.push(Box::new(ic.to_string()));
+        }
+
+        let where_clause = if conditions.is_empty() {
+            "1=1".to_string()
+        } else {
+            conditions.join(" AND ")
+        };
+
+        let sql = format!(
+            "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
+             FROM positions WHERE {where_clause}
+             ORDER BY timestamp ASC LIMIT ?{}",
+            bind_values.len() + 1
+        );
+
+        bind_values.push(Box::new(limit));
+
+        let mut stmt = self.conn.prepare(&sql).unwrap();
+        let refs: Vec<&dyn rusqlite::types::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+
+        stmt.query_map(refs.as_slice(), |r| {
             Ok(PositionRow {
                 icao: r.get(0)?,
                 lat: r.get(1)?,

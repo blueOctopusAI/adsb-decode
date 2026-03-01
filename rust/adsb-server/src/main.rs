@@ -57,6 +57,48 @@ enum Commands {
         db_path: String,
     },
 
+    /// Show aircraft history from database
+    History {
+        /// SQLite database path
+        #[arg(long, default_value = "data/adsb.db")]
+        db_path: String,
+
+        /// Show aircraft from last N hours
+        #[arg(long, default_value = "24")]
+        last: f64,
+
+        /// Filter by ICAO address
+        #[arg(long)]
+        icao: Option<String>,
+    },
+
+    /// Export position data to CSV or JSON
+    Export {
+        /// SQLite database path
+        #[arg(long, default_value = "data/adsb.db")]
+        db_path: String,
+
+        /// Output format (csv, json)
+        #[arg(short, long, default_value = "csv")]
+        format: String,
+
+        /// Output file (stdout if not specified)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Export data from last N hours
+        #[arg(long)]
+        last: Option<f64>,
+
+        /// Filter by ICAO address
+        #[arg(long)]
+        icao: Option<String>,
+
+        /// Maximum rows to export
+        #[arg(long, default_value = "100000")]
+        limit: i64,
+    },
+
     /// Start the web server
     Serve {
         /// SQLite database path
@@ -71,6 +113,9 @@ enum Commands {
         #[arg(long, default_value = "0.0.0.0")]
         host: String,
     },
+
+    /// Interactive setup wizard — configure receiver, database, and server
+    Setup,
 }
 
 /// Accumulated aircraft state from decoded messages.
@@ -189,11 +234,25 @@ async fn main() {
             min_interval,
         } => cmd_track(file, &db_path, min_interval),
         Commands::Stats { db_path } => cmd_stats(&db_path),
+        Commands::History {
+            db_path,
+            last,
+            icao,
+        } => cmd_history(&db_path, last, icao.as_deref()),
+        Commands::Export {
+            db_path,
+            format,
+            output,
+            last,
+            icao,
+            limit,
+        } => cmd_export(&db_path, &format, output, last, icao.as_deref(), limit),
         Commands::Serve {
             db_path,
             port,
             host,
         } => web::serve(db_path, host, port).await,
+        Commands::Setup => cmd_setup(),
     }
 }
 
@@ -421,6 +480,273 @@ fn cmd_stats(db_path: &str) {
     println!("  Receivers:  {}", stats.receivers);
     println!("  Captures:   {}", stats.captures);
     println!();
+}
+
+fn cmd_history(db_path: &str, hours: f64, icao_filter: Option<&str>) {
+    let database = db::Database::open(db_path).unwrap_or_else(|e| {
+        eprintln!("Error opening database {db_path}: {e}");
+        std::process::exit(1);
+    });
+
+    if let Some(icao_hex) = icao_filter {
+        let icao_upper = icao_hex.to_ascii_uppercase();
+        let aircraft = database.get_aircraft(&icao_upper);
+        let positions = database.get_positions(&icao_upper, 50);
+        let events = database.get_events(None, Some(&icao_upper), 20);
+
+        match aircraft {
+            Some(ac) => {
+                println!();
+                println!("Aircraft: {}", ac.icao);
+                if let Some(c) = &ac.country {
+                    println!("  Country: {c}");
+                }
+                if ac.is_military {
+                    println!("  Military: yes");
+                }
+                println!("  First seen: {:.0}", ac.first_seen);
+                println!("  Last seen: {:.0}", ac.last_seen);
+
+                if !positions.is_empty() {
+                    println!();
+                    println!("  Recent positions ({}):", positions.len());
+                    let mut tbl = Table::new();
+                    tbl.set_header(vec!["Time", "Lat", "Lon", "Alt", "Speed", "Hdg"]);
+                    for p in positions.iter().take(20) {
+                        tbl.add_row(vec![
+                            Cell::new(format!("{:.0}", p.timestamp)),
+                            Cell::new(format!("{:.4}", p.lat)),
+                            Cell::new(format!("{:.4}", p.lon)),
+                            Cell::new(p.altitude_ft.map(|a| a.to_string()).unwrap_or("-".into())),
+                            Cell::new(
+                                p.speed_kts
+                                    .map(|s| format!("{s:.0}"))
+                                    .unwrap_or("-".into()),
+                            ),
+                            Cell::new(
+                                p.heading_deg
+                                    .map(|h| format!("{h:.1}"))
+                                    .unwrap_or("-".into()),
+                            ),
+                        ]);
+                    }
+                    println!("{tbl}");
+                }
+
+                if !events.is_empty() {
+                    println!();
+                    println!("  Events ({}):", events.len());
+                    for e in &events {
+                        println!("    [{:.0}] {}: {}", e.timestamp, e.event_type, e.description);
+                    }
+                }
+            }
+            None => {
+                eprintln!("Aircraft {icao_upper} not found in database");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        let history = database.get_aircraft_history(hours);
+
+        println!();
+        println!(
+            "Aircraft seen in last {hours:.0} hours: {} (database: {db_path})",
+            history.len()
+        );
+
+        if history.is_empty() {
+            return;
+        }
+
+        println!();
+        let mut table = Table::new();
+        table.set_header(vec![
+            "ICAO", "Callsign", "Country", "Mil", "Min Alt", "Max Alt", "Msgs",
+        ]);
+
+        for h in &history {
+            table.add_row(vec![
+                Cell::new(&h.icao),
+                Cell::new(h.callsign.as_deref().unwrap_or("-")),
+                Cell::new(h.country.as_deref().unwrap_or("-")),
+                Cell::new(if h.is_military { "Y" } else { "" }),
+                Cell::new(
+                    h.min_altitude_ft
+                        .map(|a| a.to_string())
+                        .unwrap_or("-".into()),
+                ),
+                Cell::new(
+                    h.max_altitude_ft
+                        .map(|a| a.to_string())
+                        .unwrap_or("-".into()),
+                ),
+                Cell::new(h.message_count),
+            ]);
+        }
+
+        println!("{table}");
+    }
+}
+
+fn cmd_export(
+    db_path: &str,
+    format: &str,
+    output: Option<PathBuf>,
+    last_hours: Option<f64>,
+    icao_filter: Option<&str>,
+    limit: i64,
+) {
+    let database = db::Database::open(db_path).unwrap_or_else(|e| {
+        eprintln!("Error opening database {db_path}: {e}");
+        std::process::exit(1);
+    });
+
+    let positions = database.export_positions(last_hours, icao_filter, limit);
+
+    let content = match format {
+        "csv" => {
+            let mut lines =
+                vec!["icao,lat,lon,altitude_ft,speed_kts,heading_deg,vertical_rate_fpm,timestamp"
+                    .to_string()];
+            for p in &positions {
+                lines.push(format!(
+                    "{},{},{},{},{},{},{},{}",
+                    p.icao,
+                    p.lat,
+                    p.lon,
+                    p.altitude_ft.map(|a| a.to_string()).unwrap_or_default(),
+                    p.speed_kts
+                        .map(|s| format!("{s:.1}"))
+                        .unwrap_or_default(),
+                    p.heading_deg
+                        .map(|h| format!("{h:.1}"))
+                        .unwrap_or_default(),
+                    p.vertical_rate_fpm
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    p.timestamp,
+                ));
+            }
+            lines.join("\n") + "\n"
+        }
+        "json" => serde_json::to_string_pretty(&positions).unwrap_or("[]".into()),
+        _ => {
+            eprintln!("Unknown format: {format}. Use 'csv' or 'json'.");
+            std::process::exit(1);
+        }
+    };
+
+    match output {
+        Some(path) => {
+            std::fs::write(&path, &content).unwrap_or_else(|e| {
+                eprintln!("Error writing {}: {e}", path.display());
+                std::process::exit(1);
+            });
+            eprintln!(
+                "Exported {} positions to {} ({})",
+                positions.len(),
+                path.display(),
+                format
+            );
+        }
+        None => print!("{content}"),
+    }
+}
+
+fn cmd_setup() {
+    use adsb_core::config;
+
+    println!();
+    println!("adsb-decode setup wizard");
+    println!("========================");
+    println!();
+
+    let existing = config::load_config();
+    let mut config = existing.clone();
+
+    // Receiver name
+    println!(
+        "Receiver name [{}]: ",
+        config.receiver.name
+    );
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let input = input.trim();
+    if !input.is_empty() {
+        config.receiver.name = input.to_string();
+    }
+
+    // Receiver location
+    println!(
+        "Receiver latitude [{}]: ",
+        config
+            .receiver
+            .lat
+            .map(|l| l.to_string())
+            .unwrap_or("not set".into())
+    );
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let input = input.trim();
+    if !input.is_empty() {
+        config.receiver.lat = input.parse().ok();
+    }
+
+    println!(
+        "Receiver longitude [{}]: ",
+        config
+            .receiver
+            .lon
+            .map(|l| l.to_string())
+            .unwrap_or("not set".into())
+    );
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let input = input.trim();
+    if !input.is_empty() {
+        config.receiver.lon = input.parse().ok();
+    }
+
+    // Database path
+    println!("Database path [{}]: ", config.database.path);
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let input = input.trim();
+    if !input.is_empty() {
+        config.database.path = input.to_string();
+    }
+
+    // Dashboard
+    println!("Dashboard port [{}]: ", config.dashboard.port);
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let input = input.trim();
+    if !input.is_empty() {
+        if let Ok(port) = input.parse::<u16>() {
+            config.dashboard.port = port;
+        }
+    }
+
+    // Save
+    match config::save_config(&config) {
+        Ok(path) => {
+            println!();
+            println!("Configuration saved to {}", path.display());
+            println!();
+            println!("  Receiver: {} ({}, {})",
+                config.receiver.name,
+                config.receiver.lat.map(|l| format!("{l}")).unwrap_or("?".into()),
+                config.receiver.lon.map(|l| format!("{l}")).unwrap_or("?".into()),
+            );
+            println!("  Database: {}", config.database.path);
+            println!("  Dashboard: {}:{}", config.dashboard.host, config.dashboard.port);
+        }
+        Err(e) => {
+            eprintln!("Error saving config: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn print_summary(
