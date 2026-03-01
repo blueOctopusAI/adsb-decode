@@ -13,6 +13,7 @@ use adsb_core::tracker::Tracker;
 use crate::db::AdsbDatabase;
 
 pub mod ingest;
+pub mod pages;
 pub mod routes;
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .allow_headers(Any);
 
     Router::new()
-        // Page routes (placeholder — returns JSON until templates are ported)
+        // Page routes
+        .route("/", axum::routing::get(pages::page_map))
+        .route("/table", axum::routing::get(pages::page_table))
+        .route("/stats", axum::routing::get(pages::page_stats))
+        .route("/events", axum::routing::get(pages::page_events))
+        .route("/aircraft/:icao", axum::routing::get(pages::page_detail))
+        .route("/query", axum::routing::get(pages::page_query))
+        .route("/replay", axum::routing::get(pages::page_replay))
+        .route("/receivers", axum::routing::get(pages::page_receivers))
+        // API routes
         .route("/api/aircraft", axum::routing::get(routes::api_aircraft))
         .route(
             "/api/aircraft/:icao",

@@ -1,0 +1,39 @@
+<style></style>
+<div class="container">
+    <h2 style="color:#00ff88; margin-bottom:12px;">Aircraft (<span id="ac-count">-</span>)</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ICAO</th>
+                <th>Registration</th>
+                <th>Country</th>
+                <th>Military</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+            </tr>
+        </thead>
+        <tbody id="ac-tbody"></tbody>
+    </table>
+</div>
+<script>
+fetch('/api/aircraft')
+    .then(r => r.json())
+    .then(data => {
+        document.getElementById('ac-count').textContent = data.length;
+        const tbody = document.getElementById('ac-tbody');
+        tbody.innerHTML = data.map(ac => {
+            const fs = ac.first_seen ? new Date(ac.first_seen * 1000).toLocaleString() : '-';
+            const ls = ac.last_seen ? new Date(ac.last_seen * 1000).toLocaleString() : '-';
+            const mil = ac.is_military ? '<span class="mil">MIL</span>' : '-';
+            return `<tr>
+                <td><a href="/aircraft/${ac.icao}">${ac.icao}</a></td>
+                <td>${ac.registration || '-'}</td>
+                <td>${ac.country || '-'}</td>
+                <td>${mil}</td>
+                <td>${fs}</td>
+                <td>${ls}</td>
+            </tr>`;
+        }).join('');
+    })
+    .catch(err => console.error('Failed to load aircraft:', err));
+</script>

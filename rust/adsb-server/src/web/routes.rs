@@ -203,6 +203,9 @@ pub async fn api_positions(
                     "vertical_rate_fpm": ac.vertical_rate_fpm,
                     "timestamp": ac.last_seen,
                     "callsign": ac.callsign,
+                    "is_military": ac.is_military,
+                    "country": ac.country,
+                    "registration": ac.registration,
                 })
             })
             .collect();
@@ -710,5 +713,55 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_page_routes() {
+        let (state, _dir) = test_state();
+
+        let pages = ["/", "/table", "/stats", "/events", "/query", "/replay", "/receivers"];
+        for page in pages {
+            let app = crate::web::build_router(state.clone());
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(page)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "Page {page} failed");
+
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            let html = String::from_utf8_lossy(&body);
+            assert!(html.contains("adsb-decode"), "Page {page} missing brand");
+            assert!(html.contains("<nav>"), "Page {page} missing nav");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_page_detail() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/aircraft/4840D6")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("detail-split"));
     }
 }

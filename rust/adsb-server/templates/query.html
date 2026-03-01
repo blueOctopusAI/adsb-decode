@@ -1,0 +1,192 @@
+<style>
+#query-map { width: 100%; height: 400px; border: 1px solid #333; margin-top: 12px; }
+.query-bar { padding: 12px 16px; border-bottom: 1px solid #333; }
+.query-bar select, .query-bar input {
+    background: #222; color: #e0e0e0; border: 1px solid #333;
+    padding: 6px 10px; font-family: 'Courier New', monospace; font-size: 13px;
+    border-radius: 3px;
+}
+.query-bar button {
+    background: #00ff88; color: #000; border: none;
+    padding: 6px 16px; cursor: pointer; font-family: 'Courier New', monospace;
+    font-weight: bold; border-radius: 3px; font-size: 13px;
+}
+.query-bar button:hover { background: #00cc66; }
+.query-bar label { color: #888; font-size: 12px; margin-right: 4px; }
+.preset-btn {
+    background: #222; color: #888; border: 1px solid #333;
+    padding: 4px 12px; margin: 2px; cursor: pointer;
+    font-family: 'Courier New', monospace; font-size: 11px; border-radius: 3px;
+}
+.preset-btn:hover { color: #00ff88; border-color: #00ff88; }
+#result-count { color: #00ff88; margin: 12px 16px; font-size: 13px; }
+.leaflet-container { background: #0a0a0a; }
+</style>
+<div class="container" style="padding:0;">
+    <div class="query-bar">
+        <h3 style="color:#00ff88;margin:0 0 8px;">Query Builder</h3>
+        <div style="margin-bottom:8px;">
+            <button class="preset-btn" data-query="military">Military Aircraft</button>
+            <button class="preset-btn" data-query="low">Below 5,000 ft</button>
+            <button class="preset-btn" data-query="fast">Above 500 kts</button>
+            <button class="preset-btn" data-query="recent">Last Hour</button>
+            <button class="preset-btn" data-query="all">All Positions</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <div>
+                <label>Min Alt:</label>
+                <input type="number" id="q-min-alt" placeholder="0" style="width:80px;">
+            </div>
+            <div>
+                <label>Max Alt:</label>
+                <input type="number" id="q-max-alt" placeholder="50000" style="width:80px;">
+            </div>
+            <div>
+                <label>ICAO:</label>
+                <input type="text" id="q-icao" placeholder="A00001" style="width:80px;">
+            </div>
+            <div>
+                <label>Military:</label>
+                <select id="q-military">
+                    <option value="">Any</option>
+                    <option value="1">Yes</option>
+                    <option value="0">No</option>
+                </select>
+            </div>
+            <div>
+                <label>Limit:</label>
+                <input type="number" id="q-limit" value="5000" style="width:80px;">
+            </div>
+            <button id="run-query">Run Query</button>
+        </div>
+    </div>
+    <div id="result-count">Run a query to see results</div>
+    <div id="query-map"></div>
+    <div class="container" style="padding:16px;">
+        <table id="result-table" style="display:none;">
+            <thead>
+                <tr><th>ICAO</th><th>Lat</th><th>Lon</th><th>Alt (ft)</th><th>Speed</th><th>Heading</th><th>Time</th></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('query-map', { zoomControl: true });
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OSM &copy; CARTO', maxZoom: 19,
+}).addTo(map);
+map.setView([35.18, -83.38], 7);
+
+let resultLayer = L.layerGroup().addTo(map);
+
+function altColor(alt) {
+    if (alt == null) return '#888';
+    const t = Math.min(Math.max(alt / 40000, 0), 1);
+    if (t < 0.5) {
+        const s = t * 2;
+        return `rgb(${Math.round(s * 255)},255,0)`;
+    } else {
+        const s = (t - 0.5) * 2;
+        return `rgb(255,${Math.round((1 - s) * 255)},0)`;
+    }
+}
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('q-min-alt').value = '';
+        document.getElementById('q-max-alt').value = '';
+        document.getElementById('q-icao').value = '';
+        document.getElementById('q-military').value = '';
+        document.getElementById('q-limit').value = '5000';
+
+        switch(btn.dataset.query) {
+            case 'military':
+                document.getElementById('q-military').value = '1';
+                break;
+            case 'low':
+                document.getElementById('q-max-alt').value = '5000';
+                break;
+            case 'recent':
+                document.getElementById('q-limit').value = '2000';
+                break;
+        }
+        runQuery();
+    });
+});
+
+document.getElementById('run-query').addEventListener('click', runQuery);
+
+function runQuery() {
+    const params = new URLSearchParams();
+    const minAlt = document.getElementById('q-min-alt').value;
+    const maxAlt = document.getElementById('q-max-alt').value;
+    const icao = document.getElementById('q-icao').value;
+    const military = document.getElementById('q-military').value;
+    const limit = document.getElementById('q-limit').value;
+
+    if (minAlt) params.set('min_alt', minAlt);
+    if (maxAlt) params.set('max_alt', maxAlt);
+    if (icao) params.set('icao', icao);
+    if (military) params.set('military', military);
+    if (limit) params.set('limit', limit);
+
+    fetch(`/api/query?${params}`)
+        .then(r => r.json())
+        .then(data => {
+            resultLayer.clearLayers();
+            document.getElementById('result-count').textContent =
+                `${data.length} positions found`;
+
+            const bounds = [];
+            const byIcao = {};
+
+            data.forEach(p => {
+                if (!byIcao[p.icao]) byIcao[p.icao] = [];
+                byIcao[p.icao].push(p);
+                bounds.push([p.lat, p.lon]);
+            });
+
+            Object.entries(byIcao).forEach(([icao, pts]) => {
+                for (let i = 1; i < pts.length; i++) {
+                    L.polyline(
+                        [[pts[i-1].lat, pts[i-1].lon], [pts[i].lat, pts[i].lon]],
+                        { color: altColor(pts[i].altitude_ft), weight: 2, opacity: 0.7 }
+                    ).addTo(resultLayer);
+                }
+                const last = pts[pts.length - 1];
+                L.circleMarker([last.lat, last.lon], {
+                    radius: 4, color: last.is_military ? '#ff4444' : '#00ff88',
+                    fillOpacity: 0.8, weight: 1,
+                }).addTo(resultLayer).bindTooltip(icao);
+            });
+
+            if (bounds.length > 0) {
+                map.fitBounds(bounds, { padding: [30, 30] });
+            }
+
+            const table = document.getElementById('result-table');
+            const tbody = table.querySelector('tbody');
+            tbody.innerHTML = '';
+            table.style.display = data.length > 0 ? '' : 'none';
+
+            data.slice(0, 200).forEach(p => {
+                const t = new Date(p.timestamp * 1000).toLocaleTimeString();
+                tbody.innerHTML += `<tr>
+                    <td><a href="/aircraft/${p.icao}">${p.icao}</a></td>
+                    <td>${p.lat.toFixed(4)}</td>
+                    <td>${p.lon.toFixed(4)}</td>
+                    <td>${p.altitude_ft || '-'}</td>
+                    <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
+                    <td>${p.heading_deg ? Math.round(p.heading_deg) + '\u00B0' : '-'}</td>
+                    <td>${t}</td>
+                </tr>`;
+            });
+        })
+        .catch(err => {
+            document.getElementById('result-count').textContent = 'Query failed';
+            console.error(err);
+        });
+}
+</script>

@@ -1,0 +1,38 @@
+<style></style>
+<div class="container">
+    <h2 style="color:#00ff88; margin-bottom:16px;">Database Statistics</h2>
+    <div>
+        <div class="stat-card">
+            <div class="value" id="stat-aircraft">-</div>
+            <div class="label">Aircraft</div>
+        </div>
+        <div class="stat-card">
+            <div class="value" id="stat-positions">-</div>
+            <div class="label">Positions</div>
+        </div>
+        <div class="stat-card">
+            <div class="value" id="stat-events">-</div>
+            <div class="label">Events</div>
+        </div>
+        <div class="stat-card">
+            <div class="value" id="stat-receivers">-</div>
+            <div class="label">Receivers</div>
+        </div>
+        <div class="stat-card">
+            <div class="value" id="stat-captures">-</div>
+            <div class="label">Captures</div>
+        </div>
+    </div>
+</div>
+<script>
+fetch('/api/stats')
+    .then(r => r.json())
+    .then(s => {
+        document.getElementById('stat-aircraft').textContent = (s.aircraft || 0).toLocaleString();
+        document.getElementById('stat-positions').textContent = (s.positions || 0).toLocaleString();
+        document.getElementById('stat-events').textContent = (s.events || 0).toLocaleString();
+        document.getElementById('stat-receivers').textContent = s.receivers || 0;
+        document.getElementById('stat-captures').textContent = s.captures || 0;
+    })
+    .catch(() => {});
+</script>
