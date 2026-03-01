@@ -18,7 +18,6 @@ use adsb_core::frame::{self, IcaoCache};
 use adsb_core::tracker::Tracker;
 use adsb_core::types::icao_to_string;
 
-use crate::db::Database;
 use crate::web::AppState;
 
 // ---------------------------------------------------------------------------
@@ -97,16 +96,6 @@ pub async fn api_ingest_frames(
     State(state): State<Arc<AppState>>,
     Json(body): Json<IngestRequest>,
 ) -> impl IntoResponse {
-    let _db = match Database::open(&state.db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Database error: {e}")})),
-            )
-        }
-    };
-
     let base_ts = body.timestamp.unwrap_or_else(now);
 
     // Get or create feeder tracker
@@ -266,18 +255,23 @@ mod tests {
     use std::sync::RwLock;
     use tower::ServiceExt;
 
-    fn test_state() -> Arc<AppState> {
-        Arc::new(AppState {
-            db_path: ":memory:".to_string(),
+    use crate::db::SqliteDb;
+
+    fn test_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db").to_str().unwrap().to_string();
+        let state = Arc::new(AppState {
+            db: Arc::new(SqliteDb::new(db_path)),
             tracker: None,
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
-        })
+        });
+        (state, dir)
     }
 
     #[tokio::test]
     async fn test_api_receivers_empty() {
-        let state = test_state();
+        let (state, _dir) = test_state();
         let app = crate::web::build_router(state);
 
         let response = app
@@ -295,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_heartbeat() {
-        let state = test_state();
+        let (state, _dir) = test_state();
         let app = crate::web::build_router(state);
 
         let response = app
@@ -317,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_ingest_frames() {
-        let state = test_state();
+        let (state, _dir) = test_state();
         let app = crate::web::build_router(state);
 
         let response = app

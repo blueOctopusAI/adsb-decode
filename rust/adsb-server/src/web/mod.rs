@@ -1,6 +1,6 @@
 //! Web server — axum REST API for ADS-B data.
 //!
-//! Shared state includes the DB path (each handler opens its own connection),
+//! Shared state includes the database backend (SQLite or TimescaleDB),
 //! an optional live tracker for real-time positions, and in-memory geofences.
 
 use std::sync::{Arc, RwLock};
@@ -10,6 +10,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use adsb_core::tracker::Tracker;
 
+use crate::db::AdsbDatabase;
+
 pub mod ingest;
 pub mod routes;
 
@@ -18,7 +20,7 @@ pub mod routes;
 // ---------------------------------------------------------------------------
 
 pub struct AppState {
-    pub db_path: String,
+    pub db: Arc<dyn AdsbDatabase>,
     pub tracker: Option<Arc<RwLock<Tracker>>>,
     pub geofences: RwLock<Vec<GeofenceEntry>>,
     pub geofence_next_id: RwLock<u64>,
@@ -89,9 +91,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 }
 
 /// Start the web server.
-pub async fn serve(db_path: String, host: String, port: u16) {
+pub async fn serve(db: Arc<dyn AdsbDatabase>, host: String, port: u16) {
     let state = Arc::new(AppState {
-        db_path,
+        db,
         tracker: None,
         geofences: RwLock::new(Vec::new()),
         geofence_next_id: RwLock::new(1),

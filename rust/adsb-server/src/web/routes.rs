@@ -15,7 +15,6 @@ use serde_json::{json, Value};
 
 use adsb_core::types::icao_to_string;
 
-use crate::db::Database;
 use crate::web::AppState;
 
 // ---------------------------------------------------------------------------
@@ -85,15 +84,6 @@ fn clamp_i64(val: i64, min: i64, max: i64) -> i64 {
     val.max(min).min(max)
 }
 
-fn open_db(state: &AppState) -> Result<Database, (StatusCode, Json<Value>)> {
-    Database::open(&state.db_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Database error: {e}")})),
-        )
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Aircraft endpoints
 // ---------------------------------------------------------------------------
@@ -142,12 +132,7 @@ pub async fn api_aircraft(
         return Json(json!(aircraft));
     }
 
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return Json(json!({"error": e.1 .0["error"]})),
-    };
-
-    let mut aircraft = db.get_all_aircraft();
+    let mut aircraft = state.db.get_all_aircraft().await;
     if params.military == Some(true) {
         aircraft.retain(|a| a.is_military);
     }
@@ -160,14 +145,9 @@ pub async fn api_aircraft_detail(
     State(state): State<Arc<AppState>>,
     Path(icao): Path<String>,
 ) -> impl IntoResponse {
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return e.into_response(),
-    };
-
     let icao_upper = icao.to_ascii_uppercase();
 
-    let aircraft = match db.get_aircraft(&icao_upper) {
+    let aircraft = match state.db.get_aircraft(&icao_upper).await {
         Some(ac) => ac,
         None => {
             return (
@@ -178,8 +158,8 @@ pub async fn api_aircraft_detail(
         }
     };
 
-    let positions = db.get_positions(&icao_upper, 100);
-    let events = db.get_events(None, Some(&icao_upper), 50);
+    let positions = state.db.get_positions(&icao_upper, 100).await;
+    let events = state.db.get_events(None, Some(&icao_upper), 50).await;
 
     Json(json!({
         "aircraft": aircraft,
@@ -229,12 +209,7 @@ pub async fn api_positions(
         return Json(json!(positions));
     }
 
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return Json(json!({"error": e.1 .0["error"]})),
-    };
-
-    let positions = db.get_recent_positions(minutes, 50000);
+    let positions = state.db.get_recent_positions(minutes, 50000).await;
     Json(serde_json::to_value(&positions).unwrap_or(json!([])))
 }
 
@@ -246,12 +221,7 @@ pub async fn api_trails(
     let minutes = clamp(params.minutes.unwrap_or(60.0), 1.0, 1440.0);
     let limit = clamp_i64(params.limit.unwrap_or(500), 1, 5000);
 
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return Json(json!({"error": e.1 .0["error"]})),
-    };
-
-    let positions = db.get_trails(minutes, limit);
+    let positions = state.db.get_trails(minutes, limit).await;
 
     // Group by ICAO
     let mut trails: std::collections::HashMap<String, Vec<Value>> =
@@ -278,12 +248,7 @@ pub async fn api_positions_all(
 ) -> impl IntoResponse {
     let limit = clamp_i64(params.limit.unwrap_or(50000), 1, 100000);
 
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return Json(json!({"error": e.1 .0["error"]})),
-    };
-
-    let positions = db.get_all_positions_ordered(limit);
+    let positions = state.db.get_all_positions_ordered(limit).await;
     Json(serde_json::to_value(&positions).unwrap_or(json!([])))
 }
 
@@ -298,27 +263,16 @@ pub async fn api_events(
 ) -> impl IntoResponse {
     let limit = clamp_i64(params.limit.unwrap_or(100), 1, 10000);
 
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return Json(json!({"error": e.1 .0["error"]})),
-    };
-
-    let events = db.get_events(
-        params.r#type.as_deref(),
-        params.icao.as_deref(),
-        limit,
-    );
+    let events = state
+        .db
+        .get_events(params.r#type.as_deref(), params.icao.as_deref(), limit)
+        .await;
     Json(serde_json::to_value(&events).unwrap_or(json!([])))
 }
 
 /// GET /api/stats — database statistics.
 pub async fn api_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return Json(json!({"error": e.1 .0["error"]})),
-    };
-
-    let stats = db.stats();
+    let stats = state.db.stats().await;
     Json(serde_json::to_value(&stats).unwrap_or(json!({})))
 }
 
@@ -333,18 +287,16 @@ pub async fn api_query(
 ) -> impl IntoResponse {
     let limit = clamp_i64(params.limit.unwrap_or(1000), 1, 50000);
 
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return Json(json!({"error": e.1 .0["error"]})),
-    };
-
-    let positions = db.query_positions(
-        params.min_alt,
-        params.max_alt,
-        params.icao.as_deref(),
-        params.military.unwrap_or(false),
-        limit,
-    );
+    let positions = state
+        .db
+        .query_positions(
+            params.min_alt,
+            params.max_alt,
+            params.icao.as_deref(),
+            params.military.unwrap_or(false),
+            limit,
+        )
+        .await;
     Json(serde_json::to_value(&positions).unwrap_or(json!([])))
 }
 
@@ -355,12 +307,7 @@ pub async fn api_heatmap(
 ) -> impl IntoResponse {
     let minutes = clamp(params.minutes.unwrap_or(1440.0), 1.0, 10080.0);
 
-    let db = match open_db(&state) {
-        Ok(db) => db,
-        Err(e) => return Json(json!({"error": e.1 .0["error"]})),
-    };
-
-    let points = db.get_heatmap_positions(minutes, 50000);
+    let points = state.db.get_heatmap_positions(minutes, 50000).await;
     let data: Vec<Value> = points
         .iter()
         .map(|(lat, lon, alt)| json!({"lat": lat, "lon": lon, "altitude_ft": alt}))
@@ -462,6 +409,8 @@ mod tests {
     use std::sync::RwLock;
     use tower::ServiceExt;
 
+    use crate::db::{Database, SqliteDb};
+
     fn test_state() -> (Arc<AppState>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db").to_str().unwrap().to_string();
@@ -475,7 +424,7 @@ mod tests {
         drop(db);
 
         let state = Arc::new(AppState {
-            db_path,
+            db: Arc::new(SqliteDb::new(db_path)),
             tracker: None,
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
@@ -591,8 +540,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_geofences_crud() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db").to_str().unwrap().to_string();
         let state = Arc::new(AppState {
-            db_path: ":memory:".to_string(),
+            db: Arc::new(SqliteDb::new(db_path)),
             tracker: None,
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
@@ -658,8 +609,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_airports() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db").to_str().unwrap().to_string();
+        let _keep = &dir;
         let app = crate::web::build_router(Arc::new(AppState {
-            db_path: ":memory:".to_string(),
+            db: Arc::new(SqliteDb::new(db_path)),
             tracker: None,
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),

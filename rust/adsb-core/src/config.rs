@@ -23,9 +23,17 @@ pub struct ReceiverConfig {
     pub lon: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum DatabaseBackend {
+    Sqlite,
+    TimescaleDb,
+}
+
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
+    pub backend: DatabaseBackend,
     pub path: String,
+    pub postgres_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +51,9 @@ impl Default for Config {
                 lon: None,
             },
             database: DatabaseConfig {
+                backend: DatabaseBackend::Sqlite,
                 path: "data/adsb.db".into(),
+                postgres_url: None,
             },
             dashboard: DashboardConfig {
                 host: "127.0.0.1".into(),
@@ -140,13 +150,25 @@ fn parse_config(text: &str) -> Option<Config> {
                         "lon" => config.receiver.lon = parse_float_value(val),
                         _ => {}
                     },
-                    "database" => {
-                        if key == "path" {
+                    "database" => match key {
+                        "path" => {
                             if let Some(v) = parse_string_value(val) {
                                 config.database.path = v;
                             }
                         }
-                    }
+                        "backend" => {
+                            if let Some(v) = parse_string_value(val) {
+                                config.database.backend = match v.as_str() {
+                                    "timescaledb" | "postgres" => DatabaseBackend::TimescaleDb,
+                                    _ => DatabaseBackend::Sqlite,
+                                };
+                            }
+                        }
+                        "postgres_url" => {
+                            config.database.postgres_url = parse_string_value(val);
+                        }
+                        _ => {}
+                    },
                     "dashboard" => match key {
                         "host" => {
                             if let Some(v) = parse_string_value(val) {
@@ -206,7 +228,16 @@ fn serialize_config(config: &Config) -> String {
     lines.push(String::new());
 
     lines.push("database:".into());
+    let backend_str = match config.database.backend {
+        DatabaseBackend::Sqlite => "sqlite",
+        DatabaseBackend::TimescaleDb => "timescaledb",
+    };
+    lines.push(format!("  backend: \"{backend_str}\""));
     lines.push(format!("  path: \"{}\"", config.database.path));
+    match &config.database.postgres_url {
+        Some(url) => lines.push(format!("  postgres_url: \"{url}\"")),
+        None => lines.push("  postgres_url: null".into()),
+    }
     lines.push(String::new());
 
     lines.push("dashboard:".into());
@@ -282,6 +313,22 @@ webhook: null
     }
 
     #[test]
+    fn test_backend_config() {
+        let text = r#"
+database:
+  backend: "timescaledb"
+  path: "data/adsb.db"
+  postgres_url: "postgresql://user:pass@localhost/adsb"
+"#;
+        let config = parse_config(text).unwrap();
+        assert_eq!(config.database.backend, DatabaseBackend::TimescaleDb);
+        assert_eq!(
+            config.database.postgres_url.as_deref(),
+            Some("postgresql://user:pass@localhost/adsb")
+        );
+    }
+
+    #[test]
     fn test_roundtrip() {
         let config = Config {
             receiver: ReceiverConfig {
@@ -290,7 +337,9 @@ webhook: null
                 lon: Some(-82.5),
             },
             database: DatabaseConfig {
+                backend: DatabaseBackend::Sqlite,
                 path: "test.db".into(),
+                postgres_url: None,
             },
             dashboard: DashboardConfig {
                 host: "0.0.0.0".into(),

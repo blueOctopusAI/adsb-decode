@@ -1022,6 +1022,153 @@ impl Database {
 }
 
 // ---------------------------------------------------------------------------
+// Database trait — backend abstraction for SQLite / TimescaleDB
+// ---------------------------------------------------------------------------
+
+/// Async database trait for web server use.
+///
+/// The CLI uses `Database` directly (synchronous, single connection).
+/// The web server uses `Arc<dyn AdsbDatabase>` for backend-agnostic access.
+#[async_trait::async_trait]
+pub trait AdsbDatabase: Send + Sync {
+    async fn stats(&self) -> DbStats;
+    async fn get_all_aircraft(&self) -> Vec<AircraftRow>;
+    async fn get_aircraft(&self, icao: &str) -> Option<AircraftRow>;
+    async fn get_positions(&self, icao: &str, limit: i64) -> Vec<PositionRow>;
+    async fn get_recent_positions(&self, minutes: f64, limit: i64) -> Vec<PositionRow>;
+    async fn get_events(
+        &self,
+        event_type: Option<&str>,
+        icao: Option<&str>,
+        limit: i64,
+    ) -> Vec<EventRow>;
+    async fn get_trails(&self, minutes: f64, limit_per_aircraft: i64) -> Vec<PositionRow>;
+    async fn get_heatmap_positions(
+        &self,
+        minutes: f64,
+        limit: i64,
+    ) -> Vec<(f64, f64, Option<i32>)>;
+    async fn query_positions(
+        &self,
+        min_alt: Option<i32>,
+        max_alt: Option<i32>,
+        icao: Option<&str>,
+        military: bool,
+        limit: i64,
+    ) -> Vec<PositionRow>;
+    async fn get_all_positions_ordered(&self, limit: i64) -> Vec<PositionRow>;
+    async fn get_receivers(&self) -> Vec<ReceiverRow>;
+    async fn get_aircraft_history(&self, hours: f64) -> Vec<HistoryRow>;
+    async fn export_positions(
+        &self,
+        hours: Option<f64>,
+        icao: Option<&str>,
+        limit: i64,
+    ) -> Vec<PositionRow>;
+}
+
+// ---------------------------------------------------------------------------
+// SQLite backend (wraps Database, opens connection per call)
+// ---------------------------------------------------------------------------
+
+/// SQLite backend for the web server.
+///
+/// Each method opens a fresh connection, matching the per-request pattern.
+/// The CLI uses `Database` directly for batched writes with held connections.
+pub struct SqliteDb {
+    pub path: String,
+}
+
+impl SqliteDb {
+    pub fn new(path: String) -> Self {
+        // Verify the database is accessible at startup
+        let _db = Database::open(&path).expect("Failed to open SQLite database");
+        SqliteDb { path }
+    }
+
+    fn open(&self) -> Database {
+        Database::open(&self.path).expect("Failed to open SQLite database")
+    }
+}
+
+#[async_trait::async_trait]
+impl AdsbDatabase for SqliteDb {
+    async fn stats(&self) -> DbStats {
+        self.open().stats()
+    }
+
+    async fn get_all_aircraft(&self) -> Vec<AircraftRow> {
+        self.open().get_all_aircraft()
+    }
+
+    async fn get_aircraft(&self, icao: &str) -> Option<AircraftRow> {
+        self.open().get_aircraft(icao)
+    }
+
+    async fn get_positions(&self, icao: &str, limit: i64) -> Vec<PositionRow> {
+        self.open().get_positions(icao, limit)
+    }
+
+    async fn get_recent_positions(&self, minutes: f64, limit: i64) -> Vec<PositionRow> {
+        self.open().get_recent_positions(minutes, limit)
+    }
+
+    async fn get_events(
+        &self,
+        event_type: Option<&str>,
+        icao: Option<&str>,
+        limit: i64,
+    ) -> Vec<EventRow> {
+        self.open().get_events(event_type, icao, limit)
+    }
+
+    async fn get_trails(&self, minutes: f64, limit_per_aircraft: i64) -> Vec<PositionRow> {
+        self.open().get_trails(minutes, limit_per_aircraft)
+    }
+
+    async fn get_heatmap_positions(
+        &self,
+        minutes: f64,
+        limit: i64,
+    ) -> Vec<(f64, f64, Option<i32>)> {
+        self.open().get_heatmap_positions(minutes, limit)
+    }
+
+    async fn query_positions(
+        &self,
+        min_alt: Option<i32>,
+        max_alt: Option<i32>,
+        icao: Option<&str>,
+        military: bool,
+        limit: i64,
+    ) -> Vec<PositionRow> {
+        self.open()
+            .query_positions(min_alt, max_alt, icao, military, limit)
+    }
+
+    async fn get_all_positions_ordered(&self, limit: i64) -> Vec<PositionRow> {
+        self.open().get_all_positions_ordered(limit)
+    }
+
+    async fn get_receivers(&self) -> Vec<ReceiverRow> {
+        self.open().get_receivers()
+    }
+
+    async fn get_aircraft_history(&self, hours: f64) -> Vec<HistoryRow> {
+        self.open().get_aircraft_history(hours)
+    }
+
+    async fn export_positions(
+        &self,
+        hours: Option<f64>,
+        icao: Option<&str>,
+        limit: i64,
+    ) -> Vec<PositionRow> {
+        self.open().export_positions(hours, icao, limit)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

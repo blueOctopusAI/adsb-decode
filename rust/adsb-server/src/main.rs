@@ -15,6 +15,8 @@ use adsb_core::tracker::Tracker;
 use adsb_core::types::*;
 
 mod db;
+#[cfg(feature = "timescaledb")]
+mod db_pg;
 mod web;
 
 #[derive(Parser)]
@@ -251,7 +253,11 @@ async fn main() {
             db_path,
             port,
             host,
-        } => web::serve(db_path, host, port).await,
+        } => {
+            let db: std::sync::Arc<dyn db::AdsbDatabase> =
+                std::sync::Arc::new(db::SqliteDb::new(db_path));
+            web::serve(db, host, port).await;
+        }
         Commands::Setup => cmd_setup(),
     }
 }
