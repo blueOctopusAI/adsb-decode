@@ -440,6 +440,7 @@ mod tests {
             tracker: None,
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
+            auth_token: None,
         });
         (state, dir)
     }
@@ -564,6 +565,7 @@ mod tests {
             tracker: None,
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
+            auth_token: None,
         });
 
         // Create geofence
@@ -635,6 +637,7 @@ mod tests {
                 tracker: None,
                 geofences: RwLock::new(Vec::new()),
                 geofence_next_id: RwLock::new(1),
+                auth_token: None,
             }),
             None,
         );

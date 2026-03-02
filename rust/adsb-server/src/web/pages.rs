@@ -53,7 +53,7 @@ fn render_page(title: &str, body: &str) -> Html<String> {
     s.push_str("\n</style>\n");
     s.push_str("</head>\n<body>\n");
     s.push_str(NAV_HTML);
-    s.push_str("\n");
+    s.push('\n');
     s.push_str(body);
     s.push_str("\n</body>\n</html>");
     Html(s)

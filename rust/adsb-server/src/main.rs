@@ -3,12 +3,14 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Table};
 
 use adsb_core::cpr;
 use adsb_core::decode;
+use adsb_core::filter::{FilterEngine, FilterEvent, Geofence};
 use adsb_core::frame::{self, IcaoCache};
 use adsb_core::icao;
 use adsb_core::tracker::Tracker;
@@ -17,6 +19,7 @@ use adsb_core::types::*;
 mod db;
 #[cfg(feature = "timescaledb")]
 mod db_pg;
+mod notification;
 mod web;
 
 #[derive(Parser)]
@@ -51,6 +54,10 @@ enum Commands {
         #[arg(long)]
         native_demod: bool,
 
+        /// Use direct USB access via rtlsdr_mt (no subprocess). Requires native-sdr feature.
+        #[arg(long)]
+        native_usb: bool,
+
         /// SQLite database path
         #[arg(long, default_value = "data/adsb.db")]
         db_path: String,
@@ -66,6 +73,26 @@ enum Commands {
         /// CORS allowed origin (e.g. "https://example.com"). Omit for same-origin only.
         #[arg(long)]
         cors_origin: Option<String>,
+
+        /// Webhook URL for filter event notifications (POST JSON)
+        #[arg(long)]
+        webhook: Option<String>,
+
+        /// Bearer token for ingest API authentication
+        #[arg(long)]
+        auth_token: Option<String>,
+
+        /// Hours to retain raw positions (default: 72)
+        #[arg(long, default_value = "72")]
+        retention_hours: u32,
+
+        /// Hours after which positions are downsampled (default: 24)
+        #[arg(long, default_value = "24")]
+        downsample_hours: u32,
+
+        /// Downsample interval in seconds (default: 30)
+        #[arg(long, default_value = "30")]
+        downsample_interval: u32,
     },
 
     /// Show database statistics
@@ -134,6 +161,10 @@ enum Commands {
         /// CORS allowed origin (e.g. "https://example.com"). Omit for same-origin only.
         #[arg(long)]
         cors_origin: Option<String>,
+
+        /// Bearer token for ingest API authentication
+        #[arg(long)]
+        auth_token: Option<String>,
     },
 
     /// Interactive setup wizard — configure receiver, database, and server
@@ -235,6 +266,54 @@ impl AircraftState {
     }
 }
 
+/// Options for live tracking commands.
+struct LiveTrackOpts {
+    db_path: String,
+    min_interval: f64,
+    port: Option<u16>,
+    cors_origin: Option<String>,
+    webhook: Option<String>,
+    auth_token: Option<String>,
+    retention_hours: u32,
+    downsample_hours: u32,
+    downsample_interval: u32,
+}
+
+/// Store FilterEvents into the database.
+fn store_filter_events(
+    database: &mut db::Database,
+    events: &[FilterEvent],
+) {
+    for event in events {
+        database.add_event(
+            &event.icao,
+            event.event_type,
+            &event.description,
+            event.lat,
+            event.lon,
+            event.altitude_ft,
+            event.timestamp,
+        );
+    }
+}
+
+/// Sync geofences from AppState into FilterEngine.
+fn sync_geofences(
+    geofences: &std::sync::RwLock<Vec<web::GeofenceEntry>>,
+    filter_engine: &mut FilterEngine,
+) {
+    let entries = geofences.read().unwrap();
+    filter_engine.geofences = entries
+        .iter()
+        .map(|e| Geofence {
+            name: e.name.clone(),
+            lat: e.lat,
+            lon: e.lon,
+            radius_nm: e.radius_nm,
+        })
+        .collect();
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -245,10 +324,16 @@ async fn main() {
             file,
             live,
             native_demod,
+            native_usb,
             db_path,
             min_interval,
             port,
             cors_origin,
+            webhook,
+            auth_token,
+            retention_hours,
+            downsample_hours,
+            downsample_interval,
         } => {
             if !live && file.is_none() {
                 eprintln!("Error: provide a FILE or use --live for RTL-SDR capture");
@@ -258,15 +343,40 @@ async fn main() {
                 eprintln!("Error: --native-demod requires --live");
                 std::process::exit(1);
             }
+            if native_usb && !live {
+                eprintln!("Error: --native-usb requires --live");
+                std::process::exit(1);
+            }
+            let live_opts = LiveTrackOpts {
+                db_path,
+                min_interval,
+                port,
+                cors_origin,
+                webhook,
+                auth_token,
+                retention_hours,
+                downsample_hours,
+                downsample_interval,
+            };
             if live {
-                if native_demod {
-                    cmd_track_live_native(&db_path, min_interval, port, cors_origin.as_deref())
-                        .await;
+                if native_usb {
+                    #[cfg(feature = "native-sdr")]
+                    {
+                        cmd_track_live_usb(live_opts).await;
+                    }
+                    #[cfg(not(feature = "native-sdr"))]
+                    {
+                        eprintln!("Error: --native-usb requires the 'native-sdr' feature.");
+                        eprintln!("Rebuild with: cargo build --features native-sdr");
+                        std::process::exit(1);
+                    }
+                } else if native_demod {
+                    cmd_track_live_native(live_opts).await;
                 } else {
-                    cmd_track_live(&db_path, min_interval, port, cors_origin.as_deref()).await;
+                    cmd_track_live(live_opts).await;
                 }
             } else {
-                cmd_track(file.unwrap(), &db_path, min_interval);
+                cmd_track(file.unwrap(), &live_opts.db_path, min_interval);
             }
         }
         Commands::Stats { db_path } => cmd_stats(&db_path),
@@ -288,10 +398,11 @@ async fn main() {
             port,
             host,
             cors_origin,
+            auth_token,
         } => {
             let db: std::sync::Arc<dyn db::AdsbDatabase> =
                 std::sync::Arc::new(db::SqliteDb::new(db_path));
-            web::serve(db, host, port, cors_origin.as_deref()).await;
+            web::serve(db, host, port, cors_origin.as_deref(), auth_token).await;
         }
         Commands::Setup => cmd_setup(),
     }
@@ -486,15 +597,11 @@ fn cmd_track(file: PathBuf, db_path: &str, min_interval: f64) {
     }
 }
 
-async fn cmd_track_live(
-    db_path: &str,
-    min_interval: f64,
-    port: Option<u16>,
-    cors_origin: Option<&str>,
-) {
+async fn cmd_track_live(opts: LiveTrackOpts) {
     use std::process::{Command, Stdio};
     use std::sync::{Arc, Mutex, RwLock};
 
+    let db_path = &opts.db_path;
     let mut database = db::Database::open(db_path).unwrap_or_else(|e| {
         eprintln!("Error opening database {db_path}: {e}");
         std::process::exit(1);
@@ -511,21 +618,28 @@ async fn cmd_track_live(
         Some(capture_id),
         None,
         None,
-        min_interval,
+        opts.min_interval,
     )));
-    let mut icao_cache = IcaoCache::new(60.0);
+    let filter_engine = Arc::new(Mutex::new(FilterEngine::new()));
+
+    // Set up webhook dispatcher
+    let webhook = opts
+        .webhook
+        .as_deref()
+        .map(notification::WebhookDispatcher::new);
 
     // Start web server if --port given
-    // SqliteDb opens fresh connections per request, so it sees writes from our Database
-    if let Some(p) = port {
-        let web_db: Arc<dyn db::AdsbDatabase> = Arc::new(db::SqliteDb::new(db_path.to_string()));
+    let app_state = if let Some(p) = opts.port {
+        let web_db: Arc<dyn db::AdsbDatabase> =
+            Arc::new(db::SqliteDb::new(db_path.to_string()));
         let state = Arc::new(web::AppState {
             db: web_db,
             tracker: Some(tracker.clone()),
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
+            auth_token: opts.auth_token.clone(),
         });
-        let app = web::build_router(state, cors_origin);
+        let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
         eprintln!("Dashboard → http://127.0.0.1:{p}");
         let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -541,18 +655,24 @@ async fn cmd_track_live(
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-    }
+        Some(state)
+    } else {
+        None
+    };
 
     // Background data retention task (every 60 minutes)
     let retention_db = database.clone();
+    let ret_hours = opts.retention_hours;
+    let ds_hours = opts.downsample_hours;
+    let ds_interval = opts.downsample_interval;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
         interval.tick().await; // skip immediate first tick
         loop {
             interval.tick().await;
             let mut db = retention_db.lock().unwrap();
-            let pruned_pos = db.prune_positions(72);
-            let downsampled = db.downsample_positions(24, 30);
+            let pruned_pos = db.prune_positions(ret_hours as i64);
+            let downsampled = db.downsample_positions(ds_hours as i64, ds_interval as i64);
             let phantoms = db.prune_phantom_aircraft(24.0);
             let pruned_evt = db.prune_events(168);
             db.flush();
@@ -562,6 +682,33 @@ async fn cmd_track_live(
             );
         }
     });
+
+    // Set up graceful shutdown signal
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    {
+        let flag = shutdown_flag.clone();
+        let notify = shutdown_notify.clone();
+        tokio::spawn(async move {
+            let ctrl_c = tokio::signal::ctrl_c();
+            #[cfg(unix)]
+            {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .unwrap();
+                tokio::select! {
+                    _ = ctrl_c => {},
+                    _ = sigterm.recv() => {},
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                ctrl_c.await.ok();
+            }
+            flag.store(true, Ordering::SeqCst);
+            notify.notify_waiters();
+        });
+    }
 
     // Spawn rtl_adsb subprocess
     eprintln!("Starting rtl_adsb...");
@@ -576,68 +723,147 @@ async fn cmd_track_live(
         });
 
     let stdout = child.stdout.take().unwrap();
-    let reader = io::BufReader::new(stdout);
 
     eprintln!("Live tracking started — Ctrl+C to stop\n");
 
-    let mut last_print = std::time::Instant::now();
-    let mut last_flush = std::time::Instant::now();
+    // Move blocking read loop into a spawned task
+    let loop_tracker = tracker.clone();
+    let loop_db = database.clone();
+    let loop_filter = filter_engine.clone();
+    let loop_webhook = webhook.clone();
+    let loop_state = app_state.clone();
+    let loop_shutdown = shutdown_flag.clone();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    let reader_handle = tokio::task::spawn_blocking(move || {
+        let reader = io::BufReader::new(stdout);
+        let mut icao_cache = IcaoCache::new(60.0);
+        let mut last_print = std::time::Instant::now();
+        let mut last_flush = std::time::Instant::now();
 
-        let hex = line.trim();
-        if hex.is_empty() || hex.starts_with('#') {
-            continue;
+        for line in reader.lines() {
+            // Check shutdown flag
+            if loop_shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+
+            let hex = line.trim();
+            if hex.is_empty() || hex.starts_with('#') {
+                continue;
+            }
+
+            let hex_clean = if hex.starts_with('*') && hex.ends_with(';') {
+                &hex[1..hex.len() - 1]
+            } else {
+                hex
+            };
+
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+
+            let frame =
+                match frame::parse_frame(hex_clean, now_ts, None, true, &mut icao_cache) {
+                    Some(f) => f,
+                    None => continue,
+                };
+
+            // Update tracker and get track events
+            let events = {
+                let mut t = loop_tracker.write().unwrap();
+                let (_msg, events) = t.update(&frame);
+                events
+            };
+
+            loop_db.lock().unwrap().apply_events(&events);
+
+            // Run filter engine on updated aircraft
+            {
+                let t = loop_tracker.read().unwrap();
+                if let Some(ac) = t.aircraft.get(&frame.icao) {
+                    let mut fe = loop_filter.lock().unwrap();
+                    let filter_events = fe.check(ac);
+                    if !filter_events.is_empty() {
+                        let mut db = loop_db.lock().unwrap();
+                        store_filter_events(&mut db, &filter_events);
+                        // Fire webhook notifications
+                        if let Some(ref wh) = loop_webhook {
+                            for evt in &filter_events {
+                                wh.notify(evt);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Periodic status + flush + proximity checks
+            if last_print.elapsed().as_secs_f64() > 10.0 {
+                let mut t = loop_tracker.write().unwrap();
+                let active = t.get_active(now_ts);
+                eprintln!(
+                    "  {} frames, {} valid, {} active aircraft, {} positions",
+                    t.total_frames, t.valid_frames, active.len(), t.position_decodes
+                );
+
+                // Proximity check on active aircraft
+                {
+                    let active_refs: Vec<&adsb_core::tracker::AircraftState> =
+                        active.to_vec();
+                    let mut fe = loop_filter.lock().unwrap();
+                    // Sync geofences from web state
+                    if let Some(ref state) = loop_state {
+                        sync_geofences(&state.geofences, &mut fe);
+                    }
+                    let prox_events = fe.check_proximity(&active_refs);
+                    if !prox_events.is_empty() {
+                        let mut db = loop_db.lock().unwrap();
+                        store_filter_events(&mut db, &prox_events);
+                        if let Some(ref wh) = loop_webhook {
+                            for evt in &prox_events {
+                                wh.notify(evt);
+                            }
+                        }
+                    }
+                }
+
+                // Clear filter state for pruned aircraft
+                let pruned_icaos: Vec<_> = t
+                    .aircraft
+                    .iter()
+                    .filter(|(_, ac)| ac.is_stale(now_ts))
+                    .map(|(k, _)| *k)
+                    .collect();
+                {
+                    let mut fe = loop_filter.lock().unwrap();
+                    for icao in &pruned_icaos {
+                        fe.clear(icao);
+                    }
+                }
+                t.prune_stale(now_ts);
+                last_print = std::time::Instant::now();
+            }
+
+            if last_flush.elapsed().as_secs_f64() > 5.0 {
+                loop_db.lock().unwrap().flush();
+                last_flush = std::time::Instant::now();
+            }
         }
+    });
 
-        // rtl_adsb outputs lines like "*8D4840D6202CC371C32CE0576098;"
-        let hex_clean = if hex.starts_with('*') && hex.ends_with(';') {
-            &hex[1..hex.len() - 1]
-        } else {
-            hex
-        };
-
-        let now_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
-
-        let frame = match frame::parse_frame(hex_clean, now_ts, None, true, &mut icao_cache) {
-            Some(f) => f,
-            None => continue,
-        };
-
-        let events = {
-            let mut t = tracker.write().unwrap();
-            let (_msg, events) = t.update(&frame);
-            events
-        };
-
-        database.lock().unwrap().apply_events(&events);
-
-        // Periodic status + flush
-        if last_print.elapsed().as_secs_f64() > 10.0 {
-            let mut t = tracker.write().unwrap();
-            let active = t.get_active(now_ts);
-            eprintln!(
-                "  {} frames, {} valid, {} active aircraft, {} positions",
-                t.total_frames, t.valid_frames, active.len(), t.position_decodes
-            );
-            t.prune_stale(now_ts);
-            last_print = std::time::Instant::now();
-        }
-
-        if last_flush.elapsed().as_secs_f64() > 5.0 {
-            database.lock().unwrap().flush();
-            last_flush = std::time::Instant::now();
-        }
+    // Wait for either the reader to finish or shutdown signal
+    tokio::select! {
+        _ = reader_handle => {},
+        _ = shutdown_notify.notified() => {
+            eprintln!("\nShutdown signal received...");
+        },
     }
 
-    // Cleanup — runs on Ctrl+C (child gets SIGINT, stdout closes, loop exits)
+    // Cleanup
     let _ = child.kill();
     let _ = child.wait();
     let mut db = database.lock().unwrap();
@@ -656,15 +882,11 @@ async fn cmd_track_live(
     );
 }
 
-async fn cmd_track_live_native(
-    db_path: &str,
-    min_interval: f64,
-    port: Option<u16>,
-    cors_origin: Option<&str>,
-) {
+async fn cmd_track_live_native(opts: LiveTrackOpts) {
     use std::process::{Command, Stdio};
     use std::sync::{Arc, Mutex, RwLock};
 
+    let db_path = &opts.db_path;
     let mut database = db::Database::open(db_path).unwrap_or_else(|e| {
         eprintln!("Error opening database {db_path}: {e}");
         std::process::exit(1);
@@ -681,20 +903,27 @@ async fn cmd_track_live_native(
         Some(capture_id),
         None,
         None,
-        min_interval,
+        opts.min_interval,
     )));
-    let mut icao_cache = IcaoCache::new(60.0);
+    let filter_engine = Arc::new(Mutex::new(FilterEngine::new()));
+
+    let webhook = opts
+        .webhook
+        .as_deref()
+        .map(notification::WebhookDispatcher::new);
 
     // Start web server if --port given
-    if let Some(p) = port {
-        let web_db: Arc<dyn db::AdsbDatabase> = Arc::new(db::SqliteDb::new(db_path.to_string()));
+    let app_state = if let Some(p) = opts.port {
+        let web_db: Arc<dyn db::AdsbDatabase> =
+            Arc::new(db::SqliteDb::new(db_path.to_string()));
         let state = Arc::new(web::AppState {
             db: web_db,
             tracker: Some(tracker.clone()),
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
+            auth_token: opts.auth_token.clone(),
         });
-        let app = web::build_router(state, cors_origin);
+        let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
         eprintln!("Dashboard → http://127.0.0.1:{p}");
         let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -710,18 +939,24 @@ async fn cmd_track_live_native(
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-    }
+        Some(state)
+    } else {
+        None
+    };
 
     // Background data retention task (every 60 minutes)
     let retention_db = database.clone();
+    let ret_hours = opts.retention_hours;
+    let ds_hours = opts.downsample_hours;
+    let ds_interval = opts.downsample_interval;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-        interval.tick().await; // skip immediate first tick
+        interval.tick().await;
         loop {
             interval.tick().await;
             let mut db = retention_db.lock().unwrap();
-            let pruned_pos = db.prune_positions(72);
-            let downsampled = db.downsample_positions(24, 30);
+            let pruned_pos = db.prune_positions(ret_hours as i64);
+            let downsampled = db.downsample_positions(ds_hours as i64, ds_interval as i64);
             let phantoms = db.prune_phantom_aircraft(24.0);
             let pruned_evt = db.prune_events(168);
             db.flush();
@@ -731,6 +966,33 @@ async fn cmd_track_live_native(
             );
         }
     });
+
+    // Set up graceful shutdown signal
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    {
+        let flag = shutdown_flag.clone();
+        let notify = shutdown_notify.clone();
+        tokio::spawn(async move {
+            let ctrl_c = tokio::signal::ctrl_c();
+            #[cfg(unix)]
+            {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .unwrap();
+                tokio::select! {
+                    _ = ctrl_c => {},
+                    _ = sigterm.recv() => {},
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                ctrl_c.await.ok();
+            }
+            flag.store(true, Ordering::SeqCst);
+            notify.notify_waiters();
+        });
+    }
 
     // Spawn rtl_sdr — outputs raw interleaved uint8 IQ pairs to stdout
     eprintln!("Starting rtl_sdr (native demod)...");
@@ -746,68 +1008,140 @@ async fn cmd_track_live_native(
         });
 
     let mut stdout = child.stdout.take().unwrap();
-    let mut noise_tracker = adsb_core::demod::NoiseFloorTracker::new();
-    let sample_rate = 2_000_000u32;
 
     eprintln!("Live tracking started (native demod) — Ctrl+C to stop\n");
 
-    let mut last_print = std::time::Instant::now();
-    let mut last_flush = std::time::Instant::now();
-    let tracker_ref = tracker.clone();
+    let loop_tracker = tracker.clone();
     let loop_db = database.clone();
+    let loop_filter = filter_engine.clone();
+    let loop_webhook = webhook.clone();
+    let loop_state = app_state.clone();
+    let loop_shutdown = shutdown_flag.clone();
 
-    let result = adsb_feeder::capture::demodulate_stream(
-        &mut stdout,
-        sample_rate,
-        &mut noise_tracker,
-        &mut |raw_frame| {
-            let now_ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64();
+    let reader_handle = tokio::task::spawn_blocking(move || {
+        let mut icao_cache = IcaoCache::new(60.0);
+        let mut noise_tracker = adsb_core::demod::NoiseFloorTracker::new();
+        let sample_rate = 2_000_000u32;
+        let mut last_print = std::time::Instant::now();
+        let mut last_flush = std::time::Instant::now();
 
-            let frame = match frame::parse_frame(
-                &raw_frame.hex_str,
-                now_ts,
-                Some(raw_frame.signal_level as f64),
-                true,
-                &mut icao_cache,
-            ) {
-                Some(f) => f,
-                None => return,
-            };
+        let result = adsb_feeder::capture::demodulate_stream(
+            &mut stdout,
+            sample_rate,
+            &mut noise_tracker,
+            &mut |raw_frame| {
+                // Check shutdown
+                if loop_shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
 
-            let events = {
-                let mut t = tracker_ref.write().unwrap();
-                let (_msg, events) = t.update(&frame);
-                events
-            };
+                let now_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64();
 
-            loop_db.lock().unwrap().apply_events(&events);
+                let frame = match frame::parse_frame(
+                    &raw_frame.hex_str,
+                    now_ts,
+                    Some(raw_frame.signal_level as f64),
+                    true,
+                    &mut icao_cache,
+                ) {
+                    Some(f) => f,
+                    None => return,
+                };
 
-            if last_print.elapsed().as_secs_f64() > 10.0 {
-                let mut t = tracker_ref.write().unwrap();
-                let active = t.get_active(now_ts);
-                eprintln!(
-                    "  {} frames, {} valid, {} active aircraft, {} positions [native]",
-                    t.total_frames, t.valid_frames, active.len(), t.position_decodes
-                );
-                t.prune_stale(now_ts);
-                last_print = std::time::Instant::now();
-            }
+                let events = {
+                    let mut t = loop_tracker.write().unwrap();
+                    let (_msg, events) = t.update(&frame);
+                    events
+                };
 
-            if last_flush.elapsed().as_secs_f64() > 5.0 {
-                loop_db.lock().unwrap().flush();
-                last_flush = std::time::Instant::now();
-            }
+                loop_db.lock().unwrap().apply_events(&events);
+
+                // Run filter engine
+                {
+                    let t = loop_tracker.read().unwrap();
+                    if let Some(ac) = t.aircraft.get(&frame.icao) {
+                        let mut fe = loop_filter.lock().unwrap();
+                        let filter_events = fe.check(ac);
+                        if !filter_events.is_empty() {
+                            let mut db = loop_db.lock().unwrap();
+                            store_filter_events(&mut db, &filter_events);
+                            if let Some(ref wh) = loop_webhook {
+                                for evt in &filter_events {
+                                    wh.notify(evt);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if last_print.elapsed().as_secs_f64() > 10.0 {
+                    let mut t = loop_tracker.write().unwrap();
+                    let active = t.get_active(now_ts);
+                    eprintln!(
+                        "  {} frames, {} valid, {} active aircraft, {} positions [native]",
+                        t.total_frames, t.valid_frames, active.len(), t.position_decodes
+                    );
+
+                    // Proximity check
+                    {
+                        let active_refs: Vec<&adsb_core::tracker::AircraftState> =
+                            active.to_vec();
+                        let mut fe = loop_filter.lock().unwrap();
+                        if let Some(ref state) = loop_state {
+                            sync_geofences(&state.geofences, &mut fe);
+                        }
+                        let prox_events = fe.check_proximity(&active_refs);
+                        if !prox_events.is_empty() {
+                            let mut db = loop_db.lock().unwrap();
+                            store_filter_events(&mut db, &prox_events);
+                            if let Some(ref wh) = loop_webhook {
+                                for evt in &prox_events {
+                                    wh.notify(evt);
+                                }
+                            }
+                        }
+                    }
+
+                    let pruned_icaos: Vec<_> = t
+                        .aircraft
+                        .iter()
+                        .filter(|(_, ac)| ac.is_stale(now_ts))
+                        .map(|(k, _)| *k)
+                        .collect();
+                    {
+                        let mut fe = loop_filter.lock().unwrap();
+                        for icao in &pruned_icaos {
+                            fe.clear(icao);
+                        }
+                    }
+                    t.prune_stale(now_ts);
+                    last_print = std::time::Instant::now();
+                }
+
+                if last_flush.elapsed().as_secs_f64() > 5.0 {
+                    loop_db.lock().unwrap().flush();
+                    last_flush = std::time::Instant::now();
+                }
+            },
+        );
+
+        if let Err(e) = result {
+            eprintln!("Stream error: {e}");
+        }
+    });
+
+    // Wait for either the reader to finish or shutdown signal
+    tokio::select! {
+        _ = reader_handle => {},
+        _ = shutdown_notify.notified() => {
+            eprintln!("\nShutdown signal received...");
         },
-    );
-
-    if let Err(e) = result {
-        eprintln!("Stream error: {e}");
     }
 
-    // Cleanup — runs on Ctrl+C (child gets SIGINT, stdout closes, stream exits)
+    // Cleanup
     let _ = child.kill();
     let _ = child.wait();
     let mut db = database.lock().unwrap();
@@ -822,6 +1156,279 @@ async fn cmd_track_live_native(
     db.flush();
     eprintln!(
         "\nStopped. {} frames, {} valid, {} aircraft [native demod]",
+        t.total_frames, t.valid_frames, t.aircraft.len()
+    );
+}
+
+/// Live tracking via direct USB access to RTL-SDR (no subprocess).
+/// Requires `native-sdr` feature and `librtlsdr` on the system.
+#[cfg(feature = "native-sdr")]
+async fn cmd_track_live_usb(opts: LiveTrackOpts) {
+    use std::sync::{Arc, Mutex, RwLock};
+
+    let db_path = &opts.db_path;
+    let mut database = db::Database::open(db_path).unwrap_or_else(|e| {
+        eprintln!("Error opening database {db_path}: {e}");
+        std::process::exit(1);
+    });
+
+    let source = "rtlsdr_mt:native_usb";
+    let capture_id = database.start_capture(source, None);
+    database.set_autocommit(false);
+
+    let database = Arc::new(Mutex::new(database));
+
+    let tracker = Arc::new(RwLock::new(Tracker::new(
+        None,
+        Some(capture_id),
+        None,
+        None,
+        opts.min_interval,
+    )));
+    let filter_engine = Arc::new(Mutex::new(FilterEngine::new()));
+
+    let webhook = opts
+        .webhook
+        .as_deref()
+        .map(notification::WebhookDispatcher::new);
+
+    // Start web server if --port given
+    let app_state = if let Some(p) = opts.port {
+        let web_db: Arc<dyn db::AdsbDatabase> =
+            Arc::new(db::SqliteDb::new(db_path.to_string()));
+        let state = Arc::new(web::AppState {
+            db: web_db,
+            tracker: Some(tracker.clone()),
+            geofences: RwLock::new(Vec::new()),
+            geofence_next_id: RwLock::new(1),
+            auth_token: opts.auth_token.clone(),
+        });
+        let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
+        let addr = format!("0.0.0.0:{p}");
+        eprintln!("Dashboard → http://127.0.0.1:{p}");
+        let listener = match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Error: cannot bind to {addr}: {e}");
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    eprintln!("Hint: port {p} is already in use. Try a different --port.");
+                }
+                std::process::exit(1);
+            }
+        };
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        Some(state)
+    } else {
+        None
+    };
+
+    // Background data retention task (every 60 minutes)
+    let retention_db = database.clone();
+    let ret_hours = opts.retention_hours;
+    let ds_hours = opts.downsample_hours;
+    let ds_interval = opts.downsample_interval;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let mut db = retention_db.lock().unwrap();
+            let pruned_pos = db.prune_positions(ret_hours as i64);
+            let downsampled = db.downsample_positions(ds_hours as i64, ds_interval as i64);
+            let phantoms = db.prune_phantom_aircraft(24.0);
+            let pruned_evt = db.prune_events(168);
+            db.flush();
+            eprintln!(
+                "  [retention] pruned {pruned_pos} positions, downsampled {downsampled}, \
+                 removed {phantoms} phantom aircraft, pruned {pruned_evt} events"
+            );
+        }
+    });
+
+    // Set up graceful shutdown signal
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    {
+        let flag = shutdown_flag.clone();
+        let notify = shutdown_notify.clone();
+        tokio::spawn(async move {
+            let ctrl_c = tokio::signal::ctrl_c();
+            #[cfg(unix)]
+            {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .unwrap();
+                tokio::select! {
+                    _ = ctrl_c => {},
+                    _ = sigterm.recv() => {},
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                ctrl_c.await.ok();
+            }
+            flag.store(true, Ordering::SeqCst);
+            notify.notify_waiters();
+        });
+    }
+
+    // Open RTL-SDR via direct USB access
+    eprintln!("Opening RTL-SDR device (native USB, 1090 MHz, 2 MHz)...");
+    let mut live_source = match adsb_feeder::capture::LiveCapture::open(0, None, 0) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            eprintln!("Make sure an RTL-SDR dongle is plugged in and librtlsdr is installed.");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("Live tracking started (native USB) — Ctrl+C to stop\n");
+
+    let loop_tracker = tracker.clone();
+    let loop_db = database.clone();
+    let loop_filter = filter_engine.clone();
+    let loop_webhook = webhook.clone();
+    let loop_state = app_state.clone();
+    let loop_shutdown = shutdown_flag.clone();
+
+    let reader_handle = tokio::task::spawn_blocking(move || {
+        let mut icao_cache = IcaoCache::new(60.0);
+        let mut noise_tracker = adsb_core::demod::NoiseFloorTracker::new();
+        let sample_rate = 2_000_000u32;
+        let mut last_print = std::time::Instant::now();
+        let mut last_flush = std::time::Instant::now();
+
+        let result = adsb_feeder::capture::demodulate_stream(
+            &mut live_source,
+            sample_rate,
+            &mut noise_tracker,
+            &mut |raw_frame| {
+                if loop_shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let now_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64();
+
+                let frame = match frame::parse_frame(
+                    &raw_frame.hex_str,
+                    now_ts,
+                    Some(raw_frame.signal_level as f64),
+                    true,
+                    &mut icao_cache,
+                ) {
+                    Some(f) => f,
+                    None => return,
+                };
+
+                let events = {
+                    let mut t = loop_tracker.write().unwrap();
+                    let (_msg, events) = t.update(&frame);
+                    events
+                };
+
+                loop_db.lock().unwrap().apply_events(&events);
+
+                // Run filter engine
+                {
+                    let t = loop_tracker.read().unwrap();
+                    if let Some(ac) = t.aircraft.get(&frame.icao) {
+                        let mut fe = loop_filter.lock().unwrap();
+                        let filter_events = fe.check(ac);
+                        if !filter_events.is_empty() {
+                            let mut db = loop_db.lock().unwrap();
+                            store_filter_events(&mut db, &filter_events);
+                            if let Some(ref wh) = loop_webhook {
+                                for evt in &filter_events {
+                                    wh.notify(evt);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if last_print.elapsed().as_secs_f64() > 10.0 {
+                    let mut t = loop_tracker.write().unwrap();
+                    let active = t.get_active(now_ts);
+                    eprintln!(
+                        "  {} frames, {} valid, {} active aircraft, {} positions [native USB]",
+                        t.total_frames, t.valid_frames, active.len(), t.position_decodes
+                    );
+
+                    // Proximity check
+                    {
+                        let active_refs: Vec<&adsb_core::tracker::AircraftState> =
+                            active.to_vec();
+                        let mut fe = loop_filter.lock().unwrap();
+                        if let Some(ref state) = loop_state {
+                            sync_geofences(&state.geofences, &mut fe);
+                        }
+                        let prox_events = fe.check_proximity(&active_refs);
+                        if !prox_events.is_empty() {
+                            let mut db = loop_db.lock().unwrap();
+                            store_filter_events(&mut db, &prox_events);
+                            if let Some(ref wh) = loop_webhook {
+                                for evt in &prox_events {
+                                    wh.notify(evt);
+                                }
+                            }
+                        }
+                    }
+
+                    let pruned_icaos: Vec<_> = t
+                        .aircraft
+                        .iter()
+                        .filter(|(_, ac)| ac.is_stale(now_ts))
+                        .map(|(k, _)| *k)
+                        .collect();
+                    {
+                        let mut fe = loop_filter.lock().unwrap();
+                        for icao in &pruned_icaos {
+                            fe.clear(icao);
+                        }
+                    }
+                    t.prune_stale(now_ts);
+                    last_print = std::time::Instant::now();
+                }
+
+                if last_flush.elapsed().as_secs_f64() > 5.0 {
+                    loop_db.lock().unwrap().flush();
+                    last_flush = std::time::Instant::now();
+                }
+            },
+        );
+
+        if let Err(e) = result {
+            eprintln!("Stream error: {e}");
+        }
+    });
+
+    // Wait for either the reader to finish or shutdown signal
+    tokio::select! {
+        _ = reader_handle => {},
+        _ = shutdown_notify.notified() => {
+            eprintln!("\nShutdown signal received...");
+        },
+    }
+
+    // Cleanup — no child process to kill
+    let mut db = database.lock().unwrap();
+    db.flush();
+    let t = tracker.read().unwrap();
+    db.end_capture(
+        capture_id,
+        t.total_frames,
+        t.valid_frames,
+        t.aircraft.len() as u64,
+    );
+    db.flush();
+    eprintln!(
+        "\nStopped. {} frames, {} valid, {} aircraft [native USB]",
         t.total_frames, t.valid_frames, t.aircraft.len()
     );
 }

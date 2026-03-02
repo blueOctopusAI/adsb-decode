@@ -1,0 +1,34 @@
+# adsb-decode configuration
+#
+# Copy to ~/.adsb-decode/config.yaml and edit for your setup.
+# CLI flags override these values.
+
+receiver:
+  name: "my-station"
+  lat: null           # Your receiver latitude (e.g., 35.595)
+  lon: null           # Your receiver longitude (e.g., -82.553)
+
+database:
+  backend: "sqlite"                # "sqlite" or "timescaledb"
+  path: "data/adsb.db"             # SQLite file path
+  postgres_url: null               # PostgreSQL URL for TimescaleDB backend
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8080
+
+# Webhook URL for real-time filter event notifications (POST JSON).
+# Events: military, emergency, rapid_descent, low_altitude, geofence,
+#          circling, holding, proximity, unusual_altitude
+webhook: null
+
+# Data retention (CLI flags: --retention-hours, --downsample-hours, --downsample-interval)
+# retention_hours: 72       # Delete positions older than this
+# downsample_hours: 24      # Downsample positions older than this
+# downsample_interval: 30   # Keep one position per this many seconds when downsampling
+
+# Bearer token for ingest API authentication (CLI flag: --auth-token)
+# auth_token: null
+
+# CORS allowed origin for the web dashboard (CLI flag: --cors-origin)
+# cors_origin: null

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 An ADS-B (Automatic Dependent Surveillance-Broadcast) radio protocol decoder that processes raw 1090 MHz radio signals into identified aircraft on a map. Built from scratch — no dump1090 dependency, no borrowed decoders. Every byte of the protocol is decoded and documented.
 
 Two implementations exist side by side:
-- **Rust** (primary, active development) — 3-crate workspace under `rust/`, 199 tests, ~10,700 lines
+- **Rust** (primary, active development) — 3-crate workspace under `rust/`, 223 tests, ~12,000 lines
 - **Python** (reference implementation) — 22 modules under `src/`, 394 tests, ~7,300 lines
 
 The Rust implementation is feature-complete and is the active codebase. The Python implementation serves as the reference oracle — both were cross-validated against a 296-frame capture file with 100% field match.
@@ -46,18 +46,19 @@ rust/
 ├── adsb-feeder/              # Binary: edge device (Pi + RTL-SDR)
 │   └── src/
 │       ├── main.rs           # Capture → decode → batch POST to server
-│       └── capture.rs        # FrameReader, IQReader, LiveDemodCapture
+│       └── capture.rs        # FrameReader, IQReader, demodulate_stream, LiveCapture (native-sdr)
 │
 ├── adsb-server/              # Binary: web server + CLI + database
 │   ├── src/
 │   │   ├── main.rs           # CLI: decode, track (--live --port), stats, history, export, serve, setup
 │   │   ├── db.rs             # SQLite (6 tables, WAL, retention, downsample, phantom pruning)
 │   │   ├── db_pg.rs          # TimescaleDB (feature-gated, not currently in use)
+│   │   ├── notification.rs   # Webhook notifications (fire-and-forget POST JSON)
 │   │   └── web/
-│   │       ├── mod.rs        # Axum app builder, AppState, CORS
+│   │       ├── mod.rs        # Axum app builder, AppState, CORS, bearer token auth
 │   │       ├── routes.rs     # REST API endpoints
 │   │       ├── pages.rs      # HTML page handlers
-│   │       └── ingest.rs     # Multi-receiver ingest + heartbeat
+│   │       └── ingest.rs     # Multi-receiver ingest + heartbeat + DB persistence
 │   └── templates/            # 8 HTML pages with Leaflet.js maps
 ```
 
@@ -105,6 +106,10 @@ cargo clippy --workspace         # Lint
 # CLI
 cargo run --bin adsb -- decode data/live_capture.txt
 cargo run --bin adsb -- track --live --port 8080     # Live RTL-SDR + web dashboard
+cargo run --bin adsb -- track --live --native-demod   # Native IQ demod via rtl_sdr pipe
+cargo run --bin adsb -- track --live --native-usb     # Direct USB via rtlsdr_mt (requires native-sdr feature)
+cargo run --bin adsb -- track --live --webhook https://example.com/hook  # With notifications
+cargo run --bin adsb -- track --live --auth-token SECRET  # With ingest API auth
 cargo run --bin adsb -- serve --db-path data/adsb.db  # Serve dashboard from existing DB
 cargo run --bin adsb -- stats --db-path data/adsb.db
 cargo run --bin adsb -- history --db-path data/adsb.db
@@ -142,26 +147,27 @@ Key SQL patterns:
 
 ### What works now:
 - Full decode pipeline (CRC-24, all downlink formats, all ADS-B type codes, CPR, Gillham altitude)
-- Live tracking via `rtl_adsb` subprocess → hex frame parsing → tracker → SQLite → web dashboard
-- 8 filter types: military, emergency squawk, circling, holding, proximity, unusual altitude, geofence, rapid descent
+- Live tracking via `rtl_adsb` subprocess, native IQ demod via `rtl_sdr` pipe, or direct USB via `rtlsdr_mt`
+- FilterEngine wired into live tracking — 8 filter types: military, emergency squawk, circling, holding, proximity, unusual altitude, geofence, rapid descent
+- Webhook notifications for filter events (fire-and-forget POST JSON)
 - Aircraft enrichment: speed/altitude classification, 26 airline prefixes, 3,642 embedded airports
 - Web dashboard with 8 pages (map, table, detail, events, query, replay, receivers, stats)
 - Dual-path positions: live tracker serves from memory; DB fallback when no tracker attached
-- Multi-receiver ingest API with bearer token auth and heartbeat
+- Multi-receiver ingest API with bearer token auth, heartbeat, and DB persistence
+- Graceful shutdown (SIGTERM/SIGINT handling, DB flush, clean exit)
+- Configurable data retention: `--retention-hours`, `--downsample-hours`, `--downsample-interval`
 - CLI: decode, track, stats, history, export, serve, setup
 - CRC error correction: 1-2 bit errors via syndrome table lookup
-- 199 Rust tests + 394 Python tests
+- 223 Rust tests + 394 Python tests
+- Sample config: `config.example.yaml`
 
 ### What's implemented but not active:
 - **TimescaleDB backend** (`db_pg.rs`) — fully implemented with hypertables, compression, retention, continuous aggregates. Requires a PostgreSQL instance to use. Currently using SQLite.
-- **Native IQ demodulation** (`demod.rs`) — magnitude LUT, preamble detection, PPM bit recovery all implemented. Live capture currently uses `rtl_adsb` subprocess instead of the native demod path.
+- **Native RTL-SDR USB** (`LiveCapture` in capture.rs) — direct dongle access via `rtlsdr_mt`. Requires `native-sdr` feature and `librtlsdr` on system. Build with `cargo build --features native-sdr`.
 - **Cross-compilation CI** — GitHub Actions configured for Pi 3/4/5 ARM targets. No release binaries published yet.
 
 ### Not implemented:
 - LLM integration / airspace narrator (discussed as future idea, no code exists)
-- Native `rtlsdr_mt` USB dongle access from Rust (would replace `rtl_adsb` subprocess)
-- Tiered data retention in Rust (Python has it; Rust has downsample/prune functions but no automatic scheduling)
-- Webhook notifications in Rust (Python has `notifications.py`)
 
 ## Key Technical Details
 
@@ -189,12 +195,15 @@ Key SQL patterns:
 - DF21: Comm-B identity reply
 
 ### Live Tracking Architecture (Rust)
-- `rtl_adsb` subprocess produces hex frames on stdout
-- Main thread reads frames, parses through decode/track pipeline
+- Three capture modes: `rtl_adsb` subprocess (hex), `rtl_sdr` subprocess (IQ demod), `rtlsdr_mt` direct USB
+- Blocking read loop runs in `tokio::task::spawn_blocking`
 - `Tracker` shared via `Arc<RwLock<Tracker>>` with web server
+- `FilterEngine` shared via `Arc<Mutex<FilterEngine>>` — checks every frame + proximity every 10s
 - `Database` (concrete SQLite) handles writes from main thread
-- `SqliteDb` (opens fresh connections per request) handles web reads
+- `SqliteDb` (opens fresh connections per request) handles web reads via `AdsbDatabase` trait
 - Web server runs in a tokio task, sees DB writes immediately
+- Graceful shutdown via `AtomicBool` + `tokio::sync::Notify` (handles SIGTERM + Ctrl+C)
+- Hourly background task prunes old positions, downsamples, removes phantom aircraft
 
 ## Division of Labor
 

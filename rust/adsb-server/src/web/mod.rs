@@ -26,6 +26,7 @@ pub struct AppState {
     pub tracker: Option<Arc<RwLock<Tracker>>>,
     pub geofences: RwLock<Vec<GeofenceEntry>>,
     pub geofence_next_id: RwLock<u64>,
+    pub auth_token: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -130,12 +131,14 @@ pub async fn serve(
     host: String,
     port: u16,
     cors_origin: Option<&str>,
+    auth_token: Option<String>,
 ) {
     let state = Arc::new(AppState {
         db,
         tracker: None,
         geofences: RwLock::new(Vec::new()),
         geofence_next_id: RwLock::new(1),
+        auth_token,
     });
 
     let app = build_router(state, cors_origin);

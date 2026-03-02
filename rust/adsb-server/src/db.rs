@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use adsb_core::tracker::TrackEvent;
-use adsb_core::types::{icao_to_string, Icao};
+use adsb_core::types::{icao_from_hex, icao_to_string, Icao};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS receivers (
@@ -1089,6 +1089,38 @@ pub trait AdsbDatabase: Send + Sync {
         icao: Option<&str>,
         limit: i64,
     ) -> Vec<PositionRow>;
+
+    // Write methods for ingest persistence
+    async fn upsert_aircraft(
+        &self,
+        icao: &str,
+        country: Option<&str>,
+        registration: Option<&str>,
+        is_military: bool,
+        timestamp: f64,
+    );
+    async fn upsert_sighting(
+        &self,
+        icao: &str,
+        capture_id: Option<i64>,
+        callsign: Option<&str>,
+        squawk: Option<&str>,
+        altitude_ft: Option<i32>,
+        timestamp: f64,
+    );
+    #[allow(clippy::too_many_arguments)]
+    async fn add_position(
+        &self,
+        icao: &str,
+        lat: f64,
+        lon: f64,
+        altitude_ft: Option<i32>,
+        speed_kts: Option<f64>,
+        heading_deg: Option<f64>,
+        vertical_rate_fpm: Option<i32>,
+        receiver_id: Option<i64>,
+        timestamp: f64,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1189,6 +1221,68 @@ impl AdsbDatabase for SqliteDb {
         limit: i64,
     ) -> Vec<PositionRow> {
         self.open().export_positions(hours, icao, limit)
+    }
+
+    async fn upsert_aircraft(
+        &self,
+        icao_str: &str,
+        country: Option<&str>,
+        registration: Option<&str>,
+        is_military: bool,
+        timestamp: f64,
+    ) {
+        let icao = match icao_from_hex(icao_str) {
+            Some(i) => i,
+            None => return,
+        };
+        self.open()
+            .upsert_aircraft(&icao, country, registration, is_military, timestamp);
+    }
+
+    async fn upsert_sighting(
+        &self,
+        icao_str: &str,
+        capture_id: Option<i64>,
+        callsign: Option<&str>,
+        squawk: Option<&str>,
+        altitude_ft: Option<i32>,
+        timestamp: f64,
+    ) {
+        let icao = match icao_from_hex(icao_str) {
+            Some(i) => i,
+            None => return,
+        };
+        self.open()
+            .upsert_sighting(&icao, capture_id, callsign, squawk, altitude_ft, timestamp);
+    }
+
+    async fn add_position(
+        &self,
+        icao_str: &str,
+        lat: f64,
+        lon: f64,
+        altitude_ft: Option<i32>,
+        speed_kts: Option<f64>,
+        heading_deg: Option<f64>,
+        vertical_rate_fpm: Option<i32>,
+        receiver_id: Option<i64>,
+        timestamp: f64,
+    ) {
+        let icao = match icao_from_hex(icao_str) {
+            Some(i) => i,
+            None => return,
+        };
+        self.open().add_position(
+            &icao,
+            lat,
+            lon,
+            altitude_ft,
+            speed_kts,
+            heading_deg,
+            vertical_rate_fpm,
+            receiver_id,
+            timestamp,
+        );
     }
 }
 

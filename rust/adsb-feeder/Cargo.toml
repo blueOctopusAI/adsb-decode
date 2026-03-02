@@ -10,6 +10,11 @@ description = "ADS-B IQ sample demodulation and RTL-SDR data ingestion"
 name = "adsb-feeder"
 path = "src/main.rs"
 
+[features]
+default = []
+native-sdr = ["dep:rtlsdr_mt"]
+
 [dependencies]
 adsb-core = { path = "../adsb-core" }
 clap = { version = "4", features = ["derive"] }
+rtlsdr_mt = { version = "2.2", optional = true }

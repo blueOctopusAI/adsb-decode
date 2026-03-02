@@ -219,6 +219,117 @@ impl IQReader {
 }
 
 // ---------------------------------------------------------------------------
+// Live RTL-SDR Capture (feature-gated)
+// ---------------------------------------------------------------------------
+
+/// Live capture from an RTL-SDR dongle via `rtlsdr_mt`.
+///
+/// Opens the device at `device_index`, tunes to 1090 MHz at 2 MHz sample rate,
+/// and bridges the async callback to a synchronous `Read` implementation via a
+/// bounded channel. Feed the resulting struct directly into `demodulate_stream`.
+///
+/// Requires `librtlsdr` installed on the system.
+#[cfg(feature = "native-sdr")]
+pub struct LiveCapture {
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+    buf_pos: usize,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+#[cfg(feature = "native-sdr")]
+impl LiveCapture {
+    /// Open RTL-SDR device and start streaming IQ samples.
+    ///
+    /// - `device_index`: USB device index (0 for first dongle)
+    /// - `gain`: `None` for AGC, `Some(gain_tenths)` for manual (e.g., `Some(400)` = 40.0 dB)
+    /// - `ppm`: Frequency correction in parts per million
+    pub fn open(device_index: u32, gain: Option<i32>, ppm: i32) -> io::Result<Self> {
+        let (ctl, mut reader) = rtlsdr_mt::open(device_index).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("failed to open RTL-SDR device {device_index}: {e}"),
+            )
+        })?;
+
+        // Configure for ADS-B: 1090 MHz, 2 MHz sample rate
+        ctl.set_center_freq(1_090_000_000).map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("set_center_freq: {e}"))
+        })?;
+        ctl.set_sample_rate(2_000_000).map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("set_sample_rate: {e}"))
+        })?;
+
+        if ppm != 0 {
+            ctl.set_ppm(ppm).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("set_ppm: {e}"))
+            })?;
+        }
+
+        if let Some(g) = gain {
+            ctl.set_tuner_gain(g).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("set_tuner_gain: {e}"))
+            })?;
+        } else {
+            ctl.enable_agc().map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("enable_agc: {e}"))
+            })?;
+        }
+
+        // Channel bridges async callback → sync Read
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
+
+        let thread = std::thread::spawn(move || {
+            // 32 buffers of 256K each — standard RTL-SDR streaming params
+            let _ = reader.read_async(32, 262_144, |bytes| {
+                if tx.send(bytes.to_vec()).is_err() {
+                    // Receiver dropped — stop reading
+                    return;
+                }
+            });
+        });
+
+        Ok(LiveCapture {
+            rx,
+            buf: Vec::new(),
+            buf_pos: 0,
+            _thread: thread,
+        })
+    }
+}
+
+#[cfg(feature = "native-sdr")]
+impl Read for LiveCapture {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        // Drain internal buffer first
+        if self.buf_pos < self.buf.len() {
+            let avail = self.buf.len() - self.buf_pos;
+            let n = avail.min(out.len());
+            out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
+            self.buf_pos += n;
+            return Ok(n);
+        }
+
+        // Get next chunk from device thread
+        match self.rx.recv() {
+            Ok(chunk) => {
+                let n = chunk.len().min(out.len());
+                out[..n].copy_from_slice(&chunk[..n]);
+                if n < chunk.len() {
+                    self.buf = chunk;
+                    self.buf_pos = n;
+                } else {
+                    self.buf.clear();
+                    self.buf_pos = 0;
+                }
+                Ok(n)
+            }
+            Err(_) => Ok(0), // Channel closed — EOF
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

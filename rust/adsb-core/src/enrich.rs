@@ -196,7 +196,7 @@ pub fn nearest_airport(lat: f64, lon: f64, max_nm: f64) -> Option<(String, Strin
 
     for apt in AIRPORTS.iter() {
         let dist = haversine_nm(lat, lon, apt.lat, apt.lon);
-        if dist < max_nm && best.as_ref().map_or(true, |b| dist < b.2) {
+        if dist < max_nm && best.as_ref().is_none_or(|b| dist < b.2) {
             best = Some((apt.icao.clone(), apt.name.clone(), dist));
         }
     }
