@@ -1,39 +1,171 @@
-<style></style>
-<div class="container">
-    <h2 style="color:#00ff88; margin-bottom:12px;">Aircraft (<span id="ac-count">-</span>)</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>ICAO</th>
-                <th>Registration</th>
-                <th>Country</th>
-                <th>Military</th>
-                <th>First Seen</th>
-                <th>Last Seen</th>
-            </tr>
-        </thead>
-        <tbody id="ac-tbody"></tbody>
-    </table>
+<style>
+.filter-bar {
+    padding: 12px 16px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.filter-bar input, .filter-bar select {
+    background: #222; color: #e0e0e0; border: 1px solid #333;
+    padding: 5px 10px; font-family: 'Courier New', monospace; font-size: 12px;
+    border-radius: 3px;
+}
+.filter-bar input::placeholder { color: #555; }
+.filter-bar label { color: #888; font-size: 11px; cursor: pointer; }
+.sort-th { cursor: pointer; user-select: none; }
+.sort-th:hover { color: #00ff88; }
+.sort-th .arrow { font-size: 10px; margin-left: 4px; }
+</style>
+<div class="container" style="padding:0;">
+    <div class="filter-bar">
+        <h2 style="color:#00ff88; margin:0; font-size:16px;">Aircraft (<span id="ac-count">-</span><span id="ac-showing"></span>)</h2>
+        <input type="text" id="search-box" placeholder="Search ICAO, reg, country..." style="width:200px;">
+        <label><input type="checkbox" id="filter-military"> Military only</label>
+        <label><input type="checkbox" id="filter-live"> Live now</label>
+        <select id="filter-country">
+            <option value="">All countries</option>
+        </select>
+    </div>
+    <div style="padding:0 16px 16px;">
+        <table>
+            <thead>
+                <tr>
+                    <th class="sort-th" data-col="icao">ICAO <span class="arrow"></span></th>
+                    <th class="sort-th" data-col="registration">Registration <span class="arrow"></span></th>
+                    <th class="sort-th" data-col="callsign">Callsign <span class="arrow"></span></th>
+                    <th class="sort-th" data-col="country">Country <span class="arrow"></span></th>
+                    <th class="sort-th" data-col="is_military">Military <span class="arrow"></span></th>
+                    <th class="sort-th" data-col="last_seen">Last Seen <span class="arrow">▼</span></th>
+                </tr>
+            </thead>
+            <tbody id="ac-tbody"></tbody>
+        </table>
+    </div>
 </div>
 <script>
+let allAircraft = [];
+let liveIcaos = new Set();
+let sortCol = 'last_seen';
+let sortAsc = false;
+
+// Fetch live aircraft set (from tracker if running)
+fetch('/api/aircraft?live=true')
+    .then(r => r.json())
+    .then(data => {
+        data.forEach(ac => liveIcaos.add(ac.icao));
+    })
+    .catch(() => {});
+
+// Fetch all aircraft from DB
 fetch('/api/aircraft')
     .then(r => r.json())
     .then(data => {
+        allAircraft = data;
         document.getElementById('ac-count').textContent = data.length;
-        const tbody = document.getElementById('ac-tbody');
-        tbody.innerHTML = data.map(ac => {
-            const fs = ac.first_seen ? new Date(ac.first_seen * 1000).toLocaleString() : '-';
-            const ls = ac.last_seen ? new Date(ac.last_seen * 1000).toLocaleString() : '-';
-            const mil = ac.is_military ? '<span class="mil">MIL</span>' : '-';
-            return `<tr>
-                <td><a href="/aircraft/${ac.icao}">${ac.icao}</a></td>
-                <td>${ac.registration || '-'}</td>
-                <td>${ac.country || '-'}</td>
-                <td>${mil}</td>
-                <td>${fs}</td>
-                <td>${ls}</td>
-            </tr>`;
-        }).join('');
+
+        // Populate country dropdown
+        const countries = [...new Set(data.map(ac => ac.country).filter(Boolean))].sort();
+        const sel = document.getElementById('filter-country');
+        countries.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c; opt.textContent = c;
+            sel.appendChild(opt);
+        });
+
+        renderTable();
     })
     .catch(err => console.error('Failed to load aircraft:', err));
+
+function getFiltered() {
+    const search = document.getElementById('search-box').value.toLowerCase();
+    const milOnly = document.getElementById('filter-military').checked;
+    const liveOnly = document.getElementById('filter-live').checked;
+    const country = document.getElementById('filter-country').value;
+
+    let filtered = allAircraft;
+
+    if (search) {
+        filtered = filtered.filter(ac =>
+            (ac.icao || '').toLowerCase().includes(search) ||
+            (ac.registration || '').toLowerCase().includes(search) ||
+            (ac.country || '').toLowerCase().includes(search) ||
+            (ac.callsign || '').toLowerCase().includes(search)
+        );
+    }
+    if (milOnly) filtered = filtered.filter(ac => ac.is_military);
+    if (liveOnly) filtered = filtered.filter(ac => liveIcaos.has(ac.icao));
+    if (country) filtered = filtered.filter(ac => ac.country === country);
+
+    // Sort
+    filtered.sort((a, b) => {
+        let va = a[sortCol], vb = b[sortCol];
+        if (va == null) va = '';
+        if (vb == null) vb = '';
+        if (typeof va === 'string') va = va.toLowerCase();
+        if (typeof vb === 'string') vb = vb.toLowerCase();
+        if (va < vb) return sortAsc ? -1 : 1;
+        if (va > vb) return sortAsc ? 1 : -1;
+        return 0;
+    });
+
+    return filtered;
+}
+
+function renderTable() {
+    const filtered = getFiltered();
+    const showing = filtered.length < allAircraft.length ? ` / ${filtered.length} shown` : '';
+    document.getElementById('ac-showing').textContent = showing;
+
+    const tbody = document.getElementById('ac-tbody');
+    // Cap at 500 for performance
+    const display = filtered.slice(0, 500);
+    tbody.innerHTML = display.map(ac => {
+        const ls = ac.last_seen ? new Date(ac.last_seen * 1000).toLocaleString() : '-';
+        const mil = ac.is_military ? '<span class="mil">MIL</span>' : '';
+        const live = liveIcaos.has(ac.icao) ? '<span style="color:#00ff88;font-size:10px;margin-left:4px;">●</span>' : '';
+        return `<tr>
+            <td><a href="/aircraft/${ac.icao}">${ac.icao}</a>${live}</td>
+            <td>${ac.registration || '-'}</td>
+            <td>${ac.callsign || '-'}</td>
+            <td>${ac.country || '-'}</td>
+            <td>${mil}</td>
+            <td>${ls}</td>
+        </tr>`;
+    }).join('');
+
+    if (filtered.length > 500) {
+        tbody.innerHTML += `<tr><td colspan="6" style="color:#888;text-align:center;padding:12px;">Showing 500 of ${filtered.length} — narrow your search</td></tr>`;
+    }
+
+    // Update sort arrows
+    document.querySelectorAll('.sort-th').forEach(th => {
+        const arrow = th.querySelector('.arrow');
+        if (th.dataset.col === sortCol) {
+            arrow.textContent = sortAsc ? '▲' : '▼';
+        } else {
+            arrow.textContent = '';
+        }
+    });
+}
+
+// Event listeners
+document.getElementById('search-box').addEventListener('input', renderTable);
+document.getElementById('filter-military').addEventListener('change', renderTable);
+document.getElementById('filter-live').addEventListener('change', renderTable);
+document.getElementById('filter-country').addEventListener('change', renderTable);
+
+document.querySelectorAll('.sort-th').forEach(th => {
+    th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (sortCol === col) {
+            sortAsc = !sortAsc;
+        } else {
+            sortCol = col;
+            sortAsc = true;
+        }
+        renderTable();
+    });
+});
 </script>

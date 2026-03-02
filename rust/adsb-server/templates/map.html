@@ -105,6 +105,11 @@
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="trail-toggle" checked> Trails</label>
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
             </div>
+            <div id="heatmap-dur-row" style="margin-top:4px;display:none;">
+                <span style="font-size:10px;color:#888;">Heatmap:</span>
+                <span style="font-size:11px;color:#ff8800;float:right;" id="heatmap-dur-label">24h</span>
+                <input type="range" id="heatmap-dur-slider" min="0" max="7" value="5" style="width:100%;accent-color:#ff8800;margin-top:2px;">
+            </div>
             <div style="margin-top:5px;">
                 <span style="font-size:10px;color:#888;text-transform:uppercase;">Airports:</span>
                 <span style="display:inline-flex;gap:8px;margin-left:6px;">
@@ -500,9 +505,16 @@ map.on('moveend', renderVisibleAirports);
 // --- Heatmap layer ---
 let heatLayer = null;
 let heatmapEnabled = false;
+const heatDurSteps = [15, 30, 60, 120, 360, 720, 1440, 10080];
+const heatDurLabels = ['15m', '30m', '1h', '2h', '6h', '12h', '24h', '7d'];
+let heatMinutes = 1440;
+const heatDurSlider = document.getElementById('heatmap-dur-slider');
+const heatDurLabel = document.getElementById('heatmap-dur-label');
+const heatDurRow = document.getElementById('heatmap-dur-row');
 
 document.getElementById('heatmap-toggle').addEventListener('change', function() {
     heatmapEnabled = this.checked;
+    heatDurRow.style.display = heatmapEnabled ? '' : 'none';
     if (!heatmapEnabled && heatLayer) {
         map.removeLayer(heatLayer);
         heatLayer = null;
@@ -510,20 +522,30 @@ document.getElementById('heatmap-toggle').addEventListener('change', function() 
     if (heatmapEnabled) updateHeatmap();
 });
 
+heatDurSlider.addEventListener('input', function() {
+    const idx = parseInt(this.value);
+    heatMinutes = heatDurSteps[idx];
+    heatDurLabel.textContent = heatDurLabels[idx];
+    saveState();
+    updateHeatmap();
+});
+
 function updateHeatmap() {
     if (!heatmapEnabled) return;
-    const heatMinutes = Math.max(trailMinutes, 1440);
-    fetch('/api/heatmap?minutes=' + heatMinutes)
+    const zoom = map.getZoom();
+    const resolution = zoom >= 12 ? 0.005 : zoom >= 10 ? 0.01 : zoom >= 8 ? 0.02 : 0.05;
+    fetch('/api/heatmap?minutes=' + heatMinutes + '&resolution=' + resolution)
         .then(r => r.json())
         .then(data => {
-            const points = data.map(p => [p.lat, p.lon, 0.8]);
             if (heatLayer) map.removeLayer(heatLayer);
-            if (points.length > 0) {
-                heatLayer = L.heatLayer(points, {
-                    radius: 25, blur: 15, maxZoom: 17, minOpacity: 0.4,
-                    gradient: {0.2: '#0033aa', 0.4: '#0088ff', 0.5: '#00ff88', 0.7: '#ffff00', 0.9: '#ff8800', 1.0: '#ff0000'},
-                }).addTo(map);
-            }
+            if (data.length === 0) return;
+            const maxCount = Math.max(...data.map(c => c.count));
+            const points = data.map(c => [c.lat, c.lon, Math.max(0.1, c.count / maxCount)]);
+            const radius = zoom >= 12 ? 15 : zoom >= 10 ? 20 : zoom >= 8 ? 25 : 30;
+            heatLayer = L.heatLayer(points, {
+                radius: radius, blur: 12, maxZoom: 17, minOpacity: 0.3,
+                gradient: {0.1: '#0033aa', 0.3: '#0088ff', 0.5: '#00ff88', 0.7: '#ffff00', 0.85: '#ff8800', 1.0: '#ff0000'},
+            }).addTo(map);
         })
         .catch((e) => { console.error('Heatmap update failed:', e); });
 }
@@ -562,6 +584,7 @@ function saveState() {
         trails: document.getElementById('trail-toggle').checked,
         trailDur: parseInt(trailDurSlider.value),
         heatmap: document.getElementById('heatmap-toggle').checked,
+        heatDur: parseInt(heatDurSlider.value),
         aptLarge: document.getElementById('apt-large').checked,
         aptMedium: document.getElementById('apt-medium').checked,
         aptSmall: document.getElementById('apt-small').checked,
@@ -584,7 +607,16 @@ function restoreState() {
             trailMinutes = trailDurSteps[s.trailDur];
             trailDurLabel.textContent = trailDurLabels[s.trailDur];
         }
-        if (s.heatmap) { document.getElementById('heatmap-toggle').checked = true; heatmapEnabled = true; }
+        if (s.heatmap) {
+            document.getElementById('heatmap-toggle').checked = true;
+            heatmapEnabled = true;
+            heatDurRow.style.display = '';
+        }
+        if (s.heatDur !== undefined) {
+            heatDurSlider.value = s.heatDur;
+            heatMinutes = heatDurSteps[s.heatDur];
+            heatDurLabel.textContent = heatDurLabels[s.heatDur];
+        }
         if (s.aptLarge) document.getElementById('apt-large').checked = true;
         if (s.aptMedium) document.getElementById('apt-medium').checked = true;
         if (s.aptSmall) document.getElementById('apt-small').checked = true;

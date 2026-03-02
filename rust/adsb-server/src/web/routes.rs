@@ -56,6 +56,8 @@ pub struct QueryParams {
 #[derive(Deserialize)]
 pub struct HeatmapParams {
     minutes: Option<f64>,
+    /// Grid cell size in degrees (default 0.01 ≈ 1km). Smaller = finer detail.
+    resolution: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -300,19 +302,22 @@ pub async fn api_query(
     Json(serde_json::to_value(&positions).unwrap_or(json!([])))
 }
 
-/// GET /api/heatmap — position density data.
+/// GET /api/heatmap — grid-aggregated position density data.
+///
+/// Returns `{lat, lon, count, avg_alt}` cells. Grid resolution defaults to
+/// 0.01° (~1 km) and can be adjusted via `?resolution=0.005`.
 pub async fn api_heatmap(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HeatmapParams>,
 ) -> impl IntoResponse {
     let minutes = clamp(params.minutes.unwrap_or(1440.0), 1.0, 10080.0);
+    let resolution = clamp(params.resolution.unwrap_or(0.01), 0.001, 1.0);
 
-    let points = state.db.get_heatmap_positions(minutes, 50000).await;
-    let data: Vec<Value> = points
-        .iter()
-        .map(|(lat, lon, alt)| json!({"lat": lat, "lon": lon, "altitude_ft": alt}))
-        .collect();
-    Json(json!(data))
+    let cells = state
+        .db
+        .get_heatmap_density(minutes, resolution)
+        .await;
+    Json(json!(cells))
 }
 
 // ---------------------------------------------------------------------------

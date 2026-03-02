@@ -626,6 +626,14 @@ pub struct AircraftRow {
 }
 
 #[derive(Debug, Serialize)]
+pub struct HeatmapCell {
+    pub lat: f64,
+    pub lon: f64,
+    pub count: i64,
+    pub avg_alt: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct PositionRow {
     pub icao: String,
     pub lat: f64,
@@ -838,6 +846,37 @@ impl Database {
 
         stmt.query_map(params![cutoff, limit], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    /// Get grid-aggregated heatmap density cells.
+    pub fn get_heatmap_density(&self, minutes: f64, resolution: f64) -> Vec<HeatmapCell> {
+        let cutoff = now() - (minutes * 60.0);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                     ROUND(lat / ?1) * ?1 AS cell_lat,
+                     ROUND(lon / ?1) * ?1 AS cell_lon,
+                     COUNT(*) AS cnt,
+                     CAST(AVG(altitude_ft) AS INTEGER) AS avg_alt
+                 FROM positions
+                 WHERE timestamp >= ?2
+                 GROUP BY cell_lat, cell_lon
+                 ORDER BY cnt DESC",
+            )
+            .unwrap();
+
+        stmt.query_map(params![resolution, cutoff], |r| {
+            Ok(HeatmapCell {
+                lat: r.get(0)?,
+                lon: r.get(1)?,
+                count: r.get(2)?,
+                avg_alt: r.get(3)?,
+            })
         })
         .unwrap()
         .filter_map(|r| r.ok())
@@ -1072,6 +1111,7 @@ pub trait AdsbDatabase: Send + Sync {
     async fn get_trails(&self, minutes: f64, limit_per_aircraft: i64) -> Vec<PositionRow>;
     async fn get_heatmap_positions(&self, minutes: f64, limit: i64)
         -> Vec<(f64, f64, Option<i32>)>;
+    async fn get_heatmap_density(&self, minutes: f64, resolution: f64) -> Vec<HeatmapCell>;
     async fn query_positions(
         &self,
         min_alt: Option<i32>,
@@ -1188,6 +1228,10 @@ impl AdsbDatabase for SqliteDb {
         limit: i64,
     ) -> Vec<(f64, f64, Option<i32>)> {
         self.open().get_heatmap_positions(minutes, limit)
+    }
+
+    async fn get_heatmap_density(&self, minutes: f64, resolution: f64) -> Vec<HeatmapCell> {
+        self.open().get_heatmap_density(minutes, resolution)
     }
 
     async fn query_positions(

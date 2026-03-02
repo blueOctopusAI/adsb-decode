@@ -16,6 +16,8 @@
 .rx-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
 .rx-label { color: #888; }
 .rx-value { color: #e0e0e0; }
+.empty-state { color: #888; text-align: center; padding: 40px 20px; font-size: 13px; line-height: 1.6; }
+.empty-state code { color: #00ff88; background: #111; padding: 2px 6px; border-radius: 3px; }
 </style>
 <div class="container">
     <h2 style="color:#00ff88; margin-bottom:12px;">Receivers</h2>
@@ -30,43 +32,71 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 }).addTo(rxMap);
 
 function loadReceivers() {
-    fetch('/api/v1/receivers')
-        .then(r => r.json())
-        .then(data => {
-            const cards = document.getElementById('rx-cards');
-            cards.innerHTML = '';
-            const bounds = [];
+    // Try live feeder status first, fall back to DB receivers
+    Promise.all([
+        fetch('/api/v1/receivers').then(r => r.json()).catch(() => []),
+        fetch('/api/stats').then(r => r.json()).catch(() => ({})),
+    ]).then(([feeders, stats]) => {
+        const cards = document.getElementById('rx-cards');
+        const mapDiv = document.getElementById('rx-map');
+        cards.innerHTML = '';
 
-            data.forEach(rx => {
-                const status = rx.online ? '<span class="rx-online">ONLINE</span>' : '<span class="rx-offline">OFFLINE</span>';
-                const heartbeat = rx.last_heartbeat ? new Date(rx.last_heartbeat * 1000).toLocaleTimeString() : 'Never';
-                cards.innerHTML += `<div class="rx-card">
-                    <div class="rx-name">${rx.name} ${status}</div>
-                    <div class="rx-row"><span class="rx-label">Location</span><span class="rx-value">${rx.lat ? rx.lat.toFixed(4) + ', ' + rx.lon.toFixed(4) : 'Unknown'}</span></div>
-                    <div class="rx-row"><span class="rx-label">Last Heartbeat</span><span class="rx-value">${heartbeat}</span></div>
-                    <div class="rx-row"><span class="rx-label">Active Aircraft</span><span class="rx-value">${rx.active_aircraft || 0}</span></div>
-                </div>`;
+        if (feeders.length === 0 && (!stats.receivers || stats.receivers <= 1)) {
+            // Single local receiver, no remote feeders
+            mapDiv.style.display = 'none';
+            cards.innerHTML = `<div class="empty-state">
+                <div style="font-size:24px;margin-bottom:12px;">📡</div>
+                <div>Running with <strong style="color:#00ff88;">local receiver</strong> — no remote feeders connected.</div>
+                <div style="margin-top:12px;">To add remote feeders, run <code>adsb-feeder</code> on another device<br>pointed at this server's ingest API.</div>
+                <div style="margin-top:16px;font-size:11px;color:#555;">
+                    <code>adsb-feeder live --server http://THIS_HOST:8080 --name pi-station</code>
+                </div>
+            </div>`;
+            return;
+        }
 
-                if (rx.lat && rx.lon) {
-                    bounds.push([rx.lat, rx.lon]);
-                    const color = rx.online ? '#00ff88' : '#ff4444';
-                    L.circleMarker([rx.lat, rx.lon], {
-                        radius: 8, color: color, fillColor: color, fillOpacity: 0.8, weight: 1,
-                    }).addTo(rxMap).bindTooltip(rx.name, { permanent: true, direction: 'right' });
+        mapDiv.style.display = '';
+        const bounds = [];
 
-                    L.circle([rx.lat, rx.lon], {
-                        radius: 185000, color: color, fillOpacity: 0.05, weight: 1, dashArray: '4 4',
-                    }).addTo(rxMap);
-                }
-            });
+        feeders.forEach(rx => {
+            const status = rx.online ? '<span class="rx-online">ONLINE</span>' : '<span class="rx-offline">OFFLINE</span>';
+            const heartbeat = rx.last_heartbeat ? new Date(rx.last_heartbeat * 1000).toLocaleTimeString() : 'Never';
+            const uptime = rx.uptime_sec ? formatUptime(rx.uptime_sec) : '-';
+            cards.innerHTML += `<div class="rx-card">
+                <div class="rx-name">${rx.name} ${status}</div>
+                <div class="rx-row"><span class="rx-label">Location</span><span class="rx-value">${rx.lat ? rx.lat.toFixed(4) + ', ' + rx.lon.toFixed(4) : 'Unknown'}</span></div>
+                <div class="rx-row"><span class="rx-label">Last Heartbeat</span><span class="rx-value">${heartbeat}</span></div>
+                <div class="rx-row"><span class="rx-label">Active Aircraft</span><span class="rx-value">${rx.active_aircraft || 0}</span></div>
+                <div class="rx-row"><span class="rx-label">Frames Captured</span><span class="rx-value">${(rx.frames_captured || 0).toLocaleString()}</span></div>
+                <div class="rx-row"><span class="rx-label">Uptime</span><span class="rx-value">${uptime}</span></div>
+            </div>`;
 
-            if (bounds.length > 0) {
-                rxMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 8 });
-            } else {
-                rxMap.setView([35.18, -83.38], 6);
+            if (rx.lat && rx.lon) {
+                bounds.push([rx.lat, rx.lon]);
+                const color = rx.online ? '#00ff88' : '#ff4444';
+                L.circleMarker([rx.lat, rx.lon], {
+                    radius: 8, color: color, fillColor: color, fillOpacity: 0.8, weight: 1,
+                }).addTo(rxMap).bindTooltip(rx.name, { permanent: true, direction: 'right' });
+
+                L.circle([rx.lat, rx.lon], {
+                    radius: 185000, color: color, fillOpacity: 0.05, weight: 1, dashArray: '4 4',
+                }).addTo(rxMap);
             }
-        })
-        .catch(err => console.error('Failed to load receivers:', err));
+        });
+
+        if (bounds.length > 0) {
+            rxMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 8 });
+        } else {
+            rxMap.setView([35.18, -83.38], 6);
+        }
+    });
+}
+
+function formatUptime(sec) {
+    if (sec < 60) return sec + 's';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm';
+    if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+    return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
 }
 
 loadReceivers();
