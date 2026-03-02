@@ -253,17 +253,14 @@ impl LiveCapture {
         })?;
 
         // Configure for ADS-B: 1090 MHz, 2 MHz sample rate
-        ctl.set_center_freq(1_090_000_000).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("set_center_freq: {e}"))
-        })?;
-        ctl.set_sample_rate(2_000_000).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("set_sample_rate: {e}"))
-        })?;
+        ctl.set_center_freq(1_090_000_000)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("set_center_freq: {e}")))?;
+        ctl.set_sample_rate(2_000_000)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("set_sample_rate: {e}")))?;
 
         if ppm != 0 {
-            ctl.set_ppm(ppm).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("set_ppm: {e}"))
-            })?;
+            ctl.set_ppm(ppm)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("set_ppm: {e}")))?;
         }
 
         if let Some(g) = gain {
@@ -271,9 +268,8 @@ impl LiveCapture {
                 io::Error::new(io::ErrorKind::Other, format!("set_tuner_gain: {e}"))
             })?;
         } else {
-            ctl.enable_agc().map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("enable_agc: {e}"))
-            })?;
+            ctl.enable_agc()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("enable_agc: {e}")))?;
         }
 
         // Channel bridges async callback → sync Read

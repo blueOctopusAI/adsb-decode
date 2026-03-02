@@ -536,13 +536,17 @@ mod tests {
         // Construct a code with Q-bit clear that produces a valid altitude
         // A=1,B=0,C=1: c_bin=1 (100ft), ab_bin=8 (4000ft) → 4000+100-1200 = 2900
         let alt_code = 0b_0_1_0_0_0_0_0_0_0_0_0_0_0u32; // A1=1, rest 0
-        // This gives c_digit=0 which is invalid. Let's try a known working pattern.
-        // C1=1: sets c_digit bit, making c_bin valid
-        // A1=1, C1=1: alt_code = (C1<<12)|(A1<<11) = 0x1800
+                                                        // This gives c_digit=0 which is invalid. Let's try a known working pattern.
+                                                        // C1=1: sets c_digit bit, making c_bin valid
+                                                        // A1=1, C1=1: alt_code = (C1<<12)|(A1<<11) = 0x1800
         let alt = decode_altitude(0x1800);
         assert!(alt.is_some(), "Valid Gillham code should decode");
         let val = alt.unwrap();
-        assert!((-1200..=126750).contains(&val), "Altitude {} out of range", val);
+        assert!(
+            (-1200..=126750).contains(&val),
+            "Altitude {} out of range",
+            val
+        );
     }
 
     #[test]

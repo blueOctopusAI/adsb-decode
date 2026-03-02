@@ -313,10 +313,7 @@ pub async fn api_heatmap(
     let minutes = clamp(params.minutes.unwrap_or(1440.0), 1.0, 10080.0);
     let resolution = clamp(params.resolution.unwrap_or(0.01), 0.001, 1.0);
 
-    let cells = state
-        .db
-        .get_heatmap_density(minutes, resolution)
-        .await;
+    let cells = state.db.get_heatmap_density(minutes, resolution).await;
     Json(json!(cells))
 }
 
@@ -688,7 +685,11 @@ mod tests {
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         let airports = json.as_array().unwrap();
-        assert!(airports.len() > 3600, "Expected 3600+ airports, got {}", airports.len());
+        assert!(
+            airports.len() > 3600,
+            "Expected 3600+ airports, got {}",
+            airports.len()
+        );
         // Verify types are normalized
         let types: Vec<&str> = airports.iter().filter_map(|a| a["type"].as_str()).collect();
         assert!(types.contains(&"major"));
@@ -755,16 +756,19 @@ mod tests {
     async fn test_page_routes() {
         let (state, _dir) = test_state();
 
-        let pages = ["/", "/table", "/stats", "/events", "/query", "/replay", "/receivers"];
+        let pages = [
+            "/",
+            "/table",
+            "/stats",
+            "/events",
+            "/query",
+            "/replay",
+            "/receivers",
+        ];
         for page in pages {
             let app = crate::web::build_router(state.clone(), None);
             let response = app
-                .oneshot(
-                    Request::builder()
-                        .uri(page)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(Request::builder().uri(page).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "Page {page} failed");

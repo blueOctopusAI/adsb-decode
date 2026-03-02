@@ -358,7 +358,10 @@ mod tests {
         data[10] ^= 0x04;
         let corrupted = hex_encode(&data);
 
-        assert!(try_fix(&corrupted).is_none(), "Triple-bit should not be fixable");
+        assert!(
+            try_fix(&corrupted).is_none(),
+            "Triple-bit should not be fixable"
+        );
     }
 
     #[test]

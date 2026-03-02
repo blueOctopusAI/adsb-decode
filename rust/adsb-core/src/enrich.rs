@@ -180,8 +180,7 @@ fn parse_airports() -> Vec<Airport> {
     airports
 }
 
-static AIRPORTS: std::sync::LazyLock<Vec<Airport>> =
-    std::sync::LazyLock::new(parse_airports);
+static AIRPORTS: std::sync::LazyLock<Vec<Airport>> = std::sync::LazyLock::new(parse_airports);
 
 /// Get all airports.
 pub fn all_airports() -> &'static [Airport] {
@@ -327,7 +326,11 @@ mod tests {
     #[test]
     fn test_all_airports_loaded() {
         let airports = all_airports();
-        assert!(airports.len() > 3600, "Expected 3600+ airports, got {}", airports.len());
+        assert!(
+            airports.len() > 3600,
+            "Expected 3600+ airports, got {}",
+            airports.len()
+        );
         // Check KAVL exists
         assert!(airports.iter().any(|a| a.icao == "KAVL"));
         // Check types are normalized

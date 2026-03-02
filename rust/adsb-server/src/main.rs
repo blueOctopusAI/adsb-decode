@@ -690,8 +690,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
 
     // Start web server if --port given
     let app_state = if let Some(p) = opts.port {
-        let web_db: Arc<dyn db::AdsbDatabase> =
-            Arc::new(db::SqliteDb::new(db_path.to_string()));
+        let web_db: Arc<dyn db::AdsbDatabase> = Arc::new(db::SqliteDb::new(db_path.to_string()));
         let state = Arc::new(web::AppState {
             db: web_db,
             tracker: Some(tracker.clone()),
@@ -828,11 +827,10 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
                 .unwrap()
                 .as_secs_f64();
 
-            let frame =
-                match frame::parse_frame(hex_clean, now_ts, None, true, &mut icao_cache) {
-                    Some(f) => f,
-                    None => continue,
-                };
+            let frame = match frame::parse_frame(hex_clean, now_ts, None, true, &mut icao_cache) {
+                Some(f) => f,
+                None => continue,
+            };
 
             // Update tracker and get track events
             let events = {
@@ -868,13 +866,15 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
                 let active = t.get_active(now_ts);
                 eprintln!(
                     "  {} frames, {} valid, {} active aircraft, {} positions",
-                    t.total_frames, t.valid_frames, active.len(), t.position_decodes
+                    t.total_frames,
+                    t.valid_frames,
+                    active.len(),
+                    t.position_decodes
                 );
 
                 // Proximity check on active aircraft
                 {
-                    let active_refs: Vec<&adsb_core::tracker::AircraftState> =
-                        active.to_vec();
+                    let active_refs: Vec<&adsb_core::tracker::AircraftState> = active.to_vec();
                     let mut fe = loop_filter.lock().unwrap();
                     // Sync geofences from web state
                     if let Some(ref state) = loop_state {
@@ -939,7 +939,9 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
     db.flush();
     eprintln!(
         "\nStopped. {} frames, {} valid, {} aircraft",
-        t.total_frames, t.valid_frames, t.aircraft.len()
+        t.total_frames,
+        t.valid_frames,
+        t.aircraft.len()
     );
 }
 
@@ -976,8 +978,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
 
     // Start web server if --port given
     let app_state = if let Some(p) = opts.port {
-        let web_db: Arc<dyn db::AdsbDatabase> =
-            Arc::new(db::SqliteDb::new(db_path.to_string()));
+        let web_db: Arc<dyn db::AdsbDatabase> = Arc::new(db::SqliteDb::new(db_path.to_string()));
         let state = Arc::new(web::AppState {
             db: web_db,
             tracker: Some(tracker.clone()),
@@ -1145,13 +1146,15 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
                     let active = t.get_active(now_ts);
                     eprintln!(
                         "  {} frames, {} valid, {} active aircraft, {} positions [native]",
-                        t.total_frames, t.valid_frames, active.len(), t.position_decodes
+                        t.total_frames,
+                        t.valid_frames,
+                        active.len(),
+                        t.position_decodes
                     );
 
                     // Proximity check
                     {
-                        let active_refs: Vec<&adsb_core::tracker::AircraftState> =
-                            active.to_vec();
+                        let active_refs: Vec<&adsb_core::tracker::AircraftState> = active.to_vec();
                         let mut fe = loop_filter.lock().unwrap();
                         if let Some(ref state) = loop_state {
                             sync_geofences(&state.geofences, &mut fe);
@@ -1219,7 +1222,9 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
     db.flush();
     eprintln!(
         "\nStopped. {} frames, {} valid, {} aircraft [native demod]",
-        t.total_frames, t.valid_frames, t.aircraft.len()
+        t.total_frames,
+        t.valid_frames,
+        t.aircraft.len()
     );
 }
 
@@ -1258,8 +1263,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
 
     // Start web server if --port given
     let app_state = if let Some(p) = opts.port {
-        let web_db: Arc<dyn db::AdsbDatabase> =
-            Arc::new(db::SqliteDb::new(db_path.to_string()));
+        let web_db: Arc<dyn db::AdsbDatabase> = Arc::new(db::SqliteDb::new(db_path.to_string()));
         let state = Arc::new(web::AppState {
             db: web_db,
             tracker: Some(tracker.clone()),
@@ -1422,13 +1426,15 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
                     let active = t.get_active(now_ts);
                     eprintln!(
                         "  {} frames, {} valid, {} active aircraft, {} positions [native USB]",
-                        t.total_frames, t.valid_frames, active.len(), t.position_decodes
+                        t.total_frames,
+                        t.valid_frames,
+                        active.len(),
+                        t.position_decodes
                     );
 
                     // Proximity check
                     {
-                        let active_refs: Vec<&adsb_core::tracker::AircraftState> =
-                            active.to_vec();
+                        let active_refs: Vec<&adsb_core::tracker::AircraftState> = active.to_vec();
                         let mut fe = loop_filter.lock().unwrap();
                         if let Some(ref state) = loop_state {
                             sync_geofences(&state.geofences, &mut fe);
@@ -1494,7 +1500,9 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
     db.flush();
     eprintln!(
         "\nStopped. {} frames, {} valid, {} aircraft [native USB]",
-        t.total_frames, t.valid_frames, t.aircraft.len()
+        t.total_frames,
+        t.valid_frames,
+        t.aircraft.len()
     );
 }
 

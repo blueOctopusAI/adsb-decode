@@ -405,11 +405,7 @@ impl FilterEngine {
         }
     }
 
-    fn check_unusual_altitude(
-        &mut self,
-        ac: &AircraftState,
-        events: &mut Vec<FilterEvent>,
-    ) {
+    fn check_unusual_altitude(&mut self, ac: &AircraftState, events: &mut Vec<FilterEvent>) {
         // Fast aircraft flying unusually low, far from any airport
         let speed = match ac.speed_kts {
             Some(s) if s > 200.0 => s,
@@ -704,7 +700,9 @@ mod tests {
 
         let events = engine.check(&ac);
         assert!(
-            events.iter().any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
+            events
+                .iter()
+                .any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
             "Fast + low + far from airport should trigger"
         );
     }
@@ -721,7 +719,9 @@ mod tests {
 
         let events = engine.check(&ac);
         assert!(
-            !events.iter().any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
+            !events
+                .iter()
+                .any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
             "Should suppress near airport"
         );
     }
@@ -738,7 +738,9 @@ mod tests {
 
         let events = engine.check(&ac);
         assert!(
-            !events.iter().any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
+            !events
+                .iter()
+                .any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
             "Slow aircraft should not trigger"
         );
     }
@@ -755,7 +757,9 @@ mod tests {
 
         let events = engine.check(&ac);
         assert!(
-            !events.iter().any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
+            !events
+                .iter()
+                .any(|e| e.event_type == EVENT_UNUSUAL_ALTITUDE),
             "High altitude should not trigger"
         );
     }

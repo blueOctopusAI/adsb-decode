@@ -47,7 +47,9 @@ fn render_page(title: &str, body: &str) -> Html<String> {
         s.push_str(title);
     }
     s.push_str("</title>\n");
-    s.push_str("<link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" />\n");
+    s.push_str(
+        "<link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" />\n",
+    );
     s.push_str("<style>\n");
     s.push_str(BASE_CSS);
     s.push_str("\n</style>\n");

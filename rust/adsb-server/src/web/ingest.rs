@@ -93,10 +93,7 @@ fn now() -> f64 {
 }
 
 /// Validate bearer token if auth is configured. Returns Err response on failure.
-fn check_auth(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<(), (StatusCode, Json<Value>)> {
+fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), (StatusCode, Json<Value>)> {
     let expected = match &state.auth_token {
         Some(t) => t,
         None => return Ok(()), // No auth configured — accept all
@@ -188,7 +185,14 @@ pub async fn api_ingest_frames(
         }
 
         let active_count = feeder.tracker.aircraft.len();
-        (accepted, decoded, positions, events_out, all_track_events, active_count)
+        (
+            accepted,
+            decoded,
+            positions,
+            events_out,
+            all_track_events,
+            active_count,
+        )
     }; // lock dropped here
 
     // Async section: persist to database (no locks held)

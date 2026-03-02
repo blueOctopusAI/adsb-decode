@@ -69,10 +69,7 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
         .route("/api/query", axum::routing::get(routes::api_query))
         .route("/api/heatmap", axum::routing::get(routes::api_heatmap))
         .route("/api/airports", axum::routing::get(routes::api_airports))
-        .route(
-            "/api/lookup/:icao",
-            axum::routing::get(routes::api_lookup),
-        )
+        .route("/api/lookup/:icao", axum::routing::get(routes::api_lookup))
         .route(
             "/api/positions/all",
             axum::routing::get(routes::api_positions_all),

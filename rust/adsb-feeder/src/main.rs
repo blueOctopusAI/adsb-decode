@@ -161,11 +161,8 @@ fn cmd_live(device: u32, gain: Option<i32>, ppm: i32, do_decode: bool) {
     let mut frame_count = 0u64;
     let mut decoded_count = 0u64;
 
-    let result = capture::demodulate_stream(
-        &mut source,
-        2_000_000,
-        &mut noise_tracker,
-        &mut |raw| {
+    let result =
+        capture::demodulate_stream(&mut source, 2_000_000, &mut noise_tracker, &mut |raw| {
             frame_count += 1;
             if do_decode {
                 let parsed = frame::parse_frame(
@@ -188,8 +185,7 @@ fn cmd_live(device: u32, gain: Option<i32>, ppm: i32, do_decode: bool) {
                     raw.timestamp, raw.hex_str, raw.signal_level
                 );
             }
-        },
-    );
+        });
 
     if let Err(e) = result {
         eprintln!("Stream error: {e}");
