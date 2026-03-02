@@ -130,13 +130,14 @@ This isn't just a radio scanner. It's an intelligence tool.
 Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 
 - **Live map** — Aircraft silhouette icons (jet/prop/turboprop/helicopter/military) with heading rotation, altitude-colored trail lines (green→yellow→red), stats overlay, altitude legend
-- **3D globe view** — CesiumJS toggle shows aircraft at real altitudes with heading-rotated billboards, altitude stalks, flight level labels, and live updates. All map styles work in both 2D and 3D.
+- **3D globe view** — CesiumJS toggle shows aircraft at real altitudes with heading-rotated billboards, altitude stalks, flight level labels, and live updates. Full feature parity with 2D: heatmap, airports, trails, and toggle states all carry over between modes.
+- **Historical aircraft** — At trail durations >= 1h, aircraft that stopped transmitting appear as faded ghost markers with computed headings. Works in both 2D and 3D.
 - **Event markers** — Toggle to overlay detected events (military, emergency, circling, etc.) as color-coded markers directly on the map
 - **Military highlight** — Toggle to add pulsing red rings behind military aircraft
-- **Trail duration slider** — 5 minutes to 24 hours. Controls trail visibility AND which aircraft appear on the map/list.
+- **Trail duration slider** — 5 minutes to 24 hours. Short windows (5m–30m) show live traffic only. Longer windows (1h+) include historical aircraft as faded markers.
 - **Aircraft detail** — Split-screen view. Left: captured trail map, events, position history. Right: external intel from hexdb.io (manufacturer, type, owner), link cards to ADSBExchange/Planespotters/FlightAware/FlightRadar24/FAA Registry/OpenSky, altitude profile chart.
-- **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links.
-- **Heatmap** — Position density visualization toggle
+- **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links. Works in both 2D (Leaflet markers) and 3D (Cesium billboards).
+- **Heatmap** — Position density visualization. 2D uses Leaflet heat layer; 3D renders colored density rectangles on the globe.
 - **Map styles** — Dark, Satellite, Topo, Streets, Dark Matter, Voyager (persisted in localStorage)
 - **Events dashboard** — Color-coded events with type filters, auto-enriched with aircraft type/owner from hexdb.io
 - **Query builder** — Preset queries (military, low altitude, fast) + custom filters with map visualization

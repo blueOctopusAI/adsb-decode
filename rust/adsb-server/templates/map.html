@@ -91,6 +91,8 @@
 .ac-popup a { color: #00aaff; }
 .leaflet-popup-content-wrapper { background: #111; color: #e0e0e0; border: 1px solid #333; }
 .leaflet-popup-tip { background: #111; }
+.ac-ghost td { opacity: 0.45; }
+.ac-ghost td a { color: #667; }
 </style>
 <div id="map"></div>
 <div id="cesium-container"></div>
@@ -439,6 +441,7 @@ function updateMap() {
                 markers[key].setLatLng([p.lat, p.lon]);
                 markers[key].setIcon(acIcon(p.heading_deg, p.is_military, acType));
                 markers[key].setPopupContent(popupHtml(p, acType));
+                markers[key].setOpacity(1.0);
             } else {
                 markers[key] = L.marker([p.lat, p.lon], {
                     icon: acIcon(p.heading_deg, p.is_military, acType),
@@ -463,6 +466,63 @@ function updateMap() {
                 <td>${hdg}</td>
             </tr>`;
         });
+
+        // Historical aircraft — only show at longer trail windows (>= 1h)
+        if (trailMinutes >= 60) Object.keys(trailData).forEach(icao => {
+            if (seen.has(icao)) return;
+            const trail = trailData[icao];
+            if (!trail || trail.length === 0) return;
+            const last = trail[trail.length - 1];
+            if (!last.lat || !last.lon) return;
+
+            seen.add(icao);
+            drawTrail(icao, trail);
+
+            // Compute heading from last two trail points
+            let heading = null;
+            if (trail.length >= 2) {
+                const prev = trail[trail.length - 2];
+                const dLon = (last.lon - prev.lon) * Math.PI / 180;
+                const lat1 = prev.lat * Math.PI / 180;
+                const lat2 = last.lat * Math.PI / 180;
+                const y = Math.sin(dLon) * Math.cos(lat2);
+                const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+                heading = ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+            }
+
+            const ghostP = { icao, lat: last.lat, lon: last.lon, altitude_ft: last.altitude_ft, speed_kts: last.speed_kts, heading_deg: heading, is_military: false };
+            const acType = classifyAircraft(ghostP);
+
+            if (markers[icao]) {
+                markers[icao].setLatLng([last.lat, last.lon]);
+                markers[icao].setIcon(acIcon(heading, false, acType));
+                markers[icao].setPopupContent(popupHtml(ghostP, acType));
+                markers[icao].setOpacity(0.35);
+            } else {
+                markers[icao] = L.marker([last.lat, last.lon], {
+                    icon: acIcon(heading, false, acType),
+                    opacity: 0.35,
+                }).addTo(map);
+                markers[icao].bindPopup(popupHtml(ghostP, acType), { maxWidth: 250 });
+            }
+
+            const minutesAgo = last.timestamp ? Math.round((Date.now() / 1000 - last.timestamp) / 60) : null;
+            const agoText = minutesAgo != null ? `${minutesAgo}m ago` : '';
+            markers[icao].bindTooltip(icao + (agoText ? ` (${agoText})` : ''), { permanent: false, direction: 'right', className: 'dark-tooltip' });
+
+            const hdg = last.heading_deg != null ? Math.round(last.heading_deg) + '\u00B0' : '-';
+            tbody.innerHTML += `<tr class="ac-ghost">
+                <td><a href="/aircraft/${icao}">${icao}</a></td>
+                <td>${agoText || '-'}</td>
+                <td>${last.altitude_ft != null ? last.altitude_ft.toLocaleString() : '-'}</td>
+                <td>${last.speed_kts ? Math.round(last.speed_kts) : '-'}</td>
+                <td>${hdg}</td>
+            </tr>`;
+        });
+
+        // Update aircraft count to include historical
+        document.getElementById('ac-count').textContent = seen.size;
+        document.getElementById('so-aircraft').textContent = seen.size;
 
         // Update military highlight rings
         if (militaryHighlightEnabled) {
@@ -535,7 +595,65 @@ function getAptFilters() {
     });
 });
 
+const aptSvgStrings = {
+    large_airport: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="8" width="12" height="2.5" rx="1" fill="#ffaa00" opacity="0.9"/><rect x="7.5" y="2" width="2.5" height="14" rx="1" fill="#ffaa00" opacity="0.9"/></svg>',
+    medium_airport: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><rect x="2" y="6" width="10" height="2" rx="1" fill="#cc8800" opacity="0.8"/><rect x="6" y="1" width="2" height="12" rx="1" fill="#cc8800" opacity="0.8"/></svg>',
+    small_airport: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3" fill="#997700" opacity="0.7"/></svg>',
+};
+aptSvgStrings.major = aptSvgStrings.large_airport;
+aptSvgStrings.medium = aptSvgStrings.medium_airport;
+aptSvgStrings.small = aptSvgStrings.small_airport;
+
+function clearCesiumAirports() {
+    cesiumAirportEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); });
+    cesiumAirportEntities = [];
+}
+
 function renderVisibleAirports() {
+    if (is3DMode) {
+        clearCesiumAirports();
+        if (!allAirports || !cesiumViewer) return;
+        const filters = getAptFilters();
+        const anyChecked = Object.values(filters).some(v => v);
+        if (!anyChecked) return;
+        allAirports.forEach(apt => {
+            if (!filters[apt.type]) return;
+            const svgStr = aptSvgStrings[apt.type] || aptSvgStrings.small_airport;
+            const typeLabel = apt.type === 'large_airport' || apt.type === 'major' ? 'Major' : apt.type === 'medium_airport' || apt.type === 'medium' ? 'Medium' : 'Small';
+            const scale = apt.type === 'large_airport' || apt.type === 'major' ? 0.9 : apt.type === 'medium_airport' || apt.type === 'medium' ? 0.7 : 0.5;
+            const entity = cesiumViewer.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(apt.lon, apt.lat, 0),
+                billboard: {
+                    image: 'data:image/svg+xml,' + encodeURIComponent(svgStr),
+                    scale: scale,
+                    verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+                label: {
+                    text: apt.icao,
+                    font: '10px monospace',
+                    fillColor: Cesium.Color.fromCssColorString('#ffaa00'),
+                    outlineColor: Cesium.Color.BLACK,
+                    outlineWidth: 2,
+                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                    pixelOffset: new Cesium.Cartesian2(0, -14),
+                    scale: 0.8,
+                    distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 200000),
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+                description: `<div style="font:12px monospace;">
+                    <b style="color:#ffaa00;">${apt.icao}</b><br>
+                    ${apt.name}<br>Type: ${typeLabel}<br>
+                    Elev: ${apt.elevation_ft.toLocaleString()} ft
+                </div>`,
+            });
+            cesiumAirportEntities.push(entity);
+        });
+        cesiumViewer.scene.requestRender();
+        return;
+    }
+
     airportLayer.clearLayers();
     if (!allAirports) return;
     const filters = getAptFilters();
@@ -578,12 +696,17 @@ const heatDurSlider = document.getElementById('heatmap-dur-slider');
 const heatDurLabel = document.getElementById('heatmap-dur-label');
 const heatDurRow = document.getElementById('heatmap-dur-row');
 
+function clearCesiumHeatmap() {
+    cesiumHeatmapEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); });
+    cesiumHeatmapEntities = [];
+}
+
 document.getElementById('heatmap-toggle').addEventListener('change', function() {
     heatmapEnabled = this.checked;
     heatDurRow.style.display = heatmapEnabled ? '' : 'none';
-    if (!heatmapEnabled && heatLayer) {
-        map.removeLayer(heatLayer);
-        heatLayer = null;
+    if (!heatmapEnabled) {
+        if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+        clearCesiumHeatmap();
     }
     if (heatmapEnabled) updateHeatmap();
 });
@@ -596,8 +719,48 @@ heatDurSlider.addEventListener('input', function() {
     updateHeatmap();
 });
 
+function heatColor3D(t) {
+    if (t < 0.15) return new Cesium.Color(0.0, 0.2, 0.67, 0.4);
+    if (t < 0.3) return new Cesium.Color(0.0, 0.53, 1.0, 0.45);
+    if (t < 0.5) return new Cesium.Color(0.0, 1.0, 0.53, 0.5);
+    if (t < 0.7) return new Cesium.Color(1.0, 1.0, 0.0, 0.55);
+    if (t < 0.85) return new Cesium.Color(1.0, 0.53, 0.0, 0.6);
+    return new Cesium.Color(1.0, 0.0, 0.0, 0.65);
+}
+
 function updateHeatmap() {
     if (!heatmapEnabled) return;
+
+    if (is3DMode && cesiumViewer) {
+        const camHeight = cesiumViewer.camera.positionCartographic.height;
+        const resolution = camHeight > 200000 ? 0.05 : camHeight > 50000 ? 0.02 : camHeight > 20000 ? 0.01 : 0.005;
+        fetch('/api/heatmap?minutes=' + heatMinutes + '&resolution=' + resolution)
+            .then(r => r.json())
+            .then(data => {
+                clearCesiumHeatmap();
+                if (data.length === 0) return;
+                const maxCount = Math.max(...data.map(c => c.count));
+                const halfRes = resolution / 2;
+                data.forEach(c => {
+                    const norm = Math.max(0.1, c.count / maxCount);
+                    const entity = cesiumViewer.entities.add({
+                        rectangle: {
+                            coordinates: Cesium.Rectangle.fromDegrees(
+                                c.lon - halfRes, c.lat - halfRes,
+                                c.lon + halfRes, c.lat + halfRes
+                            ),
+                            material: heatColor3D(norm),
+                            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                        },
+                    });
+                    cesiumHeatmapEntities.push(entity);
+                });
+                cesiumViewer.scene.requestRender();
+            })
+            .catch(e => { console.error('3D heatmap update failed:', e); });
+        return;
+    }
+
     const zoom = map.getZoom();
     const resolution = zoom >= 12 ? 0.005 : zoom >= 10 ? 0.01 : zoom >= 8 ? 0.02 : 0.05;
     fetch('/api/heatmap?minutes=' + heatMinutes + '&resolution=' + resolution)
@@ -1100,6 +1263,8 @@ async function initCesiumViewer() {
 
 let cesiumLiveInterval = null;
 const cesiumEntities = {};
+let cesiumHeatmapEntities = [];
+let cesiumAirportEntities = [];
 
 async function activate3D() {
     is3DMode = true;
@@ -1138,6 +1303,10 @@ async function activate3D() {
     // Initial load + start polling
     updateCesium3D();
     cesiumLiveInterval = setInterval(updateCesium3D, 2000);
+
+    // Sync toggle state — render features already enabled in 2D
+    if (heatmapEnabled) updateHeatmap();
+    if (allAirports && getAptFilters && Object.values(getAptFilters()).some(v => v)) renderVisibleAirports();
 }
 
 function updateCesium3D() {
@@ -1188,7 +1357,7 @@ function updateCesium3D() {
                         distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 500000),
                         disableDepthTestDistance: Number.POSITIVE_INFINITY,
                     },
-                    polyline: trailPositions.length > 1 ? {
+                    polyline: (trailsEnabled && trailPositions.length > 1) ? {
                         positions: trailPositions,
                         width: 2,
                         material: new Cesium.ColorMaterialProperty(
@@ -1231,7 +1400,7 @@ function updateCesium3D() {
                 entity.label.text = (p.callsign || key) + (p.altitude_ft != null ? '\n' + Math.round(p.altitude_ft / 100) : '');
 
                 // Update trail
-                if (trail.length > 0) {
+                if (trailsEnabled && trail.length > 0) {
                     const trailPositions = trail.map(t =>
                         Cesium.Cartesian3.fromDegrees(t.lon, t.lat, (t.altitude_ft || 0) * 0.3048)
                     );
@@ -1248,6 +1417,8 @@ function updateCesium3D() {
                             clampToGround: false,
                         });
                     }
+                } else if (!trailsEnabled && entity.polyline) {
+                    entity.polyline = undefined;
                 }
 
                 // Update altitude stalk
@@ -1258,6 +1429,90 @@ function updateCesium3D() {
                         Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM),
                     ];
                 }
+            }
+        });
+
+        // Historical aircraft in 3D — only show at longer trail windows (>= 1h)
+        if (trailMinutes >= 60) Object.keys(trailData).forEach(icao => {
+            if (seen.has(icao)) return;
+            const trail = trailData[icao];
+            if (!trail || trail.length === 0) return;
+            const last = trail[trail.length - 1];
+            if (!last.lat || !last.lon) return;
+
+            seen.add(icao);
+            const altM = (last.altitude_ft || 0) * 0.3048;
+            const acType = classifyAircraft({ speed_kts: last.speed_kts, altitude_ft: last.altitude_ft });
+            const color = altColor(last.altitude_ft);
+            const rgba = altColorRGBA(last.altitude_ft);
+
+            // Compute heading from last two trail points
+            let ghostHeading = null;
+            if (trail.length >= 2) {
+                const prev = trail[trail.length - 2];
+                const dLon = (last.lon - prev.lon) * Math.PI / 180;
+                const lat1 = prev.lat * Math.PI / 180;
+                const lat2 = last.lat * Math.PI / 180;
+                const y = Math.sin(dLon) * Math.cos(lat2);
+                const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+                ghostHeading = ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+            }
+            const trailPositions = trail.map(t =>
+                Cesium.Cartesian3.fromDegrees(t.lon, t.lat, (t.altitude_ft || 0) * 0.3048)
+            );
+
+            if (!cesiumEntities[icao]) {
+                const entity = cesiumViewer.entities.add({
+                    id: icao,
+                    name: icao,
+                    position: Cesium.Cartesian3.fromDegrees(last.lon, last.lat, altM),
+                    billboard: {
+                        image: acBillboardUri(acType, color, ghostHeading),
+                        scale: 0.6,
+                        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                        heightReference: Cesium.HeightReference.NONE,
+                        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                        color: new Cesium.Color(1, 1, 1, 0.35),
+                    },
+                    label: {
+                        text: icao + (last.altitude_ft != null ? '\n' + Math.round(last.altitude_ft / 100) : ''),
+                        font: '11px monospace',
+                        fillColor: new Cesium.Color(0.88, 0.88, 0.88, 0.4),
+                        outlineColor: Cesium.Color.BLACK,
+                        outlineWidth: 2,
+                        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                        pixelOffset: new Cesium.Cartesian2(14, -14),
+                        scale: 0.9,
+                        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 500000),
+                        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                    },
+                    polyline: (trailsEnabled && trailPositions.length > 1) ? {
+                        positions: trailPositions,
+                        width: 2,
+                        material: new Cesium.ColorMaterialProperty(
+                            Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 100)
+                        ),
+                        clampToGround: false,
+                    } : undefined,
+                });
+
+                if (altM > 100) {
+                    cesiumViewer.entities.add({
+                        id: icao + '_stalk',
+                        polyline: {
+                            positions: [
+                                Cesium.Cartesian3.fromDegrees(last.lon, last.lat, 0),
+                                Cesium.Cartesian3.fromDegrees(last.lon, last.lat, altM),
+                            ],
+                            width: 1,
+                            material: new Cesium.ColorMaterialProperty(
+                                Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 30)
+                            ),
+                        },
+                    });
+                }
+
+                cesiumEntities[icao] = entity;
             }
         });
 
@@ -1278,11 +1533,16 @@ function updateCesium3D() {
 function deactivate3D() {
     is3DMode = false;
     if (cesiumLiveInterval) { clearInterval(cesiumLiveInterval); cesiumLiveInterval = null; }
-    // Clean up entities
+    // Clean up all entities
+    cesiumHeatmapEntities = [];
+    cesiumAirportEntities = [];
     if (cesiumViewer) {
         cesiumViewer.entities.removeAll();
         Object.keys(cesiumEntities).forEach(k => delete cesiumEntities[k]);
     }
+    // Re-render 2D features that were active
+    if (heatmapEnabled) updateHeatmap();
+    if (allAirports && Object.values(getAptFilters()).some(v => v)) renderVisibleAirports();
     document.getElementById('cesium-container').style.display = 'none';
     document.getElementById('map').style.display = 'block';
     document.getElementById('alt-legend').style.display = '';

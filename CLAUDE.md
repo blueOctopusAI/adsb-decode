@@ -153,10 +153,12 @@ Key SQL patterns:
 - Aircraft enrichment: speed/altitude classification, 26 airline prefixes, 3,642 embedded airports
 - Web dashboard with 8 pages (map, table, detail, events, query, replay, receivers, stats) — all polished with filters, sorting, empty states, auto-refresh
 - 3D globe view: CesiumJS toggle on map page — aircraft at real altitudes with heading-rotated SVG billboards, altitude stalks, flight level labels, live 2s polling. Map style switching works in both 2D and 3D. Satellite tiles via ArcGIS, all others via UrlTemplateImageryProvider.
+- Historical aircraft: faded ghost markers for aircraft no longer transmitting but active within the trail window. Computed headings from trail geometry. Only shows at trail durations >= 1h to keep short windows as pure live mode. Works in both 2D and 3D.
+- Feature parity between 2D and 3D: heatmap renders as colored density rectangles on globe, airports render as billboard entities with labels, trail toggle respected in 3D, toggle states sync when switching modes.
 - Event markers on map: toggle to overlay filter events (military, emergency, circling, etc.) as color-coded circle markers with tooltips and popups
 - Military highlight layer: toggle to add pulsing red rings behind military aircraft
 - Auto-enriched events: hexdb.io lookup on FilterEngine events — appends aircraft type, owner, registration to event descriptions. Cached per ICAO, fire-and-forget via tokio::spawn.
-- Heatmap: server-side grid aggregation, zoom-aware resolution, time window slider (15m–7d), normalized density
+- Heatmap: server-side grid aggregation, zoom-aware resolution, time window slider (15m–7d), normalized density. Works in both 2D (Leaflet heat layer) and 3D (Cesium rectangle entities with gradient colors).
 - Table: search box, military/live/country filters, sortable columns, 500-row cap with pagination hint
 - Dual-path positions: live tracker serves from memory; DB fallback when no tracker attached
 - Multi-receiver ingest API with bearer token auth, heartbeat, and DB persistence
