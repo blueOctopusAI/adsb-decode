@@ -397,6 +397,31 @@ pub async fn api_geofences_delete(
 }
 
 // ---------------------------------------------------------------------------
+// HexDB lookup
+// ---------------------------------------------------------------------------
+
+/// GET /api/lookup/:icao — proxy lookup to hexdb.io for aircraft metadata.
+pub async fn api_lookup(Path(icao): Path<String>) -> impl IntoResponse {
+    let icao_upper = icao.to_ascii_uppercase();
+    let url = format!("https://hexdb.io/hex-{icao_upper}-v2.json");
+
+    let client = reqwest::Client::new();
+    let result = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) => match resp.json::<Value>().await {
+            Ok(data) => Json(data).into_response(),
+            Err(_) => Json(json!({"error": "lookup failed"})).into_response(),
+        },
+        Err(_) => Json(json!({"error": "lookup failed"})).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

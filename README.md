@@ -130,12 +130,15 @@ This isn't just a radio scanner. It's an intelligence tool.
 Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 
 - **Live map** — Aircraft silhouette icons (jet/prop/turboprop/helicopter/military) with heading rotation, altitude-colored trail lines (green→yellow→red), stats overlay, altitude legend
+- **3D globe view** — CesiumJS toggle shows aircraft at real altitudes with heading-rotated billboards, altitude stalks, flight level labels, and live updates. All map styles work in both 2D and 3D.
+- **Event markers** — Toggle to overlay detected events (military, emergency, circling, etc.) as color-coded markers directly on the map
+- **Military highlight** — Toggle to add pulsing red rings behind military aircraft
 - **Trail duration slider** — 5 minutes to 24 hours. Controls trail visibility AND which aircraft appear on the map/list.
 - **Aircraft detail** — Split-screen view. Left: captured trail map, events, position history. Right: external intel from hexdb.io (manufacturer, type, owner), link cards to ADSBExchange/Planespotters/FlightAware/FlightRadar24/FAA Registry/OpenSky, altitude profile chart.
 - **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links.
 - **Heatmap** — Position density visualization toggle
 - **Map styles** — Dark, Satellite, Topo, Streets, Dark Matter, Voyager (persisted in localStorage)
-- **Events dashboard** — Color-coded events with type filters
+- **Events dashboard** — Color-coded events with type filters, auto-enriched with aircraft type/owner from hexdb.io
 - **Query builder** — Preset queries (military, low altitude, fast) + custom filters with map visualization
 - **Historical replay** — Time slider with play/pause, adjustable speed (1x–10min)
 - **Receiver management** — Connected feeders with coverage circles
@@ -238,7 +241,6 @@ src/
 
 ## Future
 
-- **Native IQ demodulation in Rust** — The `demod.rs` module exists with magnitude LUT, preamble detection, and PPM bit recovery. Currently live capture uses `rtl_adsb` subprocess for hex frame input. Wiring the native demod into the live capture path would eliminate the external dependency.
 - **TimescaleDB production backend** — Implemented behind a feature flag (`db_pg.rs`). Includes hypertables, compression policies, retention policies, and continuous aggregates. Requires a PostgreSQL instance to activate.
 - **Cross-compiled Pi binaries** — GitHub Actions CI configured for aarch64 (Pi 4/5) and armv7 (Pi 3) targets via `cross`. Release binaries not yet published.
 

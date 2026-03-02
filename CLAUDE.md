@@ -50,13 +50,13 @@ rust/
 │
 ├── adsb-server/              # Binary: web server + CLI + database
 │   ├── src/
-│   │   ├── main.rs           # CLI: decode, track (--live --port), stats, history, export, serve, setup
+│   │   ├── main.rs           # CLI: decode, track (--live --port), stats, history, export, serve, setup + hexdb enrichment cache
 │   │   ├── db.rs             # SQLite (6 tables, WAL, retention, downsample, phantom pruning)
 │   │   ├── db_pg.rs          # TimescaleDB (feature-gated, not currently in use)
 │   │   ├── notification.rs   # Webhook notifications (fire-and-forget POST JSON)
 │   │   └── web/
 │   │       ├── mod.rs        # Axum app builder, AppState, CORS, bearer token auth
-│   │       ├── routes.rs     # REST API endpoints
+│   │       ├── routes.rs     # REST API endpoints + hexdb.io lookup proxy
 │   │       ├── pages.rs      # HTML page handlers
 │   │       └── ingest.rs     # Multi-receiver ingest + heartbeat + DB persistence
 │   └── templates/            # 8 HTML pages with Leaflet.js maps
@@ -152,6 +152,10 @@ Key SQL patterns:
 - Webhook notifications for filter events (fire-and-forget POST JSON)
 - Aircraft enrichment: speed/altitude classification, 26 airline prefixes, 3,642 embedded airports
 - Web dashboard with 8 pages (map, table, detail, events, query, replay, receivers, stats) — all polished with filters, sorting, empty states, auto-refresh
+- 3D globe view: CesiumJS toggle on map page — aircraft at real altitudes with heading-rotated SVG billboards, altitude stalks, flight level labels, live 2s polling. Map style switching works in both 2D and 3D. Satellite tiles via ArcGIS, all others via UrlTemplateImageryProvider.
+- Event markers on map: toggle to overlay filter events (military, emergency, circling, etc.) as color-coded circle markers with tooltips and popups
+- Military highlight layer: toggle to add pulsing red rings behind military aircraft
+- Auto-enriched events: hexdb.io lookup on FilterEngine events — appends aircraft type, owner, registration to event descriptions. Cached per ICAO, fire-and-forget via tokio::spawn.
 - Heatmap: server-side grid aggregation, zoom-aware resolution, time window slider (15m–7d), normalized density
 - Table: search box, military/live/country filters, sortable columns, 500-row cap with pagination hint
 - Dual-path positions: live tracker serves from memory; DB fallback when no tracker attached
@@ -160,6 +164,7 @@ Key SQL patterns:
 - Configurable data retention: `--retention-hours`, `--downsample-hours`, `--downsample-interval`
 - CLI: decode, track, stats, history, export, serve, setup
 - CRC error correction: 1-2 bit errors via syndrome table lookup
+- `/api/lookup/:icao` route — proxies hexdb.io for aircraft registration, type, owner data (used by detail page and event enrichment)
 - 223 Rust tests + 394 Python tests
 - Sample config: `config.example.yaml`
 

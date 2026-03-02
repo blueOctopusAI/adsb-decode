@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Table};
 
+use std::sync::{Arc, Mutex};
+
 use adsb_core::cpr;
 use adsb_core::decode;
 use adsb_core::filter::{FilterEngine, FilterEvent, Geofence};
@@ -15,6 +17,9 @@ use adsb_core::frame::{self, IcaoCache};
 use adsb_core::icao;
 use adsb_core::tracker::Tracker;
 use adsb_core::types::*;
+
+/// Cache for hexdb.io lookups: ICAO hex string -> enrichment summary (None = lookup attempted but failed).
+type HexDbCache = Arc<Mutex<HashMap<String, Option<String>>>>;
 
 mod db;
 #[cfg(feature = "timescaledb")]
@@ -279,16 +284,70 @@ struct LiveTrackOpts {
     downsample_interval: u32,
 }
 
-/// Store FilterEvents into the database.
-fn store_filter_events(
+/// Look up aircraft metadata from hexdb.io by ICAO hex address.
+///
+/// Returns a formatted string like "Boeing 737-800, United Airlines" on success,
+/// or None on any error (timeout, network, missing fields).
+async fn lookup_hexdb(icao: &str) -> Option<String> {
+    let url = format!("https://hexdb.io/hex-{icao}-v2.json");
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    let data: serde_json::Value = resp.json().await.ok()?;
+    let aircraft_type = data["type"].as_str().unwrap_or("").trim();
+    let owner = data["owner"].as_str().unwrap_or("").trim();
+    if aircraft_type.is_empty() && owner.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = [aircraft_type, owner]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect();
+    Some(parts.join(", "))
+}
+
+/// Store FilterEvents into the database with hexdb enrichment.
+///
+/// Checks the hexdb cache for each event's ICAO. If enrichment data is available,
+/// appends it to the event description (e.g., " — Boeing 737-800, United Airlines").
+/// Also spawns async lookups for any uncached ICAOs.
+fn store_filter_events_enriched(
     database: &mut db::Database,
     events: &[FilterEvent],
+    cache: &HexDbCache,
 ) {
+    // Spawn lookups for uncached ICAOs (fire-and-forget)
     for event in events {
+        let icao_str = icao_to_string(&event.icao);
+        let cached = cache.lock().unwrap().contains_key(&icao_str);
+        if !cached {
+            let cache = cache.clone();
+            let icao = icao_str.clone();
+            tokio::task::spawn(async move {
+                let result = lookup_hexdb(&icao).await;
+                cache.lock().unwrap().insert(icao, result);
+            });
+        }
+    }
+
+    // Store events, enriching descriptions from cache when available
+    let cache_guard = cache.lock().unwrap();
+    for event in events {
+        let icao_str = icao_to_string(&event.icao);
+        let desc = if let Some(Some(info)) = cache_guard.get(&icao_str) {
+            format!("{} — {}", event.description, info)
+        } else {
+            event.description.clone()
+        };
         database.add_event(
             &event.icao,
             event.event_type,
-            &event.description,
+            &desc,
             event.lat,
             event.lon,
             event.altitude_ft,
@@ -621,6 +680,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
         opts.min_interval,
     )));
     let filter_engine = Arc::new(Mutex::new(FilterEngine::new()));
+    let hexdb_cache: HexDbCache = Arc::new(Mutex::new(HashMap::new()));
 
     // Set up webhook dispatcher
     let webhook = opts
@@ -733,6 +793,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
     let loop_webhook = webhook.clone();
     let loop_state = app_state.clone();
     let loop_shutdown = shutdown_flag.clone();
+    let loop_hexdb = hexdb_cache.clone();
 
     let reader_handle = tokio::task::spawn_blocking(move || {
         let reader = io::BufReader::new(stdout);
@@ -790,7 +851,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
                     let filter_events = fe.check(ac);
                     if !filter_events.is_empty() {
                         let mut db = loop_db.lock().unwrap();
-                        store_filter_events(&mut db, &filter_events);
+                        store_filter_events_enriched(&mut db, &filter_events, &loop_hexdb);
                         // Fire webhook notifications
                         if let Some(ref wh) = loop_webhook {
                             for evt in &filter_events {
@@ -822,7 +883,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
                     let prox_events = fe.check_proximity(&active_refs);
                     if !prox_events.is_empty() {
                         let mut db = loop_db.lock().unwrap();
-                        store_filter_events(&mut db, &prox_events);
+                        store_filter_events_enriched(&mut db, &prox_events, &loop_hexdb);
                         if let Some(ref wh) = loop_webhook {
                             for evt in &prox_events {
                                 wh.notify(evt);
@@ -906,6 +967,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
         opts.min_interval,
     )));
     let filter_engine = Arc::new(Mutex::new(FilterEngine::new()));
+    let hexdb_cache: HexDbCache = Arc::new(Mutex::new(HashMap::new()));
 
     let webhook = opts
         .webhook
@@ -1017,6 +1079,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
     let loop_webhook = webhook.clone();
     let loop_state = app_state.clone();
     let loop_shutdown = shutdown_flag.clone();
+    let loop_hexdb = hexdb_cache.clone();
 
     let reader_handle = tokio::task::spawn_blocking(move || {
         let mut icao_cache = IcaoCache::new(60.0);
@@ -1067,7 +1130,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
                         let filter_events = fe.check(ac);
                         if !filter_events.is_empty() {
                             let mut db = loop_db.lock().unwrap();
-                            store_filter_events(&mut db, &filter_events);
+                            store_filter_events_enriched(&mut db, &filter_events, &loop_hexdb);
                             if let Some(ref wh) = loop_webhook {
                                 for evt in &filter_events {
                                     wh.notify(evt);
@@ -1096,7 +1159,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
                         let prox_events = fe.check_proximity(&active_refs);
                         if !prox_events.is_empty() {
                             let mut db = loop_db.lock().unwrap();
-                            store_filter_events(&mut db, &prox_events);
+                            store_filter_events_enriched(&mut db, &prox_events, &loop_hexdb);
                             if let Some(ref wh) = loop_webhook {
                                 for evt in &prox_events {
                                     wh.notify(evt);
@@ -1186,6 +1249,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
         opts.min_interval,
     )));
     let filter_engine = Arc::new(Mutex::new(FilterEngine::new()));
+    let hexdb_cache: HexDbCache = Arc::new(Mutex::new(HashMap::new()));
 
     let webhook = opts
         .webhook
@@ -1293,6 +1357,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
     let loop_webhook = webhook.clone();
     let loop_state = app_state.clone();
     let loop_shutdown = shutdown_flag.clone();
+    let loop_hexdb = hexdb_cache.clone();
 
     let reader_handle = tokio::task::spawn_blocking(move || {
         let mut icao_cache = IcaoCache::new(60.0);
@@ -1342,7 +1407,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
                         let filter_events = fe.check(ac);
                         if !filter_events.is_empty() {
                             let mut db = loop_db.lock().unwrap();
-                            store_filter_events(&mut db, &filter_events);
+                            store_filter_events_enriched(&mut db, &filter_events, &loop_hexdb);
                             if let Some(ref wh) = loop_webhook {
                                 for evt in &filter_events {
                                     wh.notify(evt);
@@ -1371,7 +1436,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
                         let prox_events = fe.check_proximity(&active_refs);
                         if !prox_events.is_empty() {
                             let mut db = loop_db.lock().unwrap();
-                            store_filter_events(&mut db, &prox_events);
+                            store_filter_events_enriched(&mut db, &prox_events, &loop_hexdb);
                             if let Some(ref wh) = loop_webhook {
                                 for evt in &prox_events {
                                     wh.notify(evt);

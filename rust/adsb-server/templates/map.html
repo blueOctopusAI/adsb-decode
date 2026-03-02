@@ -78,6 +78,10 @@
     line-height: 1;
 }
 
+#cesium-container { width: 100%; height: calc(100vh - 41px); display: none; }
+.cesium-viewer .cesium-widget-credits { display: none !important; }
+.cesium-viewer .cesium-infoBox { left: 12px; right: auto; }
+
 .ac-popup { font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.5; }
 .ac-popup .popup-title { color: #00ff88; font-weight: bold; font-size: 14px; margin-bottom: 4px; }
 .ac-popup .popup-row { display: flex; justify-content: space-between; gap: 12px; }
@@ -89,6 +93,7 @@
 .leaflet-popup-tip { background: #111; }
 </style>
 <div id="map"></div>
+<div id="cesium-container"></div>
 <div id="control-panel">
     <div id="panel-header">
         <div class="stat-row">
@@ -129,7 +134,11 @@
                 <button id="add-geofence-btn" style="font-size:10px;padding:2px 6px;background:#222;color:#00ff88;border:1px solid #444;border-radius:3px;cursor:pointer;" title="Click map to place geofence">+ Fence</button>
             </div>
             <div id="geofence-list" style="margin-top:4px;font-size:10px;color:#888;max-height:60px;overflow-y:auto;"></div>
-            <div style="margin-top:6px;">
+            <div style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;">
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="events-toggle"> Events</label>
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="military-highlight"> Military</label>
+            </div>
+            <div style="margin-top:6px;display:flex;align-items:center;">
                 <span style="font-size:10px;color:#888;text-transform:uppercase;">Map:</span>
                 <select id="map-style" style="font-size:11px;background:#222;color:#ccc;border:1px solid #444;border-radius:3px;padding:1px 4px;margin-left:4px;">
                     <option value="dark">Dark</option>
@@ -139,6 +148,7 @@
                     <option value="dark-matter">Dark Matter</option>
                     <option value="voyager">Voyager</option>
                 </select>
+                <button id="mode-3d-btn" style="font-size:10px;padding:2px 6px;background:#222;color:#00aaff;border:1px solid #444;border-radius:3px;cursor:pointer;margin-left:auto;" title="Switch to 3D globe view">3D</button>
             </div>
         </div>
         <div id="ac-list-section">
@@ -194,12 +204,46 @@ const mapThemes = {
     voyager:      { bg: 'light', civilian: '#007744', military: '#cc0000', trailWeight: 3,   trailMinOpacity: 0.5, outline: '#fff', outlineWidth: 0.8 },
 };
 let activeTheme = mapThemes['dark'];
+const cesiumTiles = {
+    'dark':        { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', subs: ['a','b','c','d'], max: 19 },
+    'satellite':   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', subs: undefined, max: 19 },
+    'topo':        { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', subs: ['a','b','c'], max: 17 },
+    'streets':     { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', subs: ['a','b','c'], max: 19 },
+    'dark-matter': { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png', subs: ['a','b','c','d'], max: 19 },
+    'voyager':     { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', subs: ['a','b','c','d'], max: 19 },
+};
+
+async function setCesiumMapStyle(style) {
+    if (!cesiumViewer) return;
+    try {
+        cesiumViewer.imageryLayers.removeAll();
+        let imagery;
+        if (style === 'satellite') {
+            imagery = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
+                'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+            );
+        } else {
+            const ct = cesiumTiles[style] || cesiumTiles['dark'];
+            imagery = new Cesium.UrlTemplateImageryProvider({
+                url: ct.url,
+                subdomains: ct.subs,
+                maximumLevel: ct.max,
+            });
+        }
+        cesiumViewer.imageryLayers.addImageryProvider(imagery);
+        const isDark = (mapThemes[style] || mapThemes['dark']).bg === 'dark';
+        cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString(isDark ? '#0a0a0a' : '#d0d8e0');
+        cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString(isDark ? '#0a0a0a' : '#d0d8e0');
+    } catch(e) { console.error('Cesium tile switch failed:', e); }
+}
+
 function setMapStyle(style) {
     const ts = tileSets[style] || tileSets['dark'];
     if (currentTileLayer) map.removeLayer(currentTileLayer);
     currentTileLayer = L.tileLayer(ts.url, { attribution: ts.attr, maxZoom: ts.maxZoom }).addTo(map);
     document.getElementById('map-style').value = style;
     activeTheme = mapThemes[style] || mapThemes['dark'];
+    if (is3DMode) setCesiumMapStyle(style);
     const bar = document.querySelector('#alt-legend .legend-bar');
     if (bar) {
         if (activeTheme.bg === 'light') {
@@ -209,6 +253,7 @@ function setMapStyle(style) {
         }
     }
 }
+let is3DMode = false;
 setMapStyle('dark');
 
 const markers = {};
@@ -419,6 +464,23 @@ function updateMap() {
             </tr>`;
         });
 
+        // Update military highlight rings
+        if (militaryHighlightEnabled) {
+            posData.forEach(p => {
+                const key = p.icao;
+                if (p.is_military && p.lat && p.lon) {
+                    if (!militaryRings[key]) {
+                        militaryRings[key] = L.circleMarker([p.lat, p.lon], {
+                            radius: 18, color: '#ff4444', fillColor: '#ff4444',
+                            fillOpacity: 0.12, weight: 2, dashArray: '4,4',
+                        }).addTo(militaryLayer);
+                    } else {
+                        militaryRings[key].setLatLng([p.lat, p.lon]);
+                    }
+                }
+            });
+        }
+
         Object.keys(markers).forEach(key => {
             if (!seen.has(key)) {
                 map.removeLayer(markers[key]);
@@ -426,6 +488,10 @@ function updateMap() {
                 if (trailLines[key]) {
                     trailLines[key].forEach(seg => map.removeLayer(seg));
                     delete trailLines[key];
+                }
+                if (militaryRings[key]) {
+                    militaryLayer.removeLayer(militaryRings[key]);
+                    delete militaryRings[key];
                 }
             }
         });
@@ -590,6 +656,8 @@ function saveState() {
         aptSmall: document.getElementById('apt-small').checked,
         notify: document.getElementById('notify-toggle').checked,
         audio: document.getElementById('audio-toggle').checked,
+        events: document.getElementById('events-toggle').checked,
+        milHighlight: document.getElementById('military-highlight').checked,
         mapStyle: document.getElementById('map-style').value,
         zoom: map.getZoom(),
         center: [map.getCenter().lat, map.getCenter().lng],
@@ -624,6 +692,14 @@ function restoreState() {
             document.getElementById('notify-toggle').checked = true; notificationsEnabled = true;
         }
         if (s.audio) { document.getElementById('audio-toggle').checked = true; audioEnabled = true; }
+        if (s.events) {
+            document.getElementById('events-toggle').checked = true;
+            eventsEnabled = true; eventsLayer.addTo(map);
+        }
+        if (s.milHighlight) {
+            document.getElementById('military-highlight').checked = true;
+            militaryHighlightEnabled = true; militaryLayer.addTo(map);
+        }
         if (s.mapStyle && tileSets[s.mapStyle]) setMapStyle(s.mapStyle);
         if (s.center && s.zoom) { map.setView(s.center, s.zoom); mapCentered = true; }
         if (s.aptLarge || s.aptMedium || s.aptSmall) {
@@ -638,7 +714,7 @@ function restoreState() {
     } catch(e) {}
 }
 map.on('moveend', saveState);
-['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small', 'notify-toggle', 'audio-toggle'].forEach(id => {
+['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small', 'notify-toggle', 'audio-toggle', 'events-toggle', 'military-highlight'].forEach(id => {
     document.getElementById(id).addEventListener('change', saveState);
 });
 document.getElementById('map-style').addEventListener('change', function() {
@@ -787,6 +863,460 @@ function pollEvents() {
 // Load geofences on startup
 refreshGeofenceList();
 
+// --- Event markers layer ---
+let eventsLayer = L.layerGroup();
+let eventsEnabled = false;
+let maxEventId = 0;
+
+const eventColors = {
+    military_detected: '#ff6600',
+    emergency_squawk: '#ff0000',
+    rapid_descent: '#ff4444',
+    circling: '#4488ff',
+    geofence_entry: '#aa44ff',
+    proximity: '#ff44aa',
+    low_altitude: '#ffaa00',
+};
+
+document.getElementById('events-toggle').addEventListener('change', function() {
+    eventsEnabled = this.checked;
+    if (eventsEnabled) {
+        eventsLayer.addTo(map);
+        maxEventId = 0;
+        fetchEventMarkers();
+    } else {
+        eventsLayer.clearLayers();
+        map.removeLayer(eventsLayer);
+        maxEventId = 0;
+    }
+    saveState();
+});
+
+function fetchEventMarkers() {
+    if (!eventsEnabled) return;
+    fetch('/api/events?limit=200').then(r => r.json()).then(data => {
+        if (!data || data.length === 0) return;
+        data.forEach(evt => {
+            if (evt.lat == null || evt.lon == null) return;
+            if (maxEventId > 0 && evt.id <= maxEventId) return;
+            const color = eventColors[evt.event_type] || '#888888';
+            const time = evt.timestamp ? new Date(evt.timestamp * 1000).toLocaleTimeString() : '';
+            const typeName = (evt.event_type || '').replace(/_/g, ' ');
+            const marker = L.circleMarker([evt.lat, evt.lon], {
+                radius: 7, color: color, fillColor: color,
+                fillOpacity: 0.6, weight: 1.5,
+            }).addTo(eventsLayer);
+            marker.bindTooltip(`${typeName} — ${time}`, { direction: 'right', className: 'dark-tooltip' });
+            marker.bindPopup(`<div class="ac-popup">
+                <div class="popup-title" style="color:${color};">${typeName}</div>
+                <div class="popup-row"><span class="popup-label">ICAO</span><span class="popup-value"><a href="/aircraft/${evt.icao}">${evt.icao}</a></span></div>
+                <div class="popup-row"><span class="popup-label">Description</span><span class="popup-value" style="max-width:180px;white-space:normal;">${evt.description || ''}</span></div>
+                <div class="popup-row"><span class="popup-label">Time</span><span class="popup-value">${time}</span></div>
+                ${evt.altitude_ft != null ? `<div class="popup-row"><span class="popup-label">Altitude</span><span class="popup-value">${evt.altitude_ft.toLocaleString()} ft</span></div>` : ''}
+                <div style="margin-top:6px;"><a href="/aircraft/${evt.icao}">Detail &rarr;</a></div>
+            </div>`, { maxWidth: 300 });
+        });
+        if (data.length > 0) {
+            const ids = data.filter(e => e.id != null).map(e => e.id);
+            if (ids.length > 0) maxEventId = Math.max(...ids);
+        }
+    }).catch(() => {});
+}
+
+// --- Military highlight layer ---
+let militaryLayer = L.layerGroup();
+let militaryHighlightEnabled = false;
+const militaryRings = {};
+
+document.getElementById('military-highlight').addEventListener('change', function() {
+    militaryHighlightEnabled = this.checked;
+    if (militaryHighlightEnabled) {
+        militaryLayer.addTo(map);
+    } else {
+        militaryLayer.clearLayers();
+        map.removeLayer(militaryLayer);
+        Object.keys(militaryRings).forEach(k => delete militaryRings[k]);
+    }
+    saveState();
+});
+
+// --- 3D CesiumJS globe ---
+let cesiumViewer = null;
+let cesiumLoaded = false;
+
+function acBillboardUri(type, color, heading) {
+    const svg = (acSvgs[type] || acSvgs.jet)(color);
+    const rot = heading != null ? heading : 0;
+    return 'data:image/svg+xml,' + encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"><g transform="rotate(${rot} 12 12)">${svg}</g></svg>`
+    );
+}
+
+function altColorRGBA(alt) {
+    if (alt == null) return [136, 136, 136, 255];
+    const t = Math.min(Math.max(alt / 40000, 0), 1);
+    if (t < 0.5) {
+        const s = t * 2;
+        return [Math.round(s * 255), 255, 0, 255];
+    } else {
+        const s = (t - 0.5) * 2;
+        return [255, Math.round((1 - s) * 255), 0, 255];
+    }
+}
+
+function buildCZML(positions) {
+    const byIcao = {};
+    positions.forEach(p => {
+        if (p.lat == null || p.lon == null) return;
+        if (!byIcao[p.icao]) byIcao[p.icao] = [];
+        byIcao[p.icao].push(p);
+    });
+
+    const doc = [{ id: 'document', name: 'ADS-B Replay', version: '1.0' }];
+
+    for (const [icao, pts] of Object.entries(byIcao)) {
+        pts.sort((a, b) => a.timestamp - b.timestamp);
+        if (pts.length < 2) continue;
+
+        const epoch = new Date(pts[0].timestamp * 1000).toISOString();
+        const endTime = new Date(pts[pts.length - 1].timestamp * 1000).toISOString();
+
+        // Set document clock on first entity
+        if (doc[0].clock === undefined) {
+            doc[0].clock = {
+                interval: `${epoch}/${endTime}`,
+                currentTime: epoch,
+                multiplier: 60,
+                range: 'LOOP_STOP',
+                step: 'SYSTEM_CLOCK_MULTIPLIER',
+            };
+        }
+
+        const cartDeg = [];
+        for (const p of pts) {
+            cartDeg.push(
+                p.timestamp - pts[0].timestamp,
+                p.lon,
+                p.lat,
+                (p.altitude_ft || 0) * 0.3048
+            );
+        }
+
+        const avgAlt = pts.reduce((s, p) => s + (p.altitude_ft || 0), 0) / pts.length;
+        const isMil = pts.some(p => p.is_military);
+        const acType = isMil ? 'military' : classifyAircraft(pts[pts.length - 1]);
+        const rgba = isMil ? [255, 68, 68, 255] : altColorRGBA(avgAlt);
+        const hexColor = isMil ? '#ff4444' : altColor(avgAlt);
+
+        doc.push({
+            id: icao,
+            name: pts[0].callsign || icao,
+            availability: `${epoch}/${endTime}`,
+            position: {
+                epoch: epoch,
+                cartographicDegrees: cartDeg,
+                interpolationAlgorithm: 'LAGRANGE',
+                interpolationDegree: 1,
+            },
+            billboard: {
+                image: acBillboardUri(acType, hexColor),
+                scale: 0.7,
+                verticalOrigin: 'CENTER',
+                heightReference: 'NONE',
+            },
+            path: {
+                material: { solidColor: { color: { rgba: rgba } } },
+                width: 2,
+                trailTime: 180,
+                leadTime: 0,
+            },
+        });
+    }
+
+    return doc;
+}
+
+function loadCesiumJS() {
+    return new Promise((resolve, reject) => {
+        if (cesiumLoaded) { resolve(); return; }
+
+        window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/';
+
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/Widgets/widgets.css';
+        document.head.appendChild(link);
+
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/Cesium.js';
+        script.onload = () => { cesiumLoaded = true; resolve(); };
+        script.onerror = () => reject(new Error('Failed to load CesiumJS'));
+        document.head.appendChild(script);
+    });
+}
+
+async function initCesiumViewer() {
+    if (cesiumViewer) return;
+
+    // Disable Ion to avoid token errors
+    Cesium.Ion.defaultAccessToken = '';
+
+    const style = document.getElementById('map-style').value;
+    let imagery;
+    if (style === 'satellite') {
+        imagery = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+        );
+    } else {
+        const ct = cesiumTiles[style] || cesiumTiles['dark'];
+        imagery = new Cesium.UrlTemplateImageryProvider({
+            url: ct.url,
+            subdomains: ct.subs,
+            maximumLevel: ct.max,
+        });
+    }
+
+    cesiumViewer = new Cesium.Viewer('cesium-container', {
+        imageryProvider: imagery,
+        baseLayerPicker: false,
+        geocoder: false,
+        homeButton: false,
+        sceneModePicker: false,
+        navigationHelpButton: false,
+        infoBox: true,
+        selectionIndicator: true,
+        animation: true,
+        timeline: true,
+        requestRenderMode: false,
+        skyBox: false,
+        skyAtmosphere: false,
+    });
+
+    cesiumViewer.scene.globe.showGroundAtmosphere = false;
+    const isDark = (mapThemes[style] || mapThemes['dark']).bg === 'dark';
+    cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString(isDark ? '#0a0a0a' : '#d0d8e0');
+    cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString(isDark ? '#0a0a0a' : '#d0d8e0');
+}
+
+let cesiumLiveInterval = null;
+const cesiumEntities = {};
+
+async function activate3D() {
+    is3DMode = true;
+    document.getElementById('map').style.display = 'none';
+    document.getElementById('cesium-container').style.display = 'block';
+    document.getElementById('alt-legend').style.display = 'none';
+    document.getElementById('mode-3d-btn').textContent = '2D';
+    document.getElementById('mode-3d-btn').style.color = '#00ff88';
+
+    await initCesiumViewer();
+
+    // Set clock to real time (live mode)
+    cesiumViewer.clock.shouldAnimate = true;
+    cesiumViewer.clock.clockRange = Cesium.ClockRange.UNBOUNDED;
+    cesiumViewer.clock.multiplier = 1;
+    cesiumViewer.timeline.container.style.display = 'none';
+    cesiumViewer.animation.container.style.display = 'none';
+
+    // Fly to current map center at an oblique angle
+    const c = map.getCenter();
+    cesiumViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(c.lng, c.lat - 2.0, 150000),
+        orientation: {
+            heading: Cesium.Math.toRadians(0),
+            pitch: Cesium.Math.toRadians(-25),
+            roll: 0,
+        },
+        duration: 0,
+    });
+
+    // Trackpad-friendly: make Shift+drag more responsive for tilting
+    const ssc = cesiumViewer.scene.screenSpaceCameraController;
+    ssc.minimumZoomDistance = 500;
+    ssc.maximumZoomDistance = 5000000;
+
+    // Initial load + start polling
+    updateCesium3D();
+    cesiumLiveInterval = setInterval(updateCesium3D, 2000);
+}
+
+function updateCesium3D() {
+    if (!is3DMode || !cesiumViewer) return;
+    Promise.all([
+        fetch(`/api/positions?minutes=${trailMinutes}`).then(r => r.json()),
+        fetch(`/api/trails?minutes=${trailMinutes}`).then(r => r.json()),
+    ]).then(([posData, trailData]) => {
+        const seen = new Set();
+
+        posData.forEach(p => {
+            if (p.lat == null || p.lon == null) return;
+            const key = p.icao;
+            seen.add(key);
+            const altM = (p.altitude_ft || 0) * 0.3048;
+            const acType = classifyAircraft(p);
+            const color = p.is_military ? '#ff4444' : altColor(p.altitude_ft);
+            const rgba = p.is_military ? [255, 68, 68, 255] : altColorRGBA(p.altitude_ft);
+            const trail = trailData[key] || [];
+
+            if (!cesiumEntities[key]) {
+                // Build polyline positions from trail
+                const trailPositions = trail.map(t =>
+                    Cesium.Cartesian3.fromDegrees(t.lon, t.lat, (t.altitude_ft || 0) * 0.3048)
+                );
+                trailPositions.push(Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM));
+
+                const entity = cesiumViewer.entities.add({
+                    id: key,
+                    name: p.callsign || p.registration || key,
+                    position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM),
+                    billboard: {
+                        image: acBillboardUri(acType, color, p.heading_deg),
+                        scale: 0.6,
+                        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                        heightReference: Cesium.HeightReference.NONE,
+                        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                    },
+                    label: {
+                        text: (p.callsign || key) + (p.altitude_ft != null ? '\n' + Math.round(p.altitude_ft / 100) : ''),
+                        font: '11px monospace',
+                        fillColor: Cesium.Color.fromCssColorString('#e0e0e0'),
+                        outlineColor: Cesium.Color.BLACK,
+                        outlineWidth: 2,
+                        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                        pixelOffset: new Cesium.Cartesian2(14, -14),
+                        scale: 0.9,
+                        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 500000),
+                        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                    },
+                    polyline: trailPositions.length > 1 ? {
+                        positions: trailPositions,
+                        width: 2,
+                        material: new Cesium.ColorMaterialProperty(
+                            Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 180)
+                        ),
+                        clampToGround: false,
+                    } : undefined,
+                    description: `<div style="font:12px monospace;">
+                        <b>${p.callsign || key}</b>${p.is_military ? ' <span style="color:#f44">[MIL]</span>' : ''}<br>
+                        Alt: ${p.altitude_ft != null ? p.altitude_ft.toLocaleString() + ' ft' : '--'}<br>
+                        Spd: ${p.speed_kts ? Math.round(p.speed_kts) + ' kts' : '--'}<br>
+                        Hdg: ${p.heading_deg != null ? Math.round(p.heading_deg) + '°' : '--'}<br>
+                        ${p.country ? 'Country: ' + p.country + '<br>' : ''}
+                    </div>`,
+                });
+
+                // Altitude stalk — thin line from ground to aircraft
+                if (altM > 100) {
+                    cesiumViewer.entities.add({
+                        id: key + '_stalk',
+                        polyline: {
+                            positions: [
+                                Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 0),
+                                Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM),
+                            ],
+                            width: 1,
+                            material: new Cesium.ColorMaterialProperty(
+                                Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 60)
+                            ),
+                        },
+                    });
+                }
+
+                cesiumEntities[key] = entity;
+            } else {
+                // Update existing entity
+                const entity = cesiumEntities[key];
+                entity.position = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM);
+                entity.billboard.image = acBillboardUri(acType, color, p.heading_deg);
+                entity.label.text = (p.callsign || key) + (p.altitude_ft != null ? '\n' + Math.round(p.altitude_ft / 100) : '');
+
+                // Update trail
+                if (trail.length > 0) {
+                    const trailPositions = trail.map(t =>
+                        Cesium.Cartesian3.fromDegrees(t.lon, t.lat, (t.altitude_ft || 0) * 0.3048)
+                    );
+                    trailPositions.push(Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM));
+                    if (entity.polyline) {
+                        entity.polyline.positions = trailPositions;
+                    } else {
+                        entity.polyline = new Cesium.PolylineGraphics({
+                            positions: trailPositions,
+                            width: 2,
+                            material: new Cesium.ColorMaterialProperty(
+                                Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 180)
+                            ),
+                            clampToGround: false,
+                        });
+                    }
+                }
+
+                // Update altitude stalk
+                const stalk = cesiumViewer.entities.getById(key + '_stalk');
+                if (stalk) {
+                    stalk.polyline.positions = [
+                        Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 0),
+                        Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM),
+                    ];
+                }
+            }
+        });
+
+        // Remove stale entities
+        Object.keys(cesiumEntities).forEach(key => {
+            if (!seen.has(key)) {
+                cesiumViewer.entities.remove(cesiumEntities[key]);
+                const stalk = cesiumViewer.entities.getById(key + '_stalk');
+                if (stalk) cesiumViewer.entities.remove(stalk);
+                delete cesiumEntities[key];
+            }
+        });
+
+        cesiumViewer.scene.requestRender();
+    }).catch(err => console.error('3D update failed:', err));
+}
+
+function deactivate3D() {
+    is3DMode = false;
+    if (cesiumLiveInterval) { clearInterval(cesiumLiveInterval); cesiumLiveInterval = null; }
+    // Clean up entities
+    if (cesiumViewer) {
+        cesiumViewer.entities.removeAll();
+        Object.keys(cesiumEntities).forEach(k => delete cesiumEntities[k]);
+    }
+    document.getElementById('cesium-container').style.display = 'none';
+    document.getElementById('map').style.display = 'block';
+    document.getElementById('alt-legend').style.display = '';
+    document.getElementById('mode-3d-btn').textContent = '3D';
+    document.getElementById('mode-3d-btn').style.color = '#00aaff';
+    map.invalidateSize();
+}
+
+document.getElementById('mode-3d-btn').addEventListener('click', function() {
+    if (is3DMode) {
+        deactivate3D();
+    } else {
+        this.textContent = '...';
+        this.disabled = true;
+        loadCesiumJS().then(() => {
+            this.disabled = false;
+            try {
+                activate3D();
+            } catch(err) {
+                console.error('3D activation error:', err);
+                this.textContent = '3D';
+                is3DMode = false;
+                document.getElementById('cesium-container').style.display = 'none';
+                document.getElementById('map').style.display = 'block';
+                document.getElementById('alt-legend').style.display = '';
+            }
+        }).catch(err => {
+            console.error('CesiumJS load error:', err);
+            this.textContent = '3D';
+            this.disabled = false;
+        });
+    }
+});
+
 // --- Panel toggle ---
 document.getElementById('panel-header').addEventListener('click', function() {
     const body = document.getElementById('panel-body');
@@ -804,5 +1334,7 @@ setInterval(updateMap, 500);
 setInterval(updateStats, 10000);
 setInterval(updateHeatmap, 15000);
 setInterval(pollEvents, 5000);
+setInterval(fetchEventMarkers, 10000);
 pollEvents();
+if (eventsEnabled) fetchEventMarkers();
 </script>
