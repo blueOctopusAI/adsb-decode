@@ -151,7 +151,9 @@ Key SQL patterns:
 - FilterEngine wired into live tracking — 8 filter types: military, emergency squawk, circling, holding, proximity, unusual altitude, geofence, rapid descent
 - Webhook notifications for filter events (fire-and-forget POST JSON)
 - Aircraft enrichment: speed/altitude classification, 26 airline prefixes, 3,642 embedded airports
-- Web dashboard with 8 pages (map, table, detail, events, query, replay, receivers, stats)
+- Web dashboard with 8 pages (map, table, detail, events, query, replay, receivers, stats) — all polished with filters, sorting, empty states, auto-refresh
+- Heatmap: server-side grid aggregation, zoom-aware resolution, time window slider (15m–7d), normalized density
+- Table: search box, military/live/country filters, sortable columns, 500-row cap with pagination hint
 - Dual-path positions: live tracker serves from memory; DB fallback when no tracker attached
 - Multi-receiver ingest API with bearer token auth, heartbeat, and DB persistence
 - Graceful shutdown (SIGTERM/SIGINT handling, DB flush, clean exit)
