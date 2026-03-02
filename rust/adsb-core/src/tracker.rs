@@ -360,12 +360,17 @@ fn try_cpr_decode(
     tracker_ref_lon: Option<f64>,
 ) -> Option<(f64, f64)> {
     // Try global decode if we have both even and odd
-    if ac.cpr_even_lat.is_some() && ac.cpr_odd_lat.is_some() {
+    if let (Some(even_lat), Some(even_lon), Some(odd_lat), Some(odd_lon)) = (
+        ac.cpr_even_lat,
+        ac.cpr_even_lon,
+        ac.cpr_odd_lat,
+        ac.cpr_odd_lon,
+    ) {
         let result = cpr::global_decode(
-            ac.cpr_even_lat.unwrap(),
-            ac.cpr_even_lon.unwrap(),
-            ac.cpr_odd_lat.unwrap(),
-            ac.cpr_odd_lon.unwrap(),
+            even_lat,
+            even_lon,
+            odd_lat,
+            odd_lon,
             ac.cpr_even_time,
             ac.cpr_odd_time,
         );
