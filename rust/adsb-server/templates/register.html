@@ -1,0 +1,113 @@
+<style>
+.register-container { max-width: 480px; margin: 40px auto; padding: 0 16px; }
+.register-container h2 { color: #00ff88; margin-bottom: 8px; }
+.register-container p { color: #888; font-size: 13px; margin-bottom: 24px; }
+.form-group { margin-bottom: 16px; }
+.form-group label { display: block; color: #aaa; font-size: 12px; margin-bottom: 4px; }
+.form-group input, .form-group textarea {
+    width: 100%; padding: 8px 12px; background: #111; border: 1px solid #333;
+    color: #e0e0e0; font-family: 'Courier New', monospace; font-size: 13px;
+    border-radius: 4px;
+}
+.form-group input:focus, .form-group textarea:focus { border-color: #00ff88; outline: none; }
+.form-group textarea { height: 60px; resize: vertical; }
+.form-row { display: flex; gap: 12px; }
+.form-row .form-group { flex: 1; }
+.btn-register {
+    background: #00ff88; color: #0a0a0a; border: none; padding: 10px 24px;
+    font-family: 'Courier New', monospace; font-size: 14px; font-weight: bold;
+    cursor: pointer; border-radius: 4px; width: 100%;
+}
+.btn-register:hover { background: #00cc6a; }
+.btn-register:disabled { background: #333; color: #666; cursor: not-allowed; }
+.result { margin-top: 24px; padding: 16px; border-radius: 4px; display: none; }
+.result.success { background: #0a2a1a; border: 1px solid #00ff88; }
+.result.error { background: #2a0a0a; border: 1px solid #ff4444; color: #ff4444; }
+.api-key { font-size: 16px; color: #00ff88; word-break: break-all; user-select: all;
+    background: #0a0a0a; padding: 8px; border: 1px solid #333; border-radius: 4px; margin: 8px 0; }
+.instructions { color: #888; font-size: 12px; margin-top: 12px; }
+.instructions code { color: #00aaff; background: #111; padding: 2px 6px; border-radius: 2px; }
+</style>
+<div class="register-container">
+    <h2>Register Receiver</h2>
+    <p>Register your ADS-B receiver to contribute data. You'll get an API key to authenticate your feed.</p>
+
+    <form id="register-form">
+        <div class="form-group">
+            <label for="name">Receiver Name *</label>
+            <input type="text" id="name" placeholder="e.g. home-rtlsdr, rooftop-pi" maxlength="64" required>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="lat">Latitude</label>
+                <input type="number" id="lat" step="any" placeholder="35.5951">
+            </div>
+            <div class="form-group">
+                <label for="lon">Longitude</label>
+                <input type="number" id="lon" step="any" placeholder="-82.5515">
+            </div>
+        </div>
+        <div class="form-group">
+            <label for="description">Description</label>
+            <textarea id="description" placeholder="RTL-SDR v3 on rooftop antenna, 1090MHz"></textarea>
+        </div>
+        <button type="submit" class="btn-register" id="btn-submit">Register</button>
+    </form>
+
+    <div class="result" id="result-success">
+        <div style="color:#00ff88; font-weight:bold; margin-bottom:8px;">Receiver Registered</div>
+        <div style="color:#aaa; font-size:12px; margin-bottom:4px;">Your API Key (save this — it won't be shown again):</div>
+        <div class="api-key" id="api-key"></div>
+        <div class="instructions">
+            <p>Add this to your feeder configuration:</p>
+            <p><code>Authorization: Bearer <span id="key-inline"></span></code></p>
+            <p style="margin-top:8px;">POST frames to <code>/api/v1/frames</code> with your key in the header.</p>
+        </div>
+    </div>
+
+    <div class="result" id="result-error">
+        <span id="error-msg"></span>
+    </div>
+</div>
+<script>
+document.getElementById('register-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('btn-submit');
+    btn.disabled = true;
+    btn.textContent = 'Registering...';
+
+    document.getElementById('result-success').style.display = 'none';
+    document.getElementById('result-error').style.display = 'none';
+
+    const name = document.getElementById('name').value.trim();
+    const lat = document.getElementById('lat').value ? parseFloat(document.getElementById('lat').value) : null;
+    const lon = document.getElementById('lon').value ? parseFloat(document.getElementById('lon').value) : null;
+    const description = document.getElementById('description').value.trim() || null;
+
+    try {
+        const resp = await fetch('/api/register', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name, lat, lon, description })
+        });
+        const data = await resp.json();
+
+        if (resp.ok) {
+            document.getElementById('api-key').textContent = data.api_key;
+            document.getElementById('key-inline').textContent = data.api_key;
+            document.getElementById('result-success').style.display = 'block';
+            document.getElementById('register-form').style.display = 'none';
+        } else {
+            document.getElementById('error-msg').textContent = data.error || 'Registration failed';
+            document.getElementById('result-error').style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Register';
+        }
+    } catch (err) {
+        document.getElementById('error-msg').textContent = 'Network error: ' + err.message;
+        document.getElementById('result-error').style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Register';
+    }
+});
+</script>

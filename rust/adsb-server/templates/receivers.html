@@ -26,6 +26,10 @@
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+}
 const rxMap = L.map('rx-map', { zoomControl: true });
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; OSM &copy; CARTO', maxZoom: 19,
@@ -63,7 +67,7 @@ function loadReceivers() {
             const heartbeat = rx.last_heartbeat ? new Date(rx.last_heartbeat * 1000).toLocaleTimeString() : 'Never';
             const uptime = rx.uptime_sec ? formatUptime(rx.uptime_sec) : '-';
             cards.innerHTML += `<div class="rx-card">
-                <div class="rx-name">${rx.name} ${status}</div>
+                <div class="rx-name">${esc(rx.name)} ${status}</div>
                 <div class="rx-row"><span class="rx-label">Location</span><span class="rx-value">${rx.lat ? rx.lat.toFixed(4) + ', ' + rx.lon.toFixed(4) : 'Unknown'}</span></div>
                 <div class="rx-row"><span class="rx-label">Last Heartbeat</span><span class="rx-value">${heartbeat}</span></div>
                 <div class="rx-row"><span class="rx-label">Active Aircraft</span><span class="rx-value">${rx.active_aircraft || 0}</span></div>

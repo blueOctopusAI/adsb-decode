@@ -38,6 +38,25 @@ jobs:
         working-directory: rust
         run: cargo clippy --workspace -- -D warnings
 
+  check-timescaledb:
+    name: Check (timescaledb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: timescaledb
+      - name: Check TimescaleDB feature
+        working-directory: rust
+        run: cargo check --features timescaledb
+      - name: Clippy TimescaleDB
+        working-directory: rust
+        run: cargo clippy --features timescaledb -- -D warnings
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -125,6 +144,28 @@ jobs:
           name: adsb-server-${{ matrix.target }}
           path: rust/target/${{ matrix.target }}/release/adsb${{ matrix.binary_suffix }}
 
+  build-server-prod:
+    name: Build Server (production + timescaledb)
+    needs: [test, check-timescaledb]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: prod-server
+      - name: Build server with TimescaleDB
+        working-directory: rust
+        run: cargo build --release --target x86_64-unknown-linux-gnu --features timescaledb -p adsb-server
+      - name: Strip binary
+        run: strip rust/target/x86_64-unknown-linux-gnu/release/adsb
+      - name: Upload production server
+        uses: actions/upload-artifact@v4
+        with:
+          name: adsb-server-x86_64-unknown-linux-gnu-timescaledb
+          path: rust/target/x86_64-unknown-linux-gnu/release/adsb
+
   # Cross-validate: Rust decode output matches Python reference
   cross-validate:
     name: Cross-validate vs Python
@@ -169,7 +210,7 @@ jobs:
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, build-release]
+    needs: [test, build-release, build-server-prod]
     runs-on: ubuntu-latest
     permissions:
       contents: write

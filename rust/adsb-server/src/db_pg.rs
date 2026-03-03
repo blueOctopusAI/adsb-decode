@@ -10,8 +10,6 @@
 //! - Continuous aggregates provide downsampled views (30s, 5m)
 //! - Connection pooling via sqlx::PgPool
 
-#![cfg(feature = "timescaledb")]
-
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
@@ -27,8 +25,10 @@ CREATE TABLE IF NOT EXISTS receivers (
     lon DOUBLE PRECISION,
     altitude_ft DOUBLE PRECISION,
     description TEXT,
+    api_key TEXT UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_receivers_api_key ON receivers(api_key);
 
 CREATE TABLE IF NOT EXISTS aircraft (
     icao TEXT PRIMARY KEY,
@@ -86,6 +86,26 @@ CREATE TABLE IF NOT EXISTS events (
     altitude_ft INTEGER
 );
 
+-- Vessel (AIS) tables
+CREATE TABLE IF NOT EXISTS vessels (
+    mmsi TEXT PRIMARY KEY,
+    name TEXT,
+    vessel_type TEXT,
+    flag TEXT,
+    first_seen TIMESTAMPTZ NOT NULL,
+    last_seen TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vessel_positions (
+    time TIMESTAMPTZ NOT NULL,
+    mmsi TEXT NOT NULL,
+    lat DOUBLE PRECISION NOT NULL,
+    lon DOUBLE PRECISION NOT NULL,
+    speed_kts DOUBLE PRECISION,
+    course_deg DOUBLE PRECISION,
+    heading_deg DOUBLE PRECISION
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_positions_icao ON positions(icao, time DESC);
 CREATE INDEX IF NOT EXISTS idx_sightings_icao ON sightings(icao);
@@ -93,6 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_sightings_icao_capture ON sightings(icao, capture
 CREATE INDEX IF NOT EXISTS idx_events_icao ON events(icao, time DESC);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_aircraft_last_seen ON aircraft(last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_vessel_positions_mmsi ON vessel_positions(mmsi, time DESC);
 "#;
 
 /// TimescaleDB-specific setup (hypertables, compression, retention).
@@ -102,6 +123,7 @@ const TIMESCALE_SETUP: &str = r#"
 -- Convert to hypertables (no-op if already hypertables)
 SELECT create_hypertable('positions', 'time', if_not_exists => TRUE);
 SELECT create_hypertable('events', 'time', if_not_exists => TRUE);
+SELECT create_hypertable('vessel_positions', 'time', if_not_exists => TRUE);
 
 -- Compression policy: compress chunks older than 7 days
 -- segmentby icao for efficient per-aircraft queries
@@ -123,6 +145,15 @@ ALTER TABLE events SET (
 );
 SELECT add_compression_policy('events', INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('events', INTERVAL '365 days', if_not_exists => TRUE);
+
+-- Vessel positions: compress after 7 days, retain for 90 days
+ALTER TABLE vessel_positions SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'mmsi',
+    timescaledb.compress_orderby = 'time DESC'
+);
+SELECT add_compression_policy('vessel_positions', INTERVAL '7 days', if_not_exists => TRUE);
+SELECT add_retention_policy('vessel_positions', INTERVAL '90 days', if_not_exists => TRUE);
 "#;
 
 /// Continuous aggregate for 30-second downsampled positions.
@@ -215,9 +246,12 @@ fn epoch_to_pg(ts: f64) -> chrono::DateTime<chrono::Utc> {
         .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap())
 }
 
-/// Helper: convert PostgreSQL TIMESTAMPTZ to epoch seconds.
-fn pg_to_epoch(dt: chrono::DateTime<chrono::Utc>) -> f64 {
-    dt.timestamp() as f64 + dt.timestamp_subsec_nanos() as f64 / 1_000_000_000.0
+/// Helper: extract a row column as f64.
+///
+/// `EXTRACT(EPOCH FROM ...)` in PostgreSQL returns a numeric type.
+/// With sqlx 0.8, this decodes as `f64` when fetched via runtime queries.
+fn row_f64(r: &sqlx::postgres::PgRow, col: &str) -> f64 {
+    r.try_get::<f64, _>(col).unwrap_or(0.0)
 }
 
 #[async_trait::async_trait]
@@ -256,64 +290,84 @@ impl AdsbDatabase for TimescaleDb {
     }
 
     async fn get_all_aircraft(&self) -> Vec<AircraftRow> {
-        sqlx::query_as!(
-            AircraftRow,
-            r#"SELECT icao, registration, country, is_military,
-                      EXTRACT(EPOCH FROM first_seen) as "first_seen!: f64",
-                      EXTRACT(EPOCH FROM last_seen) as "last_seen!: f64"
-               FROM aircraft ORDER BY last_seen DESC"#
+        let rows = sqlx::query(
+            "SELECT icao, registration, country, is_military,
+                    EXTRACT(EPOCH FROM first_seen) as first_seen,
+                    EXTRACT(EPOCH FROM last_seen) as last_seen
+             FROM aircraft ORDER BY last_seen DESC",
         )
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+        rows.iter()
+            .map(|r| AircraftRow {
+                icao: r.get("icao"),
+                registration: r.get("registration"),
+                country: r.get("country"),
+                is_military: r.get::<bool, _>("is_military"),
+                first_seen: row_f64(r, "first_seen"),
+                last_seen: row_f64(r, "last_seen"),
+            })
+            .collect()
     }
 
     async fn get_aircraft(&self, icao: &str) -> Option<AircraftRow> {
-        sqlx::query_as!(
-            AircraftRow,
-            r#"SELECT icao, registration, country, is_military,
-                      EXTRACT(EPOCH FROM first_seen) as "first_seen!: f64",
-                      EXTRACT(EPOCH FROM last_seen) as "last_seen!: f64"
-               FROM aircraft WHERE icao = $1"#,
-            icao
+        sqlx::query(
+            "SELECT icao, registration, country, is_military,
+                    EXTRACT(EPOCH FROM first_seen) as first_seen,
+                    EXTRACT(EPOCH FROM last_seen) as last_seen
+             FROM aircraft WHERE icao = $1",
         )
+        .bind(icao)
         .fetch_optional(&self.pool)
         .await
         .ok()
         .flatten()
+        .map(|r| AircraftRow {
+            icao: r.get("icao"),
+            registration: r.get("registration"),
+            country: r.get("country"),
+            is_military: r.get::<bool, _>("is_military"),
+            first_seen: row_f64(&r, "first_seen"),
+            last_seen: row_f64(&r, "last_seen"),
+        })
     }
 
     async fn get_positions(&self, icao: &str, limit: i64) -> Vec<PositionRow> {
-        sqlx::query_as!(
-            PositionRow,
-            r#"SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                      vertical_rate_fpm,
-                      EXTRACT(EPOCH FROM time) as "timestamp!: f64"
-               FROM positions WHERE icao = $1 ORDER BY time DESC LIMIT $2"#,
-            icao,
-            limit
+        let rows = sqlx::query(
+            "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
+                    vertical_rate_fpm, EXTRACT(EPOCH FROM time) as timestamp
+             FROM positions WHERE icao = $1 ORDER BY time DESC LIMIT $2",
         )
+        .bind(icao)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+        rows.iter().map(row_to_position).collect()
     }
 
     async fn get_recent_positions(&self, minutes: f64, limit: i64) -> Vec<PositionRow> {
         let interval = format!("{} minutes", minutes as i64);
-        sqlx::query_as!(
-            PositionRow,
-            r#"SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                      vertical_rate_fpm,
-                      EXTRACT(EPOCH FROM time) as "timestamp!: f64"
-               FROM positions
-               WHERE time >= NOW() - $1::INTERVAL
-               ORDER BY time DESC LIMIT $2"#,
-            interval,
-            limit
+        // DISTINCT ON deduplicates across multiple receivers — one row per aircraft
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (icao) icao, lat, lon, altitude_ft, speed_kts,
+                    heading_deg, vertical_rate_fpm,
+                    EXTRACT(EPOCH FROM time) as timestamp
+             FROM positions
+             WHERE time >= NOW() - $1::INTERVAL
+             ORDER BY icao, time DESC
+             LIMIT $2",
         )
+        .bind(&interval)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+        rows.iter().map(row_to_position).collect()
     }
 
     async fn get_events(
@@ -322,7 +376,6 @@ impl AdsbDatabase for TimescaleDb {
         icao: Option<&str>,
         limit: i64,
     ) -> Vec<EventRow> {
-        // Build dynamic query based on filters
         let rows =
             match (event_type, icao) {
                 (Some(et), Some(ic)) => sqlx::query(
@@ -378,29 +431,37 @@ impl AdsbDatabase for TimescaleDb {
                 lat: r.get("lat"),
                 lon: r.get("lon"),
                 altitude_ft: r.get("altitude_ft"),
-                timestamp: r.get("timestamp"),
+                timestamp: row_f64(r, "timestamp"),
             })
             .collect()
     }
 
     async fn get_trails(&self, minutes: f64, limit_per_aircraft: i64) -> Vec<PositionRow> {
         let interval = format!("{} minutes", minutes as i64);
-        sqlx::query_as!(
-            PositionRow,
-            r#"SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                      vertical_rate_fpm,
-                      EXTRACT(EPOCH FROM time) as "timestamp!: f64"
-               FROM (
-                   SELECT *, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY time DESC) as rn
-                   FROM positions WHERE time >= NOW() - $1::INTERVAL
-               ) sub WHERE rn <= $2
-               ORDER BY icao, time ASC"#,
-            interval,
-            limit_per_aircraft
+        // Deduplicate across receivers: one position per (icao, time) then limit per aircraft
+        let rows = sqlx::query(
+            "WITH deduped AS (
+                 SELECT DISTINCT ON (icao, time) icao, lat, lon, altitude_ft,
+                        speed_kts, heading_deg, vertical_rate_fpm, time
+                 FROM positions
+                 WHERE time >= NOW() - $1::INTERVAL
+                 ORDER BY icao, time, receiver_id
+             )
+             SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
+                    vertical_rate_fpm, EXTRACT(EPOCH FROM time) as timestamp
+             FROM (
+                 SELECT *, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY time DESC) as rn
+                 FROM deduped
+             ) sub WHERE rn <= $2
+             ORDER BY icao, time ASC",
         )
+        .bind(&interval)
+        .bind(limit_per_aircraft)
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+        rows.iter().map(row_to_position).collect()
     }
 
     async fn get_heatmap_positions(
@@ -431,6 +492,35 @@ impl AdsbDatabase for TimescaleDb {
             .collect()
     }
 
+    async fn get_heatmap_density(&self, minutes: f64, resolution: f64) -> Vec<HeatmapCell> {
+        let interval = format!("{} minutes", minutes as i64);
+        let rows = sqlx::query(
+            "SELECT
+                 ROUND(lat / $1) * $1 AS cell_lat,
+                 ROUND(lon / $1) * $1 AS cell_lon,
+                 COUNT(*) AS cnt,
+                 AVG(altitude_ft)::INTEGER AS avg_alt
+             FROM positions
+             WHERE time >= NOW() - $2::INTERVAL
+             GROUP BY cell_lat, cell_lon
+             ORDER BY cnt DESC",
+        )
+        .bind(resolution)
+        .bind(&interval)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        rows.iter()
+            .map(|r| HeatmapCell {
+                lat: r.get::<f64, _>("cell_lat"),
+                lon: r.get::<f64, _>("cell_lon"),
+                count: r.get::<i64, _>("cnt"),
+                avg_alt: r.get("avg_alt"),
+            })
+            .collect()
+    }
+
     async fn query_positions(
         &self,
         min_alt: Option<i32>,
@@ -439,7 +529,6 @@ impl AdsbDatabase for TimescaleDb {
         military: bool,
         limit: i64,
     ) -> Vec<PositionRow> {
-        // Build dynamic WHERE clause
         let mut conditions = vec!["TRUE".to_string()];
         let mut idx = 1;
 
@@ -486,31 +575,35 @@ impl AdsbDatabase for TimescaleDb {
             .await
             .unwrap_or_default()
             .iter()
-            .map(|r| PositionRow {
-                icao: r.get("icao"),
-                lat: r.get("lat"),
-                lon: r.get("lon"),
-                altitude_ft: r.get("altitude_ft"),
-                speed_kts: r.get("speed_kts"),
-                heading_deg: r.get("heading_deg"),
-                vertical_rate_fpm: r.get("vertical_rate_fpm"),
-                timestamp: r.get("timestamp"),
-            })
+            .map(row_to_position)
             .collect()
     }
 
-    async fn get_all_positions_ordered(&self, limit: i64) -> Vec<PositionRow> {
-        sqlx::query_as!(
-            PositionRow,
-            r#"SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                      vertical_rate_fpm,
-                      EXTRACT(EPOCH FROM time) as "timestamp!: f64"
-               FROM positions ORDER BY time ASC LIMIT $1"#,
-            limit
+    async fn get_all_positions_ordered(
+        &self,
+        limit: i64,
+        start: Option<f64>,
+        end: Option<f64>,
+    ) -> Vec<PositionRow> {
+        let start_ts = start.map(epoch_to_pg);
+        let end_ts = end.map(epoch_to_pg);
+
+        let rows = sqlx::query(
+            "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
+                    vertical_rate_fpm, EXTRACT(EPOCH FROM time) as timestamp
+             FROM positions
+             WHERE ($2::TIMESTAMPTZ IS NULL OR time >= $2)
+               AND ($3::TIMESTAMPTZ IS NULL OR time <= $3)
+             ORDER BY time ASC LIMIT $1",
         )
+        .bind(limit)
+        .bind(start_ts)
+        .bind(end_ts)
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+        rows.iter().map(row_to_position).collect()
     }
 
     async fn get_receivers(&self) -> Vec<ReceiverRow> {
@@ -530,7 +623,7 @@ impl AdsbDatabase for TimescaleDb {
                 lat: r.get("lat"),
                 lon: r.get("lon"),
                 description: r.get("description"),
-                created_at: r.get("created_at"),
+                created_at: row_f64(r, "created_at"),
             })
             .collect()
     }
@@ -562,8 +655,8 @@ impl AdsbDatabase for TimescaleDb {
                 min_altitude_ft: r.get("min_altitude_ft"),
                 max_altitude_ft: r.get("max_altitude_ft"),
                 message_count: r.get("message_count"),
-                first_seen: r.get("first_seen"),
-                last_seen: r.get("last_seen"),
+                first_seen: row_f64(r, "first_seen"),
+                last_seen: row_f64(r, "last_seen"),
             })
             .collect()
     }
@@ -614,16 +707,282 @@ impl AdsbDatabase for TimescaleDb {
             .await
             .unwrap_or_default()
             .iter()
-            .map(|r| PositionRow {
-                icao: r.get("icao"),
-                lat: r.get("lat"),
-                lon: r.get("lon"),
-                altitude_ft: r.get("altitude_ft"),
-                speed_kts: r.get("speed_kts"),
-                heading_deg: r.get("heading_deg"),
-                vertical_rate_fpm: r.get("vertical_rate_fpm"),
-                timestamp: r.get("timestamp"),
+            .map(row_to_position)
+            .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Write methods
+    // -----------------------------------------------------------------------
+
+    async fn upsert_aircraft(
+        &self,
+        icao: &str,
+        country: Option<&str>,
+        registration: Option<&str>,
+        is_military: bool,
+        timestamp: f64,
+    ) {
+        let ts = epoch_to_pg(timestamp);
+        let _ = sqlx::query(
+            "INSERT INTO aircraft (icao, country, registration, is_military, first_seen, last_seen)
+             VALUES ($1, $2, $3, $4, $5, $5)
+             ON CONFLICT (icao) DO UPDATE SET
+                 country = COALESCE(EXCLUDED.country, aircraft.country),
+                 registration = COALESCE(EXCLUDED.registration, aircraft.registration),
+                 is_military = aircraft.is_military OR EXCLUDED.is_military,
+                 last_seen = GREATEST(aircraft.last_seen, EXCLUDED.last_seen)",
+        )
+        .bind(icao)
+        .bind(country)
+        .bind(registration)
+        .bind(is_military)
+        .bind(ts)
+        .execute(&self.pool)
+        .await;
+    }
+
+    async fn upsert_sighting(
+        &self,
+        icao: &str,
+        capture_id: Option<i64>,
+        callsign: Option<&str>,
+        squawk: Option<&str>,
+        altitude_ft: Option<i32>,
+        timestamp: f64,
+    ) {
+        let ts = epoch_to_pg(timestamp);
+        // Use a single upsert: INSERT ON CONFLICT by (icao, capture_id).
+        // Since sightings has no unique constraint on (icao, capture_id), we
+        // try to update existing or insert new in two steps.
+        let existing: Option<(i64, Option<i32>, Option<i32>)> = sqlx::query(
+            "SELECT id, min_altitude_ft, max_altitude_ft FROM sightings
+             WHERE icao = $1 AND capture_id IS NOT DISTINCT FROM $2
+             ORDER BY last_seen DESC LIMIT 1",
+        )
+        .bind(icao)
+        .bind(capture_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| {
+            (
+                r.get("id"),
+                r.get("min_altitude_ft"),
+                r.get("max_altitude_ft"),
+            )
+        });
+
+        if let Some((id, min_alt, max_alt)) = existing {
+            let new_min = match (min_alt, altitude_ft) {
+                (Some(m), Some(a)) => Some(m.min(a)),
+                (None, Some(a)) => Some(a),
+                (Some(m), None) => Some(m),
+                (None, None) => None,
+            };
+            let new_max = match (max_alt, altitude_ft) {
+                (Some(m), Some(a)) => Some(m.max(a)),
+                (None, Some(a)) => Some(a),
+                (Some(m), None) => Some(m),
+                (None, None) => None,
+            };
+            let _ = sqlx::query(
+                "UPDATE sightings SET
+                     callsign = COALESCE($1, callsign),
+                     squawk = COALESCE($2, squawk),
+                     min_altitude_ft = $3,
+                     max_altitude_ft = $4,
+                     message_count = message_count + 1,
+                     last_seen = $5
+                 WHERE id = $6",
+            )
+            .bind(callsign)
+            .bind(squawk)
+            .bind(new_min)
+            .bind(new_max)
+            .bind(ts)
+            .bind(id)
+            .execute(&self.pool)
+            .await;
+        } else {
+            let _ = sqlx::query(
+                "INSERT INTO sightings
+                 (icao, capture_id, callsign, squawk, min_altitude_ft, max_altitude_ft,
+                  message_count, first_seen, last_seen)
+                 VALUES ($1, $2, $3, $4, $5, $5, 1, $6, $6)",
+            )
+            .bind(icao)
+            .bind(capture_id)
+            .bind(callsign)
+            .bind(squawk)
+            .bind(altitude_ft)
+            .bind(ts)
+            .execute(&self.pool)
+            .await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn add_position(
+        &self,
+        icao: &str,
+        lat: f64,
+        lon: f64,
+        altitude_ft: Option<i32>,
+        speed_kts: Option<f64>,
+        heading_deg: Option<f64>,
+        vertical_rate_fpm: Option<i32>,
+        receiver_id: Option<i64>,
+        timestamp: f64,
+    ) {
+        let ts = epoch_to_pg(timestamp);
+        let _ = sqlx::query(
+            "INSERT INTO positions (time, icao, receiver_id, lat, lon, altitude_ft,
+                                    speed_kts, heading_deg, vertical_rate_fpm)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(ts)
+        .bind(icao)
+        .bind(receiver_id)
+        .bind(lat)
+        .bind(lon)
+        .bind(altitude_ft)
+        .bind(speed_kts)
+        .bind(heading_deg)
+        .bind(vertical_rate_fpm)
+        .execute(&self.pool)
+        .await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Vessel (AIS) methods
+    // -----------------------------------------------------------------------
+
+    async fn get_vessels(&self, limit: i64) -> Vec<VesselRow> {
+        let rows = sqlx::query(
+            "SELECT mmsi, name, vessel_type, flag,
+                    EXTRACT(EPOCH FROM first_seen) as first_seen,
+                    EXTRACT(EPOCH FROM last_seen) as last_seen
+             FROM vessels ORDER BY last_seen DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        rows.iter()
+            .map(|r| VesselRow {
+                mmsi: r.get("mmsi"),
+                name: r.get("name"),
+                vessel_type: r.get("vessel_type"),
+                flag: r.get("flag"),
+                first_seen: row_f64(r, "first_seen"),
+                last_seen: row_f64(r, "last_seen"),
             })
             .collect()
+    }
+
+    async fn get_vessel_positions(&self, minutes: f64, limit: i64) -> Vec<VesselPositionRow> {
+        let interval = format!("{} minutes", minutes as i64);
+        let rows = sqlx::query(
+            "SELECT mmsi, lat, lon, speed_kts, course_deg, heading_deg,
+                    EXTRACT(EPOCH FROM time) as timestamp
+             FROM vessel_positions
+             WHERE time >= NOW() - $1::INTERVAL
+             ORDER BY time DESC LIMIT $2",
+        )
+        .bind(&interval)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        rows.iter().map(row_to_vessel_position).collect()
+    }
+
+    async fn get_recent_vessel_positions(&self, limit: i64) -> Vec<VesselPositionRow> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (mmsi) mmsi, lat, lon, speed_kts, course_deg, heading_deg,
+                    EXTRACT(EPOCH FROM time) as timestamp
+             FROM vessel_positions
+             ORDER BY mmsi, time DESC
+             LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        rows.iter().map(row_to_vessel_position).collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Registration
+    // -----------------------------------------------------------------------
+
+    async fn register_receiver(
+        &self,
+        name: &str,
+        lat: Option<f64>,
+        lon: Option<f64>,
+        description: Option<&str>,
+    ) -> Option<(i64, String)> {
+        let api_key = uuid::Uuid::new_v4().to_string();
+        let row = sqlx::query(
+            "INSERT INTO receivers (name, lat, lon, description, api_key)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING id",
+        )
+        .bind(name)
+        .bind(lat)
+        .bind(lon)
+        .bind(description)
+        .bind(&api_key)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+
+        row.map(|r| (r.get::<i64, _>("id"), api_key))
+    }
+
+    async fn lookup_receiver_by_api_key(&self, key: &str) -> Option<(i64, String)> {
+        sqlx::query("SELECT id, name FROM receivers WHERE api_key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| (r.get::<i64, _>("id"), r.get::<String, _>("name")))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row mapping helpers
+// ---------------------------------------------------------------------------
+
+fn row_to_position(r: &sqlx::postgres::PgRow) -> PositionRow {
+    PositionRow {
+        icao: r.get("icao"),
+        lat: r.get("lat"),
+        lon: r.get("lon"),
+        altitude_ft: r.get("altitude_ft"),
+        speed_kts: r.get("speed_kts"),
+        heading_deg: r.get("heading_deg"),
+        vertical_rate_fpm: r.get("vertical_rate_fpm"),
+        timestamp: row_f64(r, "timestamp"),
+    }
+}
+
+fn row_to_vessel_position(r: &sqlx::postgres::PgRow) -> VesselPositionRow {
+    VesselPositionRow {
+        mmsi: r.get("mmsi"),
+        lat: r.get("lat"),
+        lon: r.get("lon"),
+        speed_kts: r.get("speed_kts"),
+        course_deg: r.get("course_deg"),
+        heading_deg: r.get("heading_deg"),
+        timestamp: row_f64(r, "timestamp"),
     }
 }

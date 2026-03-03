@@ -141,7 +141,17 @@
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const icao = window.location.pathname.split('/').pop().toUpperCase();
+// --- HTML escaping for XSS prevention ---
+function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+}
+
+const rawIcao = window.location.pathname.split('/').pop().toUpperCase();
+const icao = /^[0-9A-F]{1,6}$/.test(rawIcao) ? rawIcao : '';
+if (!icao) {
+    document.getElementById('ac-header').textContent = 'Invalid ICAO';
+}
 
 function altColor(alt) {
     if (alt == null) return '#888';
@@ -174,8 +184,8 @@ fetch(`/api/aircraft/${icao}`)
         const events = data.events || [];
 
         // Header
-        let hdr = ac.icao;
-        if (ac.registration) hdr += ' \u2014 ' + ac.registration;
+        let hdr = esc(ac.icao);
+        if (ac.registration) hdr += ' \u2014 ' + esc(ac.registration);
         if (ac.is_military) hdr += '<span style="color:#ff4444;"> [MIL]</span>';
         document.getElementById('ac-header').innerHTML = hdr;
         document.title = 'adsb-decode \u2014 ' + ac.icao;
@@ -183,11 +193,11 @@ fetch(`/api/aircraft/${icao}`)
         // Info grid
         const grid = document.getElementById('info-grid');
         const items = [
-            ['Country', ac.country || '\u2014'],
-            ['Registration', ac.registration || '\u2014'],
+            ['Country', esc(ac.country || '\u2014')],
+            ['Registration', esc(ac.registration || '\u2014')],
         ];
-        if (ac.callsign) items.push(['Callsign', ac.callsign]);
-        if (ac.squawk) items.push(['Squawk', ac.squawk]);
+        if (ac.callsign) items.push(['Callsign', esc(ac.callsign)]);
+        if (ac.squawk) items.push(['Squawk', esc(ac.squawk)]);
         items.push(['Positions', positions.length]);
         items.push(['First Seen', fmtDateTime(ac.first_seen)]);
         items.push(['Last Seen', fmtDateTime(ac.last_seen)]);
@@ -239,8 +249,8 @@ fetch(`/api/aircraft/${icao}`)
                 const cls = (e.event_type || '').includes('military') ? 'military' :
                             (e.event_type || '').includes('emergency') ? 'emergency' : 'anomaly';
                 html += `<div class="event-item">
-                    <span class="event-type ${cls}">${e.event_type}</span>
-                    <div style="color:#ccc;">${e.description}</div>
+                    <span class="event-type ${cls}">${esc(e.event_type)}</span>
+                    <div style="color:#ccc;">${esc(e.description)}</div>
                     <div style="color:#666;font-size:10px;">${fmtTime(e.timestamp)}</div>
                 </div>`;
             });
@@ -271,28 +281,30 @@ fetch(`/api/aircraft/${icao}`)
 
         // External links
         const links = document.getElementById('ext-links');
-        let linkHtml = `<a class="ext-link" href="https://globe.adsbexchange.com/?icao=${icao}" target="_blank" rel="noopener">
+        const encIcao = encodeURIComponent(icao);
+        let linkHtml = `<a class="ext-link" href="https://globe.adsbexchange.com/?icao=${encIcao}" target="_blank" rel="noopener">
             <div class="ext-name">ADSBExchange</div>
             <div class="ext-desc">Live global tracking, full history</div>
         </a>`;
         if (ac.registration) {
-            linkHtml += `<a class="ext-link" href="https://www.planespotters.net/search?q=${ac.registration}" target="_blank" rel="noopener">
+            const encReg = encodeURIComponent(ac.registration);
+            linkHtml += `<a class="ext-link" href="https://www.planespotters.net/search?q=${encReg}" target="_blank" rel="noopener">
                 <div class="ext-name">Planespotters</div><div class="ext-desc">Aircraft photos & fleet info</div></a>`;
-            linkHtml += `<a class="ext-link" href="https://flightaware.com/live/flight/${ac.registration}" target="_blank" rel="noopener">
+            linkHtml += `<a class="ext-link" href="https://flightaware.com/live/flight/${encReg}" target="_blank" rel="noopener">
                 <div class="ext-name">FlightAware</div><div class="ext-desc">Flight tracking & history</div></a>`;
-            linkHtml += `<a class="ext-link" href="https://www.flightradar24.com/data/aircraft/${ac.registration.toLowerCase()}" target="_blank" rel="noopener">
+            linkHtml += `<a class="ext-link" href="https://www.flightradar24.com/data/aircraft/${encodeURIComponent(ac.registration.toLowerCase())}" target="_blank" rel="noopener">
                 <div class="ext-name">FlightRadar24</div><div class="ext-desc">Real-time tracking</div></a>`;
         } else {
-            linkHtml += `<a class="ext-link" href="https://www.planespotters.net/hex/${icao}" target="_blank" rel="noopener">
+            linkHtml += `<a class="ext-link" href="https://www.planespotters.net/hex/${encIcao}" target="_blank" rel="noopener">
                 <div class="ext-name">Planespotters</div><div class="ext-desc">Aircraft photos by hex</div></a>`;
-            linkHtml += `<a class="ext-link" href="https://flightaware.com/live/modes/${icao}" target="_blank" rel="noopener">
+            linkHtml += `<a class="ext-link" href="https://flightaware.com/live/modes/${encIcao}" target="_blank" rel="noopener">
                 <div class="ext-name">FlightAware</div><div class="ext-desc">Flight tracking by hex</div></a>`;
         }
         if (ac.country === 'United States' && ac.registration) {
-            linkHtml += `<a class="ext-link" href="https://registry.faa.gov/AircraftInquiry/Search/NNumberResult?nNumberTxt=${ac.registration.slice(1)}" target="_blank" rel="noopener">
+            linkHtml += `<a class="ext-link" href="https://registry.faa.gov/AircraftInquiry/Search/NNumberResult?nNumberTxt=${encodeURIComponent(ac.registration.slice(1))}" target="_blank" rel="noopener">
                 <div class="ext-name">FAA Registry</div><div class="ext-desc">Official registration, owner, type</div></a>`;
         }
-        linkHtml += `<a class="ext-link" href="https://opensky-network.org/aircraft-profile?icao24=${icao.toLowerCase()}" target="_blank" rel="noopener">
+        linkHtml += `<a class="ext-link" href="https://opensky-network.org/aircraft-profile?icao24=${encodeURIComponent(icao.toLowerCase())}" target="_blank" rel="noopener">
             <div class="ext-name">OpenSky Network</div><div class="ext-desc">Aircraft metadata database</div></a>`;
         links.innerHTML = linkHtml;
 

@@ -300,55 +300,160 @@ All filters use `emit()` deduplication to prevent repeated alerts for the same a
 
 ---
 
-## Stage 8: Display
+## Stage 8: The Web Application
 
-### Web Dashboard
+Everything up to this point turns radio waves into structured data. Stage 8 is where that data becomes a usable application — a real-time air traffic dashboard that runs in any browser.
 
 **Modules:** Rust `web/` (axum) / Python `web/` (Flask)
 
-Both implementations serve the same dashboard functionality:
-- Leaflet.js map with dark CARTO tiles
-- Aircraft silhouette icons (jet/prop/turboprop/helicopter/military) with heading rotation
-- Altitude-colored trail lines (green→yellow→red gradient)
-- Click-to-detail popups
-- Stats overlay: aircraft count, positions, events, uptime
-- Heatmap layer toggle
-- 6 switchable map styles: Dark, Satellite, Topo, Streets, Dark Matter, Voyager
-- Airport overlay: 3,642 US airports with Major/Medium/Small toggles
-- Events dashboard with type filter buttons
-- Query builder with preset filters and custom parameters
-- Historical replay with time slider, play/pause, adjustable speed
-- Receiver management page with coverage circles
-- Aircraft detail page with position history and external intel (hexdb.io)
-- 500ms polling for real-time updates
-- **Dual-path position serving**: When a live tracker is attached, `/api/positions` reads from in-memory aircraft state for sub-second latency. Otherwise falls back to DB queries.
+### Architecture
 
-### Multi-Receiver Network
+The web server runs as part of the same binary that does the tracking. When you start `adsb track --live --port 8080`, a single process handles radio capture, protocol decoding, database writes, and the web dashboard simultaneously. There's no separate frontend build step — the HTML templates are embedded into the Rust binary at compile time.
 
-- **Feeder agent**: Runs on remote Pi/machine with dongle. Captures frames, batches, and POSTs to central server.
-- **Ingest API**: `POST /api/v1/frames` with bearer token auth. Heartbeat monitoring.
-- **Architecture**: Hub-and-spoke. Multiple feeders → one central server → one dashboard.
+The server uses **dual-path position serving**: when a live tracker is attached, the `/api/positions` endpoint reads directly from in-memory aircraft state (the `Tracker` struct shared via `Arc<RwLock<Tracker>>`), giving sub-second latency. When serving from an existing database without a dongle, the same endpoint falls back to SQL queries. The dashboard code doesn't know the difference.
 
-### CLI
+The frontend polls every 500ms for position updates and every 2 seconds in 3D mode. All state (map style, toggle preferences, trail duration) persists in `localStorage` so you don't lose your view on refresh.
 
-- Decode: parse hex frames, print aircraft table
-- Track: process capture file or live dongle, write to DB
-- Stats: database summary
-- History: aircraft sighting history
-- Export: CSV/JSON output
-- Serve: web dashboard from existing DB
-- Setup: hardware detection (Python only currently)
+### The Map (2D)
 
-### Export
+The primary view is a Leaflet.js map with a dark CARTO tile layer. Aircraft appear as silhouette icons — different shapes for jets, props, turboprops, helicopters, and military aircraft — rotated to match their actual heading. Each aircraft trails an altitude-colored line behind it: green at low altitude, fading through yellow to red at cruise altitude.
 
-- **CSV**: Flat position data
-- **JSON**: Structured aircraft + position data
-- **KML**: Google Earth flight paths (Python only currently)
-- **GeoJSON**: Map-ready feature collections (Python only currently)
+A stats overlay in the corner shows live counts: aircraft tracked, total positions, events detected, server uptime. Clicking any aircraft opens a popup with its callsign, altitude, speed, ICAO address, and country.
+
+Six map styles are available — Dark, Satellite, Topo, Streets, Dark Matter, and Voyager — switchable from a control panel and persisted across sessions.
+
+### The Globe (3D)
+
+A toggle switches the entire view to a CesiumJS 3D globe. Aircraft appear at their actual altitudes above the Earth's surface, rendered as heading-rotated billboard entities. Thin vertical "stalks" connect each aircraft to the ground, making altitude visually obvious. Flight level labels float next to each aircraft.
+
+The 3D view has full feature parity with 2D:
+- **Heatmap** renders as colored density rectangles on the globe surface (instead of Leaflet's heat layer)
+- **Airports** render as billboard entities with labels (instead of Leaflet markers)
+- **Trails** render as polylines at altitude (instead of flat lines on a 2D map)
+- **Toggle states** (heatmap on/off, airports on/off, trails on/off) sync when you switch between 2D and 3D — your preferences carry over
+
+Satellite imagery comes from ArcGIS; all other tile layers use `UrlTemplateImageryProvider`.
+
+### Historical Aircraft (Ghost Markers)
+
+At longer trail durations (1 hour or more), the dashboard shows aircraft that were recently active but have stopped transmitting. These appear as faded, semi-transparent markers — "ghost" aircraft — so you can see traffic patterns over time, not just what's flying right now.
+
+Ghost aircraft headings are computed from their trail geometry (the bearing between their last two known positions), since they're no longer transmitting heading data directly. At shorter trail settings (5 minutes, 15 minutes, 30 minutes), only live aircraft appear — these function as a pure real-time view.
+
+This is a key difference from other ADS-B tools: most show you a snapshot of the sky right now. This one remembers what flew earlier and shows you the pattern.
+
+### Toggleable Overlay Layers
+
+Several layers can be turned on or off from the map controls:
+
+- **Heatmap** — Position density visualization with a time window slider (15 minutes to 7 days). Uses server-side grid aggregation with zoom-aware resolution. Normalized density values so the color scale adapts to the data.
+- **Airports** — 3,642 US airports from the OurAirports dataset, embedded at compile time. Filterable by class: Major, Medium, Small. Each airport marker is clickable with links to AirNav and SkyVector. Works in both 2D and 3D.
+- **Event markers** — Detected events (military sightings, emergency squawks, circling aircraft, etc.) appear as color-coded circle markers on the map with tooltips and popups.
+- **Military highlights** — Pulsing red rings behind confirmed military aircraft, making them immediately visible on a crowded map.
+
+### Aircraft Detail Page
+
+Clicking through to an individual aircraft opens a split-screen detail view:
+
+**Left panel:**
+- Trail map showing every captured position for that aircraft
+- Event history (any anomalies detected)
+- Position table with timestamps, altitude, speed, heading
+
+**Right panel:**
+- External data from hexdb.io — manufacturer, aircraft type, registered owner
+- Quick-link cards to ADSBExchange, Planespotters, FlightAware, FlightRadar24, FAA Registry, and OpenSky
+- Altitude profile chart showing the aircraft's vertical history
+
+The hexdb.io lookup is proxied through the server (`/api/lookup/:icao`) so the browser doesn't need to make cross-origin requests. Results are cached per ICAO address.
+
+### Additional Dashboard Pages
+
+Beyond the map, the dashboard includes seven more pages:
+
+- **Table** — Sortable aircraft list with search box, military/live/country filters, 500-row cap with pagination hint. Each row links to the detail page.
+- **Events** — Color-coded event log with type filter buttons (military, emergency, circling, etc.). Events are auto-enriched with aircraft type and owner data from hexdb.io.
+- **Query Builder** — Preset filters (military aircraft, low altitude, fast movers) plus custom parameters (min/max altitude, ICAO address, time range). Results render on a map.
+- **Historical Replay** — Time slider with play/pause and adjustable speed (1x through 10-minute jumps). Replays position history from the database.
+- **Receivers** — Connected feeder nodes with online/offline status and coverage circles on a map.
+- **Stats** — Database summary: aircraft count, position count, event count, capture history, receiver health.
+
+---
+
+## Stage 9: Intelligence Layer
+
+What makes this more than a radio scanner. The intelligence layer runs alongside tracking and generates events in real time.
+
+**Modules:** Rust `filter.rs` + `enrich.rs` / Python `filters.py` + `enrichment.py`
+
+### Detection Filters
+
+The `FilterEngine` checks every decoded frame against eight filter types:
+
+- **Military detection** — ICAO address in military allocation block, or callsign matches known military patterns (RCH = C-17 Globemaster, DUKE = Army, REACH = Air Mobility Command, DOOM, JAKE, etc.)
+- **Emergency squawks** — 7500 (hijack), 7600 (radio failure), 7700 (general emergency) trigger immediate alerts
+- **Rapid descent** — Vertical rate exceeding -5,000 ft/min
+- **Unusual altitude** — Fast aircraft (>200 kts) below 3,000 ft with no airport within 15nm
+- **Circling/loitering** — Cumulative heading change exceeding 360 degrees within a 5-minute window. Handles compass wraparound correctly.
+- **Holding patterns** — Stable altitude (within 500 ft) combined with reciprocal headings (180 degrees apart, within 30-degree tolerance). Detected via a 10-degree heading histogram.
+- **Proximity alerts** — Two aircraft within configurable distance (default 5nm horizontal, 1,000 ft vertical). Sorted pair key prevents duplicate alerts for the same pair.
+- **Geofence alerts** — User-configurable lat/lon/radius zones. Aircraft entering a geofence trigger an event.
+
+All filters use `emit()` deduplication — once an alert fires for a specific aircraft, it won't fire again for the same condition until the condition clears.
+
+### Enrichment
+
+When a filter event fires, the system automatically enriches it:
+- **Aircraft type classification** — Speed and altitude profile classifies the aircraft as jet, prop, turboprop, helicopter, military, or cargo
+- **Operator lookup** — Airline ICAO prefix maps to operator name (26 carriers covered)
+- **hexdb.io enrichment** — Automatic lookup of registration, manufacturer, type, and owner. Cached per ICAO address. Fire-and-forget via `tokio::spawn` so it never blocks tracking.
+- **Airport awareness** — 3,642 US airports. Nearest airport lookup, flight phase classification (approaching, departing, overflying).
+
+---
+
+## Multi-Receiver Network
+
+The system supports distributed coverage through a hub-and-spoke architecture:
+
+```
+[Pi + Dongle] --HTTP POST--> [Central Server] <--Browser-- [Dashboard]
+[Pi + Dongle] --HTTP POST-->      |
+[Mac + Dongle] --HTTP POST-->     |
+                            Axum API + SQLite
+```
+
+The **feeder agent** (`adsb-feeder` binary) runs on each receiver node — a Raspberry Pi with an RTL-SDR dongle, a laptop, any machine with a radio. It captures frames, decodes them locally, and batches position data into HTTP POST requests to the central server.
+
+The **ingest API** (`POST /api/v1/frames`) accepts frame batches with bearer token authentication. A heartbeat endpoint (`POST /api/v1/heartbeat`) tracks whether each feeder is online. The receiver management page shows connection status and coverage circles.
+
+Each receiver node costs about $60 (Pi + dongle + antenna). The central server aggregates data from all feeders into one database and one dashboard.
+
+---
+
+## The CLI
+
+The `adsb` binary provides seven commands:
+
+| Command | What it does |
+|---------|-------------|
+| `decode` | Parse a file of hex frames and print an aircraft table. Quick way to inspect a capture. |
+| `track` | The main command. Process a capture file or start live tracking from an RTL-SDR dongle. Writes to SQLite. Add `--port 8080` to launch the web dashboard alongside tracking. |
+| `serve` | Start the web dashboard from an existing database, without a dongle. View historical data. |
+| `stats` | Print database summary: aircraft count, position count, event count, capture history. |
+| `history` | Show aircraft sighting history — when each aircraft was first and last seen. |
+| `export` | Export position data to CSV or JSON. |
+| `setup` | Interactive setup wizard — detect hardware, configure receiver, database, and server settings. |
+
+Live tracking supports three capture modes:
+- `--live` — Spawn `rtl_adsb` as a subprocess (simplest, most compatible)
+- `--native-demod` — Spawn `rtl_sdr` and pipe raw IQ through our own demodulator
+- `--native-usb` — Direct USB access via `rtlsdr_mt` (requires `native-sdr` feature flag)
 
 ---
 
 ## API Endpoints
+
+The REST API serves both the dashboard frontend and external consumers.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -357,7 +462,7 @@ Both implementations serve the same dashboard functionality:
 | GET | `/api/positions` | Most recent position per aircraft (optional `?minutes=` time filter) |
 | GET | `/api/positions/all` | All positions ordered by time (for replay) |
 | GET | `/api/trails` | Position trails per aircraft (`?minutes=` time window) |
-| GET | `/api/lookup/<icao>` | External aircraft metadata via hexdb.io |
+| GET | `/api/lookup/<icao>` | External aircraft metadata via hexdb.io (cached) |
 | GET | `/api/query` | Filtered positions (min/max alt, ICAO, military, limit) |
 | GET | `/api/airports` | 3,642 US airports with type classification |
 | GET | `/api/heatmap` | Position density data for heatmap layer |
@@ -369,3 +474,52 @@ Both implementations serve the same dashboard functionality:
 | POST | `/api/v1/frames` | Ingest frames from remote feeder (auth required) |
 | POST | `/api/v1/heartbeat` | Feeder status heartbeat |
 | GET | `/api/v1/receivers` | List connected receivers |
+
+---
+
+## Export Formats
+
+- **CSV** — Flat position data: timestamp, ICAO, lat, lon, altitude, speed, heading
+- **JSON** — Structured aircraft objects with nested position arrays
+- **KML** — Google Earth flight paths (Python implementation only)
+- **GeoJSON** — Map-ready feature collections (Python implementation only)
+
+---
+
+## The Python-to-Rust Story
+
+The project started as a Python reference implementation — 22 modules, 394 tests, ~7,300 lines. Every stage of the protocol was built and validated in Python first: the demodulator with numpy, the CRC with bitwise operations, the CPR math with floating point, the tracker, the database, the Flask dashboard.
+
+Then the entire system was rewritten in Rust — a language the developer had never used before. The rewrite took a weekend, pair-programming with Claude Code. The Rust implementation is a 3-crate workspace (~12,000 lines) with 223 tests across `adsb-core` (pure library, no async), `adsb-feeder` (edge device binary), and `adsb-server` (web server + CLI + database).
+
+Cross-validation confirmed correctness: the same 296-frame capture file produces 100% matching output between Python and Rust. Every decoded field — ICAO address, callsign, position, altitude, speed, heading — matches exactly.
+
+The Rust version is now the primary codebase. It's faster, compiles to a single binary, and the type system catches entire categories of bugs at compile time. The Python version remains as the reference oracle.
+
+---
+
+## Implemented but Not Active
+
+These features are fully coded but not currently in use:
+
+- **TimescaleDB backend** (`db_pg.rs`) — A complete PostgreSQL backend with hypertables for time-series data, automatic compression (positions older than 7 days), retention policies (90-day positions, 365-day events), and continuous aggregates for 30-second and 5-minute rollups. Behind a `timescaledb` feature flag. The system currently uses SQLite, which handles the current data volume fine. TimescaleDB is there for when the database grows beyond what SQLite handles gracefully.
+
+- **Native RTL-SDR USB access** (`LiveCapture` in capture.rs) — Direct dongle access via the `rtlsdr_mt` crate, bypassing `rtl_adsb` entirely. Requires `librtlsdr` on the system and the `native-sdr` feature flag. Built and tested, but the subprocess approach works reliably and is easier to set up.
+
+- **Cross-compilation CI** — GitHub Actions configured for ARM targets (aarch64 for Pi 4/5, armv7 for Pi 3) using `cross`. The CI runs but release binaries haven't been published to GitHub Releases yet.
+
+---
+
+## Future Ideas
+
+These are concepts that have been discussed but do not exist in code yet:
+
+- **Airspace narrator** — An LLM integration that watches the event stream and produces natural-language summaries of what's happening in the sky. "Three military aircraft circling over the mountains west of Asheville. A Delta flight just declared an emergency squawk at FL350." The intelligence layer already generates the structured events — the narrator would translate them into plain English.
+
+- **Pattern analysis over time** — With weeks or months of historical data, identify recurring patterns: regular military training routes, airline schedule adherence, seasonal traffic changes, unusual activity baselines. The database schema already supports long-term storage; the analysis layer doesn't exist yet.
+
+- **Alerting and notifications** — Push notifications (email, SMS, webhook) when specific conditions are met: a military aircraft enters your area, an emergency squawk is detected, a geofence is breached. The webhook infrastructure exists for filter events, but there's no user-facing notification configuration.
+
+- **Fleet tracking** — Track specific aircraft by ICAO address or callsign pattern over time. Build profiles of individual aircraft: where they go, how often, typical routes. The database stores per-aircraft history; the fleet analysis layer doesn't exist yet.
+
+- **Collaborative network** — Multiple adsb-decode users sharing data to build broader coverage. The multi-receiver architecture is built for one operator with multiple dongles. Extending it to multiple operators would require authentication, data sharing agreements, and a hosted central server.

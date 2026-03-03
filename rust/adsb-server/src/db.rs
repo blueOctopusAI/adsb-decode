@@ -19,8 +19,11 @@ CREATE TABLE IF NOT EXISTS receivers (
     lon REAL,
     altitude_ft REAL,
     description TEXT,
+    api_key TEXT UNIQUE,
     created_at REAL NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_receivers_api_key ON receivers(api_key);
 
 CREATE TABLE IF NOT EXISTS aircraft (
     icao TEXT PRIMARY KEY,
@@ -88,6 +91,29 @@ CREATE INDEX IF NOT EXISTS idx_sightings_icao_capture ON sightings(icao, capture
 CREATE INDEX IF NOT EXISTS idx_events_icao ON events(icao);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_aircraft_last_seen ON aircraft(last_seen);
+
+CREATE TABLE IF NOT EXISTS vessels (
+    mmsi TEXT PRIMARY KEY,
+    name TEXT,
+    vessel_type TEXT,
+    flag TEXT,
+    first_seen REAL NOT NULL,
+    last_seen REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vessel_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mmsi TEXT NOT NULL REFERENCES vessels(mmsi),
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    speed_kts REAL,
+    course_deg REAL,
+    heading_deg REAL,
+    timestamp REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vessel_positions_mmsi ON vessel_positions(mmsi);
+CREATE INDEX IF NOT EXISTS idx_vessel_positions_timestamp ON vessel_positions(timestamp);
 "#;
 
 fn now() -> f64 {
@@ -591,6 +617,166 @@ impl Database {
     }
 
     // -----------------------------------------------------------------------
+    // Vessels (AIS)
+    // -----------------------------------------------------------------------
+
+    pub fn upsert_vessel(
+        &mut self,
+        mmsi: &str,
+        name: Option<&str>,
+        vessel_type: Option<&str>,
+        flag: Option<&str>,
+        timestamp: f64,
+    ) {
+        let _ = self.conn.execute(
+            "INSERT INTO vessels (mmsi, name, vessel_type, flag, first_seen, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(mmsi) DO UPDATE SET
+                 name = COALESCE(?2, name),
+                 vessel_type = COALESCE(?3, vessel_type),
+                 flag = COALESCE(?4, flag),
+                 last_seen = ?5",
+            params![mmsi, name, vessel_type, flag, timestamp],
+        );
+        self.maybe_commit();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_vessel_position(
+        &mut self,
+        mmsi: &str,
+        lat: f64,
+        lon: f64,
+        speed_kts: Option<f64>,
+        course_deg: Option<f64>,
+        heading_deg: Option<f64>,
+        timestamp: f64,
+    ) {
+        let _ = self.conn.execute(
+            "INSERT INTO vessel_positions (mmsi, lat, lon, speed_kts, course_deg, heading_deg, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![mmsi, lat, lon, speed_kts, course_deg, heading_deg, timestamp],
+        );
+        self.maybe_commit();
+    }
+
+    pub fn get_vessels(&self, limit: i64) -> Vec<VesselRow> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT mmsi, name, vessel_type, flag, first_seen, last_seen
+                 FROM vessels ORDER BY last_seen DESC LIMIT ?1",
+            )
+            .unwrap();
+        stmt.query_map(params![limit], |row| {
+            Ok(VesselRow {
+                mmsi: row.get(0)?,
+                name: row.get(1)?,
+                vessel_type: row.get(2)?,
+                flag: row.get(3)?,
+                first_seen: row.get(4)?,
+                last_seen: row.get(5)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    pub fn get_vessel_positions(&self, minutes: f64, limit: i64) -> Vec<VesselPositionRow> {
+        let cutoff = now() - (minutes * 60.0);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT mmsi, lat, lon, speed_kts, course_deg, heading_deg, timestamp
+                 FROM vessel_positions
+                 WHERE timestamp >= ?1
+                 ORDER BY timestamp DESC LIMIT ?2",
+            )
+            .unwrap();
+        stmt.query_map(params![cutoff, limit], |row| {
+            Ok(VesselPositionRow {
+                mmsi: row.get(0)?,
+                lat: row.get(1)?,
+                lon: row.get(2)?,
+                speed_kts: row.get(3)?,
+                course_deg: row.get(4)?,
+                heading_deg: row.get(5)?,
+                timestamp: row.get(6)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    pub fn get_recent_vessel_positions(&self, limit: i64) -> Vec<VesselPositionRow> {
+        // Get latest position per vessel
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT vp.mmsi, vp.lat, vp.lon, vp.speed_kts, vp.course_deg, vp.heading_deg, vp.timestamp
+                 FROM vessel_positions vp
+                 INNER JOIN (
+                     SELECT mmsi, MAX(timestamp) as max_ts
+                     FROM vessel_positions GROUP BY mmsi
+                 ) latest ON vp.mmsi = latest.mmsi AND vp.timestamp = latest.max_ts
+                 ORDER BY vp.timestamp DESC LIMIT ?1",
+            )
+            .unwrap();
+        stmt.query_map(params![limit], |row| {
+            Ok(VesselPositionRow {
+                mmsi: row.get(0)?,
+                lat: row.get(1)?,
+                lon: row.get(2)?,
+                speed_kts: row.get(3)?,
+                course_deg: row.get(4)?,
+                heading_deg: row.get(5)?,
+                timestamp: row.get(6)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Registration
+    // -----------------------------------------------------------------------
+
+    pub fn register_receiver(
+        &mut self,
+        name: &str,
+        lat: Option<f64>,
+        lon: Option<f64>,
+        description: Option<&str>,
+    ) -> Option<(i64, String)> {
+        let api_key = uuid::Uuid::new_v4().to_string();
+        let ts = now();
+        match self.conn.execute(
+            "INSERT INTO receivers (name, lat, lon, description, api_key, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![name, lat, lon, description, api_key, ts],
+        ) {
+            Ok(_) => {
+                let id = self.conn.last_insert_rowid();
+                Some((id, api_key))
+            }
+            Err(_) => None, // duplicate name
+        }
+    }
+
+    pub fn lookup_receiver_by_api_key(&self, key: &str) -> Option<(i64, String)> {
+        self.conn
+            .query_row(
+                "SELECT id, name FROM receivers WHERE api_key = ?1",
+                params![key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    // -----------------------------------------------------------------------
     // Stats
     // -----------------------------------------------------------------------
 
@@ -688,6 +874,27 @@ pub struct ReceiverRow {
     pub lon: Option<f64>,
     pub description: Option<String>,
     pub created_at: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VesselRow {
+    pub mmsi: String,
+    pub name: Option<String>,
+    pub vessel_type: Option<String>,
+    pub flag: Option<String>,
+    pub first_seen: f64,
+    pub last_seen: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VesselPositionRow {
+    pub mmsi: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub speed_kts: Option<f64>,
+    pub course_deg: Option<f64>,
+    pub heading_deg: Option<f64>,
+    pub timestamp: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -944,17 +1151,25 @@ impl Database {
         .collect()
     }
 
-    /// Get all positions for replay.
-    pub fn get_all_positions_ordered(&self, limit: i64) -> Vec<PositionRow> {
+    /// Get all positions for replay, optionally filtered by time range.
+    pub fn get_all_positions_ordered(
+        &self,
+        limit: i64,
+        start: Option<f64>,
+        end: Option<f64>,
+    ) -> Vec<PositionRow> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
-                 FROM positions ORDER BY timestamp ASC LIMIT ?1",
+                 FROM positions
+                 WHERE (?1 IS NULL OR timestamp >= ?1)
+                   AND (?2 IS NULL OR timestamp <= ?2)
+                 ORDER BY timestamp ASC LIMIT ?3",
             )
             .unwrap();
 
-        stmt.query_map(params![limit], |r| {
+        stmt.query_map(params![start, end, limit], |r| {
             Ok(PositionRow {
                 icao: r.get(0)?,
                 lat: r.get(1)?,
@@ -1120,7 +1335,12 @@ pub trait AdsbDatabase: Send + Sync {
         military: bool,
         limit: i64,
     ) -> Vec<PositionRow>;
-    async fn get_all_positions_ordered(&self, limit: i64) -> Vec<PositionRow>;
+    async fn get_all_positions_ordered(
+        &self,
+        limit: i64,
+        start: Option<f64>,
+        end: Option<f64>,
+    ) -> Vec<PositionRow>;
     async fn get_receivers(&self) -> Vec<ReceiverRow>;
     async fn get_aircraft_history(&self, hours: f64) -> Vec<HistoryRow>;
     async fn export_positions(
@@ -1161,6 +1381,21 @@ pub trait AdsbDatabase: Send + Sync {
         receiver_id: Option<i64>,
         timestamp: f64,
     );
+
+    // Vessel (AIS) methods
+    async fn get_vessels(&self, limit: i64) -> Vec<VesselRow>;
+    async fn get_vessel_positions(&self, minutes: f64, limit: i64) -> Vec<VesselPositionRow>;
+    async fn get_recent_vessel_positions(&self, limit: i64) -> Vec<VesselPositionRow>;
+
+    // Registration methods
+    async fn register_receiver(
+        &self,
+        name: &str,
+        lat: Option<f64>,
+        lon: Option<f64>,
+        description: Option<&str>,
+    ) -> Option<(i64, String)>;
+    async fn lookup_receiver_by_api_key(&self, key: &str) -> Option<(i64, String)>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1246,8 +1481,13 @@ impl AdsbDatabase for SqliteDb {
             .query_positions(min_alt, max_alt, icao, military, limit)
     }
 
-    async fn get_all_positions_ordered(&self, limit: i64) -> Vec<PositionRow> {
-        self.open().get_all_positions_ordered(limit)
+    async fn get_all_positions_ordered(
+        &self,
+        limit: i64,
+        start: Option<f64>,
+        end: Option<f64>,
+    ) -> Vec<PositionRow> {
+        self.open().get_all_positions_ordered(limit, start, end)
     }
 
     async fn get_receivers(&self) -> Vec<ReceiverRow> {
@@ -1327,6 +1567,32 @@ impl AdsbDatabase for SqliteDb {
             receiver_id,
             timestamp,
         );
+    }
+
+    async fn get_vessels(&self, limit: i64) -> Vec<VesselRow> {
+        self.open().get_vessels(limit)
+    }
+
+    async fn get_vessel_positions(&self, minutes: f64, limit: i64) -> Vec<VesselPositionRow> {
+        self.open().get_vessel_positions(minutes, limit)
+    }
+
+    async fn get_recent_vessel_positions(&self, limit: i64) -> Vec<VesselPositionRow> {
+        self.open().get_recent_vessel_positions(limit)
+    }
+
+    async fn register_receiver(
+        &self,
+        name: &str,
+        lat: Option<f64>,
+        lon: Option<f64>,
+        description: Option<&str>,
+    ) -> Option<(i64, String)> {
+        self.open().register_receiver(name, lat, lon, description)
+    }
+
+    async fn lookup_receiver_by_api_key(&self, key: &str) -> Option<(i64, String)> {
+        self.open().lookup_receiver_by_api_key(key)
     }
 }
 
@@ -1768,5 +2034,136 @@ mod tests {
         assert_eq!(db.count_aircraft(), 1);
         assert!(db.get_aircraft("4840D6").is_some());
         assert!(db.get_aircraft("AAAAAA").is_none());
+    }
+
+    #[test]
+    fn test_upsert_vessel() {
+        let mut db = test_db();
+        db.upsert_vessel(
+            "367000001",
+            Some("TEST SHIP"),
+            Some("Cargo"),
+            Some("US"),
+            1.0,
+        );
+
+        let vessels = db.get_vessels(10);
+        assert_eq!(vessels.len(), 1);
+        assert_eq!(vessels[0].mmsi, "367000001");
+        assert_eq!(vessels[0].name.as_deref(), Some("TEST SHIP"));
+        assert_eq!(vessels[0].vessel_type.as_deref(), Some("Cargo"));
+    }
+
+    #[test]
+    fn test_upsert_vessel_updates() {
+        let mut db = test_db();
+        db.upsert_vessel(
+            "367000001",
+            Some("OLD NAME"),
+            Some("Cargo"),
+            Some("US"),
+            1.0,
+        );
+        db.upsert_vessel("367000001", Some("NEW NAME"), None, None, 5.0);
+
+        let vessels = db.get_vessels(10);
+        assert_eq!(vessels.len(), 1);
+        assert_eq!(vessels[0].name.as_deref(), Some("NEW NAME"));
+        assert_eq!(vessels[0].first_seen, 1.0);
+        assert_eq!(vessels[0].last_seen, 5.0);
+    }
+
+    #[test]
+    fn test_add_vessel_position() {
+        let mut db = test_db();
+        db.upsert_vessel("367000001", Some("TEST"), None, None, 1.0);
+        db.add_vessel_position(
+            "367000001",
+            32.5,
+            -79.8,
+            Some(12.0),
+            Some(180.0),
+            Some(175.0),
+            1.0,
+        );
+
+        let _positions = db.get_vessel_positions(60.0, 100);
+        // get_vessel_positions uses now() - minutes*60, so timestamp 1.0 is very old
+        // Use get_recent_vessel_positions instead for latest-per-vessel
+        let latest = db.get_recent_vessel_positions(100);
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].mmsi, "367000001");
+        assert_eq!(latest[0].lat, 32.5);
+        assert_eq!(latest[0].speed_kts, Some(12.0));
+    }
+
+    #[test]
+    fn test_vessel_multiple_positions() {
+        let mut db = test_db();
+        db.upsert_vessel("367000001", Some("SHIP A"), None, None, 1.0);
+        db.upsert_vessel("367000002", Some("SHIP B"), None, None, 1.0);
+        db.add_vessel_position("367000001", 32.5, -79.8, Some(12.0), Some(180.0), None, 1.0);
+        db.add_vessel_position("367000001", 32.4, -79.9, Some(11.5), Some(185.0), None, 2.0);
+        db.add_vessel_position("367000002", 33.0, -78.5, Some(8.0), Some(90.0), None, 1.5);
+
+        let latest = db.get_recent_vessel_positions(100);
+        assert_eq!(latest.len(), 2);
+        // Should have one per vessel (the latest for each)
+        let mmsis: Vec<&str> = latest.iter().map(|p| p.mmsi.as_str()).collect();
+        assert!(mmsis.contains(&"367000001"));
+        assert!(mmsis.contains(&"367000002"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Registration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_register_receiver() {
+        let mut db = test_db();
+        let result = db.register_receiver("home-pi", Some(35.5), Some(-82.5), Some("RTL-SDR"));
+        assert!(result.is_some());
+        let (id, api_key) = result.unwrap();
+        assert!(id > 0);
+        assert!(!api_key.is_empty());
+        // UUID v4 format: 8-4-4-4-12 hex chars
+        assert_eq!(api_key.len(), 36);
+        assert_eq!(api_key.chars().filter(|c| *c == '-').count(), 4);
+    }
+
+    #[test]
+    fn test_register_receiver_duplicate_name() {
+        let mut db = test_db();
+        let first = db.register_receiver("my-rx", None, None, None);
+        assert!(first.is_some());
+        let second = db.register_receiver("my-rx", None, None, None);
+        assert!(second.is_none(), "Duplicate name should fail");
+    }
+
+    #[test]
+    fn test_lookup_receiver_by_api_key() {
+        let mut db = test_db();
+        let (id, api_key) = db.register_receiver("test-rx", None, None, None).unwrap();
+
+        let lookup = db.lookup_receiver_by_api_key(&api_key);
+        assert!(lookup.is_some());
+        let (found_id, found_name) = lookup.unwrap();
+        assert_eq!(found_id, id);
+        assert_eq!(found_name, "test-rx");
+    }
+
+    #[test]
+    fn test_lookup_receiver_invalid_key() {
+        let db = test_db();
+        let lookup = db.lookup_receiver_by_api_key("nonexistent-key");
+        assert!(lookup.is_none());
+    }
+
+    #[test]
+    fn test_register_receiver_unique_keys() {
+        let mut db = test_db();
+        let (_, key1) = db.register_receiver("rx-1", None, None, None).unwrap();
+        let (_, key2) = db.register_receiver("rx-2", None, None, None).unwrap();
+        assert_ne!(key1, key2, "Each receiver should get a unique API key");
     }
 }

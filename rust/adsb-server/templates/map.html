@@ -111,6 +111,12 @@
             <div style="display:flex;gap:10px;">
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="trail-toggle" checked> Trails</label>
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="predict-toggle"> Predict</label>
+            </div>
+            <div id="predict-dur-row" style="margin-top:4px;display:none;">
+                <span style="font-size:10px;color:#888;">Predict:</span>
+                <span style="font-size:11px;color:#00aaff;float:right;" id="predict-dur-label">10 min</span>
+                <input type="range" id="predict-dur-slider" min="0" max="4" value="1" style="width:100%;accent-color:#00aaff;margin-top:2px;">
             </div>
             <div id="heatmap-dur-row" style="margin-top:4px;display:none;">
                 <span style="font-size:10px;color:#888;">Heatmap:</span>
@@ -139,6 +145,9 @@
             <div style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;">
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="events-toggle"> Events</label>
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="military-highlight"> Military</label>
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="range-toggle"> Range</label>
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="airspace-toggle"> Airspace</label>
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="vessel-toggle"> Vessels</label>
             </div>
             <div style="margin-top:6px;display:flex;align-items:center;">
                 <span style="font-size:10px;color:#888;text-transform:uppercase;">Map:</span>
@@ -332,29 +341,70 @@ function altColor(alt) {
     }
 }
 
+// --- HTML escaping for XSS prevention ---
+function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+}
+
 // --- Popup content ---
 function popupHtml(p, acType) {
     const mil = p.is_military ? '<span class="popup-mil"> [MIL]</span>' : '';
-    const name = p.callsign || p.registration || p.icao;
-    const typeLabel = (acType || 'unknown').charAt(0).toUpperCase() + (acType || 'unknown').slice(1);
-    const hexIcao = p.icao.toUpperCase();
+    const name = esc(p.callsign || p.registration || p.icao);
+    const typeLabel = esc((acType || 'unknown').charAt(0).toUpperCase() + (acType || 'unknown').slice(1));
+    const hexIcao = esc(p.icao.toUpperCase());
     return `<div class="ac-popup">
         <div class="popup-title">${name}${mil}</div>
-        <div class="popup-row"><span class="popup-label">ICAO</span><span class="popup-value">${p.icao}</span></div>
+        <div class="popup-row"><span class="popup-label">ICAO</span><span class="popup-value">${esc(p.icao)}</span></div>
         <div class="popup-row"><span class="popup-label">Type</span><span class="popup-value">${typeLabel}</span></div>
-        ${p.callsign ? `<div class="popup-row"><span class="popup-label">Callsign</span><span class="popup-value">${p.callsign}</span></div>` : ''}
-        ${p.registration ? `<div class="popup-row"><span class="popup-label">Reg</span><span class="popup-value">${p.registration}</span></div>` : ''}
-        ${p.country ? `<div class="popup-row"><span class="popup-label">Country</span><span class="popup-value">${p.country}</span></div>` : ''}
+        ${p.callsign ? `<div class="popup-row"><span class="popup-label">Callsign</span><span class="popup-value">${esc(p.callsign)}</span></div>` : ''}
+        ${p.registration ? `<div class="popup-row"><span class="popup-label">Reg</span><span class="popup-value">${esc(p.registration)}</span></div>` : ''}
+        ${p.country ? `<div class="popup-row"><span class="popup-label">Country</span><span class="popup-value">${esc(p.country)}</span></div>` : ''}
         <div class="popup-row"><span class="popup-label">Altitude</span><span class="popup-value">${p.altitude_ft != null ? p.altitude_ft.toLocaleString() + ' ft' : '--'}</span></div>
         <div class="popup-row"><span class="popup-label">Speed</span><span class="popup-value">${p.speed_kts != null ? Math.round(p.speed_kts) + ' kts' : '--'}</span></div>
         <div class="popup-row"><span class="popup-label">Heading</span><span class="popup-value">${p.heading_deg != null ? Math.round(p.heading_deg) + '\u00B0' : '--'}</span></div>
         <div class="popup-row"><span class="popup-label">VRate</span><span class="popup-value">${p.vertical_rate_fpm != null ? p.vertical_rate_fpm + ' fpm' : '--'}</span></div>
+        <div id="photo-${esc(p.icao)}" style="margin-top:6px;text-align:center;"></div>
         <div style="margin-top:6px; display:flex; gap:8px; flex-wrap:wrap;">
-            <a href="/aircraft/${p.icao}">Detail &rarr;</a>
-            ${p.registration ? `<a href="https://www.planespotters.net/search?q=${encodeURIComponent(p.registration)}" target="_blank" rel="noopener">Photos</a>` : `<a href="https://www.planespotters.net/hex/${hexIcao}" target="_blank" rel="noopener">Photos</a>`}
-            <a href="https://globe.adsbexchange.com/?icao=${hexIcao}" target="_blank" rel="noopener">ADSBx</a>
+            <a href="/aircraft/${encodeURIComponent(p.icao)}">Detail &rarr;</a>
+            ${p.registration ? `<a href="https://www.planespotters.net/search?q=${encodeURIComponent(p.registration)}" target="_blank" rel="noopener">Photos</a>` : `<a href="https://www.planespotters.net/hex/${encodeURIComponent(hexIcao)}" target="_blank" rel="noopener">Photos</a>`}
+            <a href="https://globe.adsbexchange.com/?icao=${encodeURIComponent(hexIcao)}" target="_blank" rel="noopener">ADSBx</a>
         </div>
     </div>`;
+}
+
+// --- Aircraft photo loader ---
+const photoCache = {};
+function loadAircraftPhoto(icao) {
+    const el = document.getElementById('photo-' + icao);
+    if (!el) return;
+    if (photoCache[icao] !== undefined) {
+        renderPhoto(el, photoCache[icao]);
+        return;
+    }
+    el.innerHTML = '<span style="color:#666;font-size:10px;">Loading photo...</span>';
+    fetch('/api/photos/' + icao)
+        .then(r => r.json())
+        .then(data => {
+            photoCache[icao] = data;
+            renderPhoto(el, data);
+        })
+        .catch(() => { el.innerHTML = ''; });
+}
+
+function renderPhoto(el, data) {
+    if (!data || !data.photos || data.photos.length === 0) {
+        el.innerHTML = '';
+        return;
+    }
+    const photo = data.photos[0];
+    const thumb = photo.thumbnail_large || photo.thumbnail || {};
+    const src = thumb.src || '';
+    if (!src) { el.innerHTML = ''; return; }
+    const credit = esc(photo.photographer || 'Unknown');
+    const link = esc(photo.link || '#');
+    el.innerHTML = `<a href="${link}" target="_blank" rel="noopener"><img src="${esc(src)}" style="max-width:100%;border-radius:3px;margin-top:4px;" alt="Aircraft photo"></a>
+        <div style="font-size:9px;color:#666;">\u00A9 ${credit}</div>`;
 }
 
 // --- Draw trail (uses object format from Rust API) ---
@@ -446,7 +496,8 @@ function updateMap() {
                 markers[key] = L.marker([p.lat, p.lon], {
                     icon: acIcon(p.heading_deg, p.is_military, acType),
                 }).addTo(map);
-                markers[key].bindPopup(popupHtml(p, acType), { maxWidth: 250 });
+                markers[key].bindPopup(popupHtml(p, acType), { maxWidth: 280 });
+                markers[key].on('popupopen', () => loadAircraftPhoto(key));
             }
 
             const label = p.callsign || p.registration || p.icao;
@@ -459,8 +510,8 @@ function updateMap() {
             const cls = p.is_military ? 'mil' : '';
             const hdg = p.heading_deg != null ? Math.round(p.heading_deg) + '\u00B0' : '-';
             tbody.innerHTML += `<tr>
-                <td><a href="/aircraft/${p.icao}" class="${cls}">${p.icao}</a></td>
-                <td>${p.callsign || p.registration || '-'}</td>
+                <td><a href="/aircraft/${encodeURIComponent(p.icao)}" class="${cls}">${esc(p.icao)}</a></td>
+                <td>${esc(p.callsign || p.registration || '-')}</td>
                 <td>${p.altitude_ft != null ? p.altitude_ft.toLocaleString() : '-'}</td>
                 <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
                 <td>${hdg}</td>
@@ -512,7 +563,7 @@ function updateMap() {
 
             const hdg = last.heading_deg != null ? Math.round(last.heading_deg) + '\u00B0' : '-';
             tbody.innerHTML += `<tr class="ac-ghost">
-                <td><a href="/aircraft/${icao}">${icao}</a></td>
+                <td><a href="/aircraft/${encodeURIComponent(icao)}">${esc(icao)}</a></td>
                 <td>${agoText || '-'}</td>
                 <td>${last.altitude_ft != null ? last.altitude_ft.toLocaleString() : '-'}</td>
                 <td>${last.speed_kts ? Math.round(last.speed_kts) : '-'}</td>
@@ -523,6 +574,9 @@ function updateMap() {
         // Update aircraft count to include historical
         document.getElementById('ac-count').textContent = seen.size;
         document.getElementById('so-aircraft').textContent = seen.size;
+
+        // Update route predictions
+        drawPredictions(posData);
 
         // Update military highlight rings
         if (militaryHighlightEnabled) {
@@ -822,6 +876,11 @@ function saveState() {
         events: document.getElementById('events-toggle').checked,
         milHighlight: document.getElementById('military-highlight').checked,
         mapStyle: document.getElementById('map-style').value,
+        predict: document.getElementById('predict-toggle').checked,
+        predictDur: parseInt(predictDurSlider.value),
+        rangeRings: document.getElementById('range-toggle').checked,
+        airspace: document.getElementById('airspace-toggle').checked,
+        vessels: document.getElementById('vessel-toggle').checked,
         zoom: map.getZoom(),
         center: [map.getCenter().lat, map.getCenter().lng],
     };
@@ -864,6 +923,33 @@ function restoreState() {
             militaryHighlightEnabled = true; militaryLayer.addTo(map);
         }
         if (s.mapStyle && tileSets[s.mapStyle]) setMapStyle(s.mapStyle);
+        if (s.predict) {
+            predictToggle.checked = true; predictEnabled = true;
+            predictDurRow.style.display = '';
+        }
+        if (s.predictDur !== undefined) {
+            predictDurSlider.value = s.predictDur;
+            predictMinutes = predictDurSteps[s.predictDur];
+            predictDurLabel.textContent = predictDurLabels[s.predictDur];
+        }
+        if (s.rangeRings) {
+            document.getElementById('range-toggle').checked = true;
+            rangeEnabled = true;
+            rangeLayer.addTo(map);
+            fetchAndDrawRangeRings();
+        }
+        if (s.airspace) {
+            document.getElementById('airspace-toggle').checked = true;
+            airspaceEnabled = true;
+            airspaceLayer.addTo(map);
+            fetchAirspace();
+        }
+        if (s.vessels) {
+            document.getElementById('vessel-toggle').checked = true;
+            vesselsEnabled = true;
+            vesselLayer.addTo(map);
+            fetchVessels();
+        }
         if (s.center && s.zoom) { map.setView(s.center, s.zoom); mapCentered = true; }
         if (s.aptLarge || s.aptMedium || s.aptSmall) {
             if (!allAirports) {
@@ -877,7 +963,7 @@ function restoreState() {
     } catch(e) {}
 }
 map.on('moveend', saveState);
-['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small', 'notify-toggle', 'audio-toggle', 'events-toggle', 'military-highlight'].forEach(id => {
+['heatmap-toggle', 'apt-large', 'apt-medium', 'apt-small', 'notify-toggle', 'audio-toggle', 'events-toggle', 'military-highlight', 'predict-toggle', 'range-toggle', 'vessel-toggle'].forEach(id => {
     document.getElementById(id).addEventListener('change', saveState);
 });
 document.getElementById('map-style').addEventListener('change', function() {
@@ -939,9 +1025,9 @@ function refreshGeofenceList() {
         if (data.length === 0) { el.innerHTML = ''; return; }
         el.innerHTML = data.map(f =>
             `<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0;">
-                <span style="color:#ff8800;">${f.name}</span>
-                <span>${f.radius_nm}nm
-                    <a href="#" onclick="deleteGeofence(${f.id});return false;" style="color:#ff4444;margin-left:4px;">\u00D7</a>
+                <span style="color:#ff8800;">${esc(f.name)}</span>
+                <span>${Number(f.radius_nm) || 0}nm
+                    <a href="#" onclick="deleteGeofence(${parseInt(f.id, 10) || 0});return false;" style="color:#ff4444;margin-left:4px;">\u00D7</a>
                 </span>
             </div>`
         ).join('');
@@ -1071,12 +1157,12 @@ function fetchEventMarkers() {
             }).addTo(eventsLayer);
             marker.bindTooltip(`${typeName} — ${time}`, { direction: 'right', className: 'dark-tooltip' });
             marker.bindPopup(`<div class="ac-popup">
-                <div class="popup-title" style="color:${color};">${typeName}</div>
-                <div class="popup-row"><span class="popup-label">ICAO</span><span class="popup-value"><a href="/aircraft/${evt.icao}">${evt.icao}</a></span></div>
-                <div class="popup-row"><span class="popup-label">Description</span><span class="popup-value" style="max-width:180px;white-space:normal;">${evt.description || ''}</span></div>
+                <div class="popup-title" style="color:${color};">${esc(typeName)}</div>
+                <div class="popup-row"><span class="popup-label">ICAO</span><span class="popup-value"><a href="/aircraft/${encodeURIComponent(evt.icao)}">${esc(evt.icao)}</a></span></div>
+                <div class="popup-row"><span class="popup-label">Description</span><span class="popup-value" style="max-width:180px;white-space:normal;">${esc(evt.description || '')}</span></div>
                 <div class="popup-row"><span class="popup-label">Time</span><span class="popup-value">${time}</span></div>
                 ${evt.altitude_ft != null ? `<div class="popup-row"><span class="popup-label">Altitude</span><span class="popup-value">${evt.altitude_ft.toLocaleString()} ft</span></div>` : ''}
-                <div style="margin-top:6px;"><a href="/aircraft/${evt.icao}">Detail &rarr;</a></div>
+                <div style="margin-top:6px;"><a href="/aircraft/${encodeURIComponent(evt.icao)}">Detail &rarr;</a></div>
             </div>`, { maxWidth: 300 });
         });
         if (data.length > 0) {
@@ -1307,6 +1393,9 @@ async function activate3D() {
     // Sync toggle state — render features already enabled in 2D
     if (heatmapEnabled) updateHeatmap();
     if (allAirports && getAptFilters && Object.values(getAptFilters()).some(v => v)) renderVisibleAirports();
+    if (rangeEnabled) { clearCesiumRangeRings(); fetchAndDrawRangeRings(); }
+    if (airspaceEnabled && airspaceData) renderAirspace3D(airspaceData);
+    if (vesselsEnabled && vesselData) renderVessels3D(vesselData);
 }
 
 function updateCesium3D() {
@@ -1366,11 +1455,11 @@ function updateCesium3D() {
                         clampToGround: false,
                     } : undefined,
                     description: `<div style="font:12px monospace;">
-                        <b>${p.callsign || key}</b>${p.is_military ? ' <span style="color:#f44">[MIL]</span>' : ''}<br>
+                        <b>${esc(p.callsign || key)}</b>${p.is_military ? ' <span style="color:#f44">[MIL]</span>' : ''}<br>
                         Alt: ${p.altitude_ft != null ? p.altitude_ft.toLocaleString() + ' ft' : '--'}<br>
                         Spd: ${p.speed_kts ? Math.round(p.speed_kts) + ' kts' : '--'}<br>
                         Hdg: ${p.heading_deg != null ? Math.round(p.heading_deg) + '°' : '--'}<br>
-                        ${p.country ? 'Country: ' + p.country + '<br>' : ''}
+                        ${p.country ? 'Country: ' + esc(p.country) + '<br>' : ''}
                     </div>`,
                 });
 
@@ -1526,6 +1615,9 @@ function updateCesium3D() {
             }
         });
 
+        // Update 3D route predictions
+        drawPredictions3D(posData);
+
         cesiumViewer.scene.requestRender();
     }).catch(err => console.error('3D update failed:', err));
 }
@@ -1536,6 +1628,8 @@ function deactivate3D() {
     // Clean up all entities
     cesiumHeatmapEntities = [];
     cesiumAirportEntities = [];
+    cesiumRangeEntities = [];
+    cesiumPredictEntities = [];
     if (cesiumViewer) {
         cesiumViewer.entities.removeAll();
         Object.keys(cesiumEntities).forEach(k => delete cesiumEntities[k]);
@@ -1543,6 +1637,9 @@ function deactivate3D() {
     // Re-render 2D features that were active
     if (heatmapEnabled) updateHeatmap();
     if (allAirports && Object.values(getAptFilters()).some(v => v)) renderVisibleAirports();
+    if (rangeEnabled) { rangeLayer.clearLayers(); rangeLayer.addTo(map); fetchAndDrawRangeRings(); }
+    if (airspaceEnabled) { clearCesiumAirspace(); airspaceLayer.clearLayers(); airspaceLayer.addTo(map); if (airspaceData) renderAirspace(airspaceData); }
+    if (vesselsEnabled) { clearCesiumVessels(); vesselLayer.clearLayers(); vesselLayer.addTo(map); if (vesselData) renderVessels(vesselData); }
     document.getElementById('cesium-container').style.display = 'none';
     document.getElementById('map').style.display = 'block';
     document.getElementById('alt-legend').style.display = '';
@@ -1576,6 +1673,493 @@ document.getElementById('mode-3d-btn').addEventListener('click', function() {
         });
     }
 });
+
+// --- Range rings layer ---
+let rangeLayer = L.layerGroup();
+let rangeEnabled = false;
+let cesiumRangeEntities = [];
+const rangeRadiiNm = [25, 50, 100, 150, 200];
+const NM_TO_METERS = 1852;
+
+document.getElementById('range-toggle').addEventListener('change', function() {
+    rangeEnabled = this.checked;
+    if (rangeEnabled) {
+        rangeLayer.addTo(map);
+        fetchAndDrawRangeRings();
+    } else {
+        rangeLayer.clearLayers();
+        map.removeLayer(rangeLayer);
+        clearCesiumRangeRings();
+    }
+    saveState();
+});
+
+function clearCesiumRangeRings() {
+    cesiumRangeEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); });
+    cesiumRangeEntities = [];
+}
+
+function fetchAndDrawRangeRings() {
+    if (!rangeEnabled) return;
+
+    // Try receivers API first
+    fetch('/api/v1/receivers').then(r => r.json()).then(data => {
+        const receivers = data.filter(rx => rx.lat && rx.lon);
+        if (receivers.length > 0) {
+            receivers.forEach(rx => drawRangeRingsAt(rx.lat, rx.lon, rx.name || 'Receiver'));
+        } else {
+            // Fallback: use map center / receiver from stats
+            fetch('/api/stats').then(r => r.json()).then(stats => {
+                if (stats.receiver && stats.receiver.lat && stats.receiver.lon) {
+                    drawRangeRingsAt(stats.receiver.lat, stats.receiver.lon, stats.receiver.name || 'Receiver');
+                } else {
+                    // Last resort: use current map center
+                    const c = map.getCenter();
+                    drawRangeRingsAt(c.lat, c.lng, 'Center');
+                }
+            }).catch(() => {
+                const c = map.getCenter();
+                drawRangeRingsAt(c.lat, c.lng, 'Center');
+            });
+        }
+    }).catch(() => {
+        // Receivers API not available — use stats or center
+        fetch('/api/stats').then(r => r.json()).then(stats => {
+            if (stats.receiver && stats.receiver.lat && stats.receiver.lon) {
+                drawRangeRingsAt(stats.receiver.lat, stats.receiver.lon, stats.receiver.name || 'Receiver');
+            }
+        }).catch(() => {});
+    });
+}
+
+function drawRangeRingsAt(lat, lon, label) {
+    if (is3DMode && cesiumViewer) {
+        rangeRadiiNm.forEach(nm => {
+            const entity = cesiumViewer.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(lon, lat),
+                ellipse: {
+                    semiMajorAxis: nm * NM_TO_METERS,
+                    semiMinorAxis: nm * NM_TO_METERS,
+                    fill: false,
+                    outline: true,
+                    outlineColor: new Cesium.Color(0.3, 0.3, 0.3, 0.6),
+                    outlineWidth: 1,
+                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                },
+                label: {
+                    text: nm + ' nm',
+                    font: '10px monospace',
+                    fillColor: new Cesium.Color(0.5, 0.5, 0.5, 0.7),
+                    outlineColor: Cesium.Color.BLACK,
+                    outlineWidth: 1,
+                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                    pixelOffset: new Cesium.Cartesian2(0, -4),
+                    scale: 0.8,
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+            });
+            cesiumRangeEntities.push(entity);
+        });
+        cesiumViewer.scene.requestRender();
+        return;
+    }
+
+    // 2D Leaflet range rings
+    rangeRadiiNm.forEach(nm => {
+        const circle = L.circle([lat, lon], {
+            radius: nm * NM_TO_METERS,
+            color: '#444',
+            weight: 1,
+            fill: false,
+            dashArray: '8,6',
+            interactive: false,
+        }).addTo(rangeLayer);
+
+        // Label at north cardinal point
+        const labelLat = lat + (nm * NM_TO_METERS) / 111320;
+        L.marker([labelLat, lon], {
+            icon: L.divIcon({
+                className: '',
+                html: `<span style="font-size:10px;color:#666;background:rgba(10,10,10,0.8);padding:0 3px;border-radius:2px;">${nm}nm</span>`,
+                iconAnchor: [16, 10],
+            }),
+            interactive: false,
+        }).addTo(rangeLayer);
+    });
+}
+
+// --- Airspace overlay ---
+let airspaceLayer = L.layerGroup();
+let airspaceEnabled = false;
+let airspaceData = null;
+let cesiumAirspaceEntities = [];
+
+const airspaceColors = {
+    B: { fill: 'rgba(0,100,255,0.12)', stroke: '#0066ff', label: 'Class B' },
+    C: { fill: 'rgba(128,0,200,0.10)', stroke: '#8800cc', label: 'Class C' },
+    D: { fill: 'rgba(0,120,80,0.10)', stroke: '#008855', label: 'Class D' },
+    R: { fill: 'rgba(255,0,0,0.12)', stroke: '#ff0000', label: 'Restricted' },
+    P: { fill: 'rgba(255,0,0,0.15)', stroke: '#cc0000', label: 'Prohibited' },
+    A: { fill: 'rgba(255,160,0,0.10)', stroke: '#ff8800', label: 'Alert' },
+    W: { fill: 'rgba(255,200,0,0.10)', stroke: '#ffaa00', label: 'Warning' },
+};
+
+document.getElementById('airspace-toggle').addEventListener('change', function() {
+    airspaceEnabled = this.checked;
+    if (airspaceEnabled) {
+        airspaceLayer.addTo(map);
+        fetchAirspace();
+    } else {
+        airspaceLayer.clearLayers();
+        map.removeLayer(airspaceLayer);
+        clearCesiumAirspace();
+    }
+    saveState();
+});
+
+function clearCesiumAirspace() {
+    cesiumAirspaceEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); });
+    cesiumAirspaceEntities = [];
+}
+
+function fetchAirspace() {
+    if (!airspaceEnabled) return;
+    if (airspaceData) { renderAirspace(airspaceData); return; }
+    fetch('/api/airspace').then(r => r.json()).then(data => {
+        airspaceData = data;
+        renderAirspace(data);
+    }).catch(err => console.error('Airspace fetch failed:', err));
+}
+
+function renderAirspace(data) {
+    if (!data || !data.features) return;
+    if (is3DMode && cesiumViewer) { renderAirspace3D(data); return; }
+
+    airspaceLayer.clearLayers();
+    for (const feature of data.features) {
+        const props = feature.properties || {};
+        const classKey = props.CLASS || props.TYPE_CODE || '?';
+        const style = airspaceColors[classKey] || { fill: 'rgba(128,128,128,0.08)', stroke: '#666', label: classKey };
+        const name = props.NAME || props.IDENT || '';
+        const lowerVal = props.LOWER_VAL != null ? props.LOWER_VAL : 'SFC';
+        const upperVal = props.UPPER_VAL != null ? props.UPPER_VAL : '?';
+
+        if (!feature.geometry || !feature.geometry.coordinates) continue;
+        const coords = feature.geometry.coordinates;
+        // GeoJSON polygons: [[ring], ...] where ring = [[lon,lat], ...]
+        const rings = (feature.geometry.type === 'MultiPolygon')
+            ? coords.flatMap(poly => poly)
+            : coords;
+
+        const latLngs = rings.map(ring => ring.map(c => [c[1], c[0]]));
+        const polygon = L.polygon(latLngs, {
+            color: style.stroke,
+            weight: 1,
+            fillColor: style.fill,
+            fillOpacity: 0.3,
+            opacity: 0.6,
+        }).addTo(airspaceLayer);
+        polygon.bindPopup(`<b>${name}</b><br>${style.label}<br>${lowerVal} – ${upperVal} ft`);
+    }
+}
+
+function renderAirspace3D(data) {
+    clearCesiumAirspace();
+    if (!cesiumViewer || !data || !data.features) return;
+
+    for (const feature of data.features) {
+        const props = feature.properties || {};
+        const classKey = props.CLASS || props.TYPE_CODE || '?';
+        const style = airspaceColors[classKey];
+        if (!style) continue;
+        if (!feature.geometry || !feature.geometry.coordinates) continue;
+
+        const coords = feature.geometry.coordinates;
+        const rings = (feature.geometry.type === 'MultiPolygon')
+            ? coords.flatMap(poly => poly)
+            : coords;
+
+        for (const ring of rings) {
+            const positions = ring.flat();
+            const rgba = style.stroke;
+            const r = parseInt(rgba.slice(1,3), 16) / 255;
+            const g = parseInt(rgba.slice(3,5), 16) / 255;
+            const b = parseInt(rgba.slice(5,7), 16) / 255;
+
+            const entity = cesiumViewer.entities.add({
+                polygon: {
+                    hierarchy: Cesium.Cartesian3.fromDegreesArray(positions),
+                    material: new Cesium.Color(r, g, b, 0.15),
+                    outline: true,
+                    outlineColor: new Cesium.Color(r, g, b, 0.6),
+                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                },
+                name: props.NAME || classKey,
+                description: `${style.label}<br>${props.LOWER_VAL || 'SFC'} – ${props.UPPER_VAL || '?'} ft`,
+            });
+            cesiumAirspaceEntities.push(entity);
+        }
+    }
+    cesiumViewer.scene.requestRender();
+}
+
+// --- Route prediction lines ---
+let predictEnabled = false;
+let predictLines = {};
+let cesiumPredictEntities = [];
+const predictDurSteps = [5, 10, 15, 20, 30];
+const predictDurLabels = ['5 min', '10 min', '15 min', '20 min', '30 min'];
+let predictMinutes = 10;
+const predictToggle = document.getElementById('predict-toggle');
+const predictDurSlider = document.getElementById('predict-dur-slider');
+const predictDurLabel = document.getElementById('predict-dur-label');
+const predictDurRow = document.getElementById('predict-dur-row');
+
+predictToggle.addEventListener('change', function() {
+    predictEnabled = this.checked;
+    predictDurRow.style.display = predictEnabled ? '' : 'none';
+    if (!predictEnabled) clearPredictions();
+    saveState();
+});
+
+predictDurSlider.addEventListener('input', function() {
+    const idx = parseInt(this.value);
+    predictMinutes = predictDurSteps[idx];
+    predictDurLabel.textContent = predictDurLabels[idx];
+    saveState();
+});
+
+function clearPredictions() {
+    Object.values(predictLines).forEach(line => map.removeLayer(line));
+    predictLines = {};
+    cesiumPredictEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); });
+    cesiumPredictEntities = [];
+}
+
+function predictPosition(lat, lon, headingDeg, speedKts, minutesAhead) {
+    // Great circle approximation for short distances
+    const speedNmPerMin = speedKts / 60;
+    const distNm = speedNmPerMin * minutesAhead;
+    const headingRad = headingDeg * Math.PI / 180;
+    const latRad = lat * Math.PI / 180;
+
+    // Approximate: 1nm = 1/60 degree latitude
+    const dLat = (distNm * Math.cos(headingRad)) / 60;
+    const dLon = (distNm * Math.sin(headingRad)) / (60 * Math.cos(latRad));
+
+    return [lat + dLat, lon + dLon];
+}
+
+function drawPredictions(posData) {
+    // Clear old predictions
+    Object.values(predictLines).forEach(line => map.removeLayer(line));
+    predictLines = {};
+
+    if (!predictEnabled) return;
+
+    posData.forEach(p => {
+        if (p.heading_deg == null || p.speed_kts == null) return;
+        if (p.speed_kts < 30) return; // Skip ground/parked aircraft
+
+        const points = [[p.lat, p.lon]];
+        const steps = 4; // Intermediate points for smoother line
+        for (let i = 1; i <= steps; i++) {
+            const mins = (predictMinutes / steps) * i;
+            points.push(predictPosition(p.lat, p.lon, p.heading_deg, p.speed_kts, mins));
+        }
+
+        const baseColor = altColor(p.altitude_ft);
+        const line = L.polyline(points, {
+            color: baseColor,
+            weight: 1.5,
+            opacity: 0.4,
+            dashArray: '6,8',
+            interactive: false,
+        }).addTo(map);
+        predictLines[p.icao] = line;
+    });
+}
+
+function drawPredictions3D(posData) {
+    cesiumPredictEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); });
+    cesiumPredictEntities = [];
+
+    if (!predictEnabled || !cesiumViewer) return;
+
+    posData.forEach(p => {
+        if (p.heading_deg == null || p.speed_kts == null) return;
+        if (p.speed_kts < 30) return;
+
+        const altM = (p.altitude_ft || 0) * 0.3048;
+        const endPos = predictPosition(p.lat, p.lon, p.heading_deg, p.speed_kts, predictMinutes);
+        const rgba = p.is_military ? [255, 68, 68, 80] : altColorRGBA(p.altitude_ft);
+        rgba[3] = 80; // Lower alpha for prediction
+
+        const entity = cesiumViewer.entities.add({
+            polyline: {
+                positions: [
+                    Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM),
+                    Cesium.Cartesian3.fromDegrees(endPos[1], endPos[0], altM),
+                ],
+                width: 1.5,
+                material: new Cesium.PolylineDashMaterialProperty({
+                    color: Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], rgba[3]),
+                    dashLength: 12,
+                }),
+            },
+        });
+        cesiumPredictEntities.push(entity);
+    });
+    cesiumViewer.scene.requestRender();
+}
+
+// --- Vessel (AIS) overlay ---
+let vesselsEnabled = false;
+let vesselLayer = L.layerGroup();
+let vesselData = null;
+let cesiumVesselEntities = [];
+
+const vesselTypeColors = {
+    'Cargo': '#9e9e9e',
+    'Tanker': '#e53935',
+    'Passenger': '#1e88e5',
+    'Military': '#43a047',
+    'Fishing': '#ff9800',
+    'Tug': '#795548',
+    'Sailing': '#ab47bc',
+};
+
+function vesselColor(type) {
+    return vesselTypeColors[type] || '#607d8b';
+}
+
+// Ship icon SVG (simple triangle/arrow shape)
+function shipIcon(color, heading) {
+    const rotation = heading || 0;
+    return L.divIcon({
+        html: `<div style="transform:rotate(${rotation}deg);width:16px;height:16px;display:flex;align-items:center;justify-content:center;">
+            <svg width="16" height="16" viewBox="0 0 16 16">
+                <polygon points="8,0 14,14 8,10 2,14" fill="${color}" stroke="#000" stroke-width="0.5" opacity="0.9"/>
+            </svg>
+        </div>`,
+        className: '',
+        iconSize: [16, 16],
+        iconAnchor: [8, 8],
+    });
+}
+
+document.getElementById('vessel-toggle').addEventListener('change', function() {
+    vesselsEnabled = this.checked;
+    if (vesselsEnabled) {
+        vesselLayer.addTo(map);
+        fetchVessels();
+    } else {
+        vesselLayer.clearLayers();
+        map.removeLayer(vesselLayer);
+        clearCesiumVessels();
+    }
+    saveState();
+});
+
+function clearCesiumVessels() {
+    cesiumVesselEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); });
+    cesiumVesselEntities = [];
+}
+
+function fetchVessels() {
+    if (!vesselsEnabled) return;
+    fetch('/api/vessel-positions/latest?limit=200')
+        .then(r => r.json())
+        .then(data => {
+            vesselData = data;
+            renderVessels(data);
+        })
+        .catch(err => console.error('Vessel fetch failed:', err));
+}
+
+function renderVessels(data) {
+    vesselLayer.clearLayers();
+    if (is3DMode && cesiumViewer) { renderVessels3D(data); return; }
+
+    // Get vessel metadata for colors
+    fetch('/api/vessels?limit=200')
+        .then(r => r.json())
+        .then(vessels => {
+            const vesselMap = {};
+            vessels.forEach(v => { vesselMap[v.mmsi] = v; });
+
+            data.forEach(pos => {
+                const vessel = vesselMap[pos.mmsi] || {};
+                const color = vesselColor(vessel.vessel_type);
+                const icon = shipIcon(color, pos.course_deg || pos.heading_deg);
+
+                const marker = L.marker([pos.lat, pos.lon], { icon })
+                    .bindTooltip(esc(vessel.name || pos.mmsi), { permanent: false })
+                    .bindPopup(`
+                        <div style="font-family:monospace;font-size:12px;">
+                            <b style="color:${color};">${esc(vessel.name || 'Unknown')}</b><br>
+                            MMSI: ${esc(pos.mmsi)}<br>
+                            Type: ${esc(vessel.vessel_type || '-')}<br>
+                            Flag: ${esc(vessel.flag || '-')}<br>
+                            Speed: ${pos.speed_kts ? pos.speed_kts.toFixed(1) + ' kts' : '-'}<br>
+                            Course: ${pos.course_deg ? pos.course_deg.toFixed(0) + '\u00B0' : '-'}<br>
+                        </div>
+                    `);
+                vesselLayer.addLayer(marker);
+            });
+        });
+}
+
+function renderVessels3D(data) {
+    clearCesiumVessels();
+    if (!cesiumViewer) return;
+
+    fetch('/api/vessels?limit=200')
+        .then(r => r.json())
+        .then(vessels => {
+            const vesselMap = {};
+            vessels.forEach(v => { vesselMap[v.mmsi] = v; });
+
+            data.forEach(pos => {
+                const vessel = vesselMap[pos.mmsi] || {};
+                const color = vesselColor(vessel.vessel_type);
+                const [r, g, b] = hexToRgb(color);
+
+                const entity = cesiumViewer.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(pos.lon, pos.lat, 0),
+                    point: {
+                        pixelSize: 8,
+                        color: Cesium.Color.fromBytes(r, g, b, 220),
+                        outlineColor: Cesium.Color.BLACK,
+                        outlineWidth: 1,
+                        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                    },
+                    label: {
+                        text: vessel.name || pos.mmsi,
+                        font: '10px monospace',
+                        fillColor: Cesium.Color.fromBytes(r, g, b),
+                        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                        outlineColor: Cesium.Color.BLACK,
+                        outlineWidth: 2,
+                        pixelOffset: new Cesium.Cartesian2(0, -12),
+                        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                    },
+                    name: vessel.name || pos.mmsi,
+                    description: `MMSI: ${pos.mmsi}<br>Type: ${vessel.vessel_type || '-'}<br>Speed: ${pos.speed_kts ? pos.speed_kts.toFixed(1) + ' kts' : '-'}`,
+                });
+                cesiumVesselEntities.push(entity);
+            });
+            cesiumViewer.scene.requestRender();
+        });
+}
+
+function hexToRgb(hex) {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? [parseInt(result[1], 16), parseInt(result[2], 16), parseInt(result[3], 16)] : [128, 128, 128];
+}
+
+// Refresh vessel positions periodically (every 10 seconds)
+setInterval(fetchVessels, 10000);
 
 // --- Panel toggle ---
 document.getElementById('panel-header').addEventListener('click', function() {

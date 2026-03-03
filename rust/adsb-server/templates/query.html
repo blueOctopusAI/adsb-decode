@@ -25,6 +25,13 @@
 <div class="container" style="padding:0;">
     <div class="query-bar">
         <h3 style="color:#00ff88;margin:0 0 8px;">Query Builder</h3>
+        <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;">
+            <input type="text" id="nlp-input" placeholder="Ask in plain English... e.g. &quot;military aircraft above 30000 feet&quot;" style="flex:1;background:#1a1a1a;color:#e0e0e0;border:1px solid #444;padding:8px 12px;font-family:'Courier New',monospace;font-size:13px;border-radius:3px;">
+            <button id="nlp-submit" style="background:#00aaff;color:#000;border:none;padding:8px 16px;cursor:pointer;font-family:'Courier New',monospace;font-weight:bold;border-radius:3px;font-size:13px;white-space:nowrap;">Ask AI</button>
+        </div>
+        <div id="nlp-interpretation" style="display:none;margin-bottom:8px;padding:6px 10px;background:#1a1a1a;border:1px solid #333;border-radius:3px;font-size:11px;color:#888;">
+            <span style="color:#00aaff;">Interpreted as:</span> <span id="nlp-parsed"></span>
+        </div>
         <div style="margin-bottom:8px;">
             <button class="preset-btn" data-query="military">Military Aircraft</button>
             <button class="preset-btn" data-query="low">Below 5,000 ft</button>
@@ -188,5 +195,109 @@ function runQuery() {
             document.getElementById('result-count').textContent = 'Query failed';
             console.error(err);
         });
+}
+
+// --- NLP Query ---
+document.getElementById('nlp-submit').addEventListener('click', runNlpQuery);
+document.getElementById('nlp-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') runNlpQuery();
+});
+
+function runNlpQuery() {
+    const query = document.getElementById('nlp-input').value.trim();
+    if (!query) return;
+
+    document.getElementById('nlp-submit').disabled = true;
+    document.getElementById('nlp-submit').textContent = 'Thinking...';
+    document.getElementById('result-count').textContent = 'Querying AI...';
+    document.getElementById('nlp-interpretation').style.display = 'none';
+
+    fetch('/api/nlp-query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        document.getElementById('nlp-submit').disabled = false;
+        document.getElementById('nlp-submit').textContent = 'Ask AI';
+
+        if (data.error) {
+            document.getElementById('result-count').textContent = data.error;
+            return;
+        }
+
+        // Show interpretation
+        const interp = data.interpretation || {};
+        const parts = [];
+        if (interp.military !== undefined) parts.push(`military=${interp.military}`);
+        if (interp.min_alt !== undefined) parts.push(`min_alt=${interp.min_alt}`);
+        if (interp.max_alt !== undefined) parts.push(`max_alt=${interp.max_alt}`);
+        if (interp.icao) parts.push(`icao=${interp.icao}`);
+        if (interp.limit) parts.push(`limit=${interp.limit}`);
+        if (parts.length > 0) {
+            document.getElementById('nlp-parsed').textContent = parts.join(', ');
+            document.getElementById('nlp-interpretation').style.display = 'block';
+        }
+
+        // Fill in the structured form to show what was queried
+        document.getElementById('q-min-alt').value = interp.min_alt || '';
+        document.getElementById('q-max-alt').value = interp.max_alt || '';
+        document.getElementById('q-icao').value = interp.icao || '';
+        document.getElementById('q-military').value = interp.military === true ? '1' : interp.military === false ? '0' : '';
+        document.getElementById('q-limit').value = interp.limit || '5000';
+
+        // Render results
+        const positions = data.positions || [];
+        resultLayer.clearLayers();
+        document.getElementById('result-count').textContent = `${positions.length} positions found`;
+
+        const bounds = [];
+        const byIcao = {};
+        positions.forEach(p => {
+            if (!byIcao[p.icao]) byIcao[p.icao] = [];
+            byIcao[p.icao].push(p);
+            bounds.push([p.lat, p.lon]);
+        });
+
+        Object.entries(byIcao).forEach(([icao, pts]) => {
+            for (let i = 1; i < pts.length; i++) {
+                L.polyline(
+                    [[pts[i-1].lat, pts[i-1].lon], [pts[i].lat, pts[i].lon]],
+                    { color: altColor(pts[i].altitude_ft), weight: 2, opacity: 0.7 }
+                ).addTo(resultLayer);
+            }
+            const last = pts[pts.length - 1];
+            L.circleMarker([last.lat, last.lon], {
+                radius: 4, color: last.is_military ? '#ff4444' : '#00ff88',
+                fillOpacity: 0.8, weight: 1,
+            }).addTo(resultLayer).bindTooltip(icao);
+        });
+
+        if (bounds.length > 0) map.fitBounds(bounds, { padding: [30, 30] });
+
+        const table = document.getElementById('result-table');
+        const tbody = table.querySelector('tbody');
+        tbody.innerHTML = '';
+        table.style.display = positions.length > 0 ? '' : 'none';
+        positions.slice(0, 200).forEach(p => {
+            const t = new Date(p.timestamp * 1000).toLocaleTimeString();
+            tbody.innerHTML += `<tr>
+                <td><a href="/aircraft/${p.icao}">${p.icao}</a></td>
+                <td>${p.lat.toFixed(4)}</td>
+                <td>${p.lon.toFixed(4)}</td>
+                <td>${p.altitude_ft || '-'}</td>
+                <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
+                <td>${p.heading_deg ? Math.round(p.heading_deg) + '\u00B0' : '-'}</td>
+                <td>${t}</td>
+            </tr>`;
+        });
+    })
+    .catch(err => {
+        document.getElementById('nlp-submit').disabled = false;
+        document.getElementById('nlp-submit').textContent = 'Ask AI';
+        document.getElementById('result-count').textContent = 'NLP query failed';
+        console.error(err);
+    });
 }
 </script>

@@ -24,6 +24,7 @@ type HexDbCache = Arc<Mutex<HashMap<String, Option<String>>>>;
 mod db;
 #[cfg(feature = "timescaledb")]
 mod db_pg;
+mod demo;
 mod notification;
 mod web;
 
@@ -86,6 +87,10 @@ enum Commands {
         /// Bearer token for ingest API authentication
         #[arg(long)]
         auth_token: Option<String>,
+
+        /// Ollama URL for natural language queries (e.g. http://localhost:11434)
+        #[arg(long, env = "OLLAMA_URL")]
+        ollama_url: Option<String>,
 
         /// Hours to retain raw positions (default: 72)
         #[arg(long, default_value = "72")]
@@ -151,9 +156,13 @@ enum Commands {
 
     /// Start the web server
     Serve {
-        /// SQLite database path
+        /// SQLite database path (ignored when --database-url is set)
         #[arg(long, default_value = "data/adsb.db")]
         db_path: String,
+
+        /// PostgreSQL/TimescaleDB connection URL (requires timescaledb feature)
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: Option<String>,
 
         /// Port to listen on
         #[arg(short, long, default_value = "8080")]
@@ -170,6 +179,14 @@ enum Commands {
         /// Bearer token for ingest API authentication
         #[arg(long)]
         auth_token: Option<String>,
+
+        /// Ollama URL for natural language queries (e.g. http://localhost:11434)
+        #[arg(long, env = "OLLAMA_URL")]
+        ollama_url: Option<String>,
+
+        /// Run with simulated aircraft for demo/portfolio purposes (no RTL-SDR required)
+        #[arg(long)]
+        demo: bool,
     },
 
     /// Interactive setup wizard — configure receiver, database, and server
@@ -279,6 +296,7 @@ struct LiveTrackOpts {
     cors_origin: Option<String>,
     webhook: Option<String>,
     auth_token: Option<String>,
+    ollama_url: Option<String>,
     retention_hours: u32,
     downsample_hours: u32,
     downsample_interval: u32,
@@ -373,6 +391,36 @@ fn sync_geofences(
         .collect();
 }
 
+/// Create the database backend based on CLI flags.
+///
+/// If `database_url` is provided, connects to PostgreSQL/TimescaleDB (requires timescaledb feature).
+/// Otherwise falls back to SQLite at `db_path`.
+async fn make_db_backend(
+    db_path: &str,
+    database_url: Option<&str>,
+) -> std::sync::Arc<dyn db::AdsbDatabase> {
+    if let Some(url) = database_url {
+        #[cfg(feature = "timescaledb")]
+        {
+            match db_pg::TimescaleDb::connect(url).await {
+                Ok(pg) => return std::sync::Arc::new(pg),
+                Err(e) => {
+                    eprintln!("Error connecting to PostgreSQL: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "timescaledb"))]
+        {
+            let _ = url;
+            eprintln!("Error: --database-url requires the 'timescaledb' feature.");
+            eprintln!("Rebuild with: cargo build --features timescaledb");
+            std::process::exit(1);
+        }
+    }
+    std::sync::Arc::new(db::SqliteDb::new(db_path.to_string()))
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -390,6 +438,7 @@ async fn main() {
             cors_origin,
             webhook,
             auth_token,
+            ollama_url,
             retention_hours,
             downsample_hours,
             downsample_interval,
@@ -413,6 +462,7 @@ async fn main() {
                 cors_origin,
                 webhook,
                 auth_token,
+                ollama_url,
                 retention_hours,
                 downsample_hours,
                 downsample_interval,
@@ -454,14 +504,29 @@ async fn main() {
         } => cmd_export(&db_path, &format, output, last, icao.as_deref(), limit),
         Commands::Serve {
             db_path,
+            database_url,
             port,
             host,
             cors_origin,
             auth_token,
+            ollama_url,
+            demo,
         } => {
-            let db: std::sync::Arc<dyn db::AdsbDatabase> =
-                std::sync::Arc::new(db::SqliteDb::new(db_path));
-            web::serve(db, host, port, cors_origin.as_deref(), auth_token).await;
+            if demo {
+                cmd_serve_demo(db_path, host, port, cors_origin, auth_token, ollama_url).await;
+            } else {
+                let db: std::sync::Arc<dyn db::AdsbDatabase> =
+                    make_db_backend(&db_path, database_url.as_deref()).await;
+                web::serve(
+                    db,
+                    host,
+                    port,
+                    cors_origin.as_deref(),
+                    auth_token,
+                    ollama_url,
+                )
+                .await;
+            }
         }
         Commands::Setup => cmd_setup(),
     }
@@ -697,6 +762,10 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
             auth_token: opts.auth_token.clone(),
+
+            photo_cache: std::sync::Mutex::new(HashMap::new()),
+            airspace_cache: std::sync::Mutex::new(None),
+            ollama_url: opts.ollama_url.clone(),
         });
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
@@ -985,6 +1054,10 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
             auth_token: opts.auth_token.clone(),
+
+            photo_cache: std::sync::Mutex::new(HashMap::new()),
+            airspace_cache: std::sync::Mutex::new(None),
+            ollama_url: opts.ollama_url.clone(),
         });
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
@@ -1270,6 +1343,10 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
             geofences: RwLock::new(Vec::new()),
             geofence_next_id: RwLock::new(1),
             auth_token: opts.auth_token.clone(),
+
+            photo_cache: std::sync::Mutex::new(HashMap::new()),
+            airspace_cache: std::sync::Mutex::new(None),
+            ollama_url: opts.ollama_url.clone(),
         });
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
@@ -1856,4 +1933,69 @@ fn print_summary(aircraft: &HashMap<Icao, AircraftState>, total_frames: u64, dec
     }
 
     println!("{table}");
+}
+
+async fn cmd_serve_demo(
+    db_path: String,
+    host: String,
+    port: u16,
+    cors_origin: Option<String>,
+    auth_token: Option<String>,
+    ollama_url: Option<String>,
+) {
+    use std::sync::{Arc, RwLock};
+
+    eprintln!("Starting ADS-B demo mode...");
+
+    // Open database for seeding positions
+    let mut database = db::Database::open(&db_path).unwrap_or_else(|e| {
+        eprintln!("Error opening database {db_path}: {e}");
+        std::process::exit(1);
+    });
+    database.set_autocommit(false);
+    let database = Arc::new(std::sync::Mutex::new(database));
+
+    // Create shared tracker for live API
+    let tracker = Arc::new(RwLock::new(Tracker::new(None, None, None, None, 2.0)));
+
+    // Build web state with tracker (enables live aircraft endpoint)
+    let web_db: Arc<dyn db::AdsbDatabase> = Arc::new(db::SqliteDb::new(db_path));
+    let state = Arc::new(web::AppState {
+        db: web_db,
+        tracker: Some(tracker.clone()),
+        geofences: RwLock::new(Vec::new()),
+        geofence_next_id: RwLock::new(1),
+        auth_token,
+        photo_cache: std::sync::Mutex::new(HashMap::new()),
+        airspace_cache: std::sync::Mutex::new(None),
+        ollama_url,
+    });
+
+    let app = web::build_router(state, cors_origin.as_deref());
+    let addr = format!("{host}:{port}");
+
+    eprintln!("ADS-B demo server listening on http://{addr}");
+    eprintln!("  12 synthetic aircraft around Asheville, NC");
+    eprintln!("  Ctrl+C to stop\n");
+
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Error: cannot bind to {addr}: {e}");
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                eprintln!("Hint: port {port} is already in use. Try a different --port.");
+            }
+            std::process::exit(1);
+        }
+    };
+
+    // Spawn demo simulation in background
+    let demo_db = database.clone();
+    let demo_tracker = tracker.clone();
+    tokio::spawn(async move {
+        demo::start_demo(demo_db, demo_tracker).await;
+    });
+
+    // Run web server (blocks until shutdown)
+    axum::serve(listener, app).await.unwrap();
 }

@@ -5,7 +5,7 @@
 //! compile time via `include_str!`.
 
 use axum::extract::Path;
-use axum::response::Html;
+use axum::response::{Html, IntoResponse};
 
 const BASE_CSS: &str = r#"* { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Courier New', monospace; background: #0a0a0a; color: #e0e0e0; }
@@ -34,16 +34,56 @@ const NAV_HTML: &str = r#"<nav>
     <a href="/replay">Replay</a>
     <a href="/receivers">Receivers</a>
     <a href="/stats">Stats</a>
+    <a href="/register" style="margin-left:auto; color:#00ff88;">Register</a>
 </nav>"#;
 
+/// Per-page SEO metadata.
+struct PageMeta {
+    description: &'static str,
+    path: &'static str,
+}
+
 fn render_page(title: &str, body: &str) -> Html<String> {
-    let mut s = String::with_capacity(body.len() + BASE_CSS.len() + NAV_HTML.len() + 512);
+    render_page_with_meta(title, body, None)
+}
+
+fn render_page_with_meta(title: &str, body: &str, meta: Option<&PageMeta>) -> Html<String> {
+    let description = meta
+        .map(|m| m.description)
+        .unwrap_or("Real-time ADS-B aircraft and AIS vessel tracking dashboard with 3D globe, replay, and natural language queries.");
+    let canonical_path = meta.map(|m| m.path).unwrap_or("/");
+
+    let mut s = String::with_capacity(body.len() + BASE_CSS.len() + NAV_HTML.len() + 2048);
     s.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
     s.push_str("<meta charset=\"UTF-8\">\n");
     s.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+
+    // SEO meta tags
+    s.push_str("<meta name=\"description\" content=\"");
+    s.push_str(description);
+    s.push_str("\">\n");
+    s.push_str("<meta name=\"robots\" content=\"index, follow\">\n");
+
+    // Open Graph
+    s.push_str("<meta property=\"og:type\" content=\"website\">\n");
+    s.push_str("<meta property=\"og:title\" content=\"adsb-decode");
+    if !title.is_empty() {
+        s.push_str(" \u{2014} ");
+        s.push_str(title);
+    }
+    s.push_str("\">\n");
+    s.push_str("<meta property=\"og:description\" content=\"");
+    s.push_str(description);
+    s.push_str("\">\n");
+
+    // Canonical URL (relative — works behind any domain)
+    s.push_str("<link rel=\"canonical\" href=\"");
+    s.push_str(canonical_path);
+    s.push_str("\">\n");
+
     s.push_str("<title>adsb-decode");
     if !title.is_empty() {
-        s.push_str(" \u{2014} "); // em dash
+        s.push_str(" \u{2014} ");
         s.push_str(title);
     }
     s.push_str("</title>\n");
@@ -53,6 +93,24 @@ fn render_page(title: &str, body: &str) -> Html<String> {
     s.push_str("<style>\n");
     s.push_str(BASE_CSS);
     s.push_str("\n</style>\n");
+
+    // JSON-LD structured data (homepage only)
+    if canonical_path == "/" {
+        s.push_str(r#"<script type="application/ld+json">
+{
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "adsb-decode",
+    "description": "Real-time ADS-B aircraft and AIS vessel tracking dashboard",
+    "applicationCategory": "UtilitiesApplication",
+    "operatingSystem": "Web",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "author": { "@type": "Organization", "name": "Blue Octopus Technology", "url": "https://blueoctopustechnology.com" }
+}
+</script>
+"#);
+    }
+
     s.push_str("</head>\n<body>\n");
     s.push_str(NAV_HTML);
     s.push('\n');
@@ -65,20 +123,69 @@ fn render_page(title: &str, body: &str) -> Html<String> {
 // Page handlers
 // ---------------------------------------------------------------------------
 
+const META_MAP: PageMeta = PageMeta {
+    description: "Live aircraft tracking map with ADS-B radar, 3D globe view, altitude-colored trails, and military aircraft alerts.",
+    path: "/",
+};
+const META_TABLE: PageMeta = PageMeta {
+    description: "Sortable table of all tracked aircraft with ICAO, callsign, altitude, speed, and heading data.",
+    path: "/table",
+};
+const META_EVENTS: PageMeta = PageMeta {
+    description: "Real-time aviation event log including military aircraft detection, emergency squawks, and unusual altitude changes.",
+    path: "/events",
+};
+const META_QUERY: PageMeta = PageMeta {
+    description: "Search and filter tracked aircraft by ICAO, altitude, speed, military status, and natural language queries.",
+    path: "/query",
+};
+const META_REPLAY: PageMeta = PageMeta {
+    description: "4D replay of historical aircraft movements. Select a time range and watch flights unfold on the map.",
+    path: "/replay",
+};
+const META_RECEIVERS: PageMeta = PageMeta {
+    description: "Status dashboard for ADS-B receiver stations in the network. View coverage areas, uptime, and frame counts.",
+    path: "/receivers",
+};
+const META_STATS: PageMeta = PageMeta {
+    description: "System statistics including total aircraft tracked, positions recorded, events detected, and receiver count.",
+    path: "/stats",
+};
+const META_REGISTER: PageMeta = PageMeta {
+    description: "Register your ADS-B receiver to contribute aircraft tracking data to the network and get an API key.",
+    path: "/register",
+};
+
 pub async fn page_map() -> Html<String> {
-    render_page("Map", include_str!("../../templates/map.html"))
+    render_page_with_meta(
+        "Map",
+        include_str!("../../templates/map.html"),
+        Some(&META_MAP),
+    )
 }
 
 pub async fn page_table() -> Html<String> {
-    render_page("Aircraft Table", include_str!("../../templates/table.html"))
+    render_page_with_meta(
+        "Aircraft Table",
+        include_str!("../../templates/table.html"),
+        Some(&META_TABLE),
+    )
 }
 
 pub async fn page_stats() -> Html<String> {
-    render_page("Stats", include_str!("../../templates/stats.html"))
+    render_page_with_meta(
+        "Stats",
+        include_str!("../../templates/stats.html"),
+        Some(&META_STATS),
+    )
 }
 
 pub async fn page_events() -> Html<String> {
-    render_page("Events", include_str!("../../templates/events.html"))
+    render_page_with_meta(
+        "Events",
+        include_str!("../../templates/events.html"),
+        Some(&META_EVENTS),
+    )
 }
 
 pub async fn page_detail(Path(_icao): Path<String>) -> Html<String> {
@@ -86,13 +193,91 @@ pub async fn page_detail(Path(_icao): Path<String>) -> Html<String> {
 }
 
 pub async fn page_query() -> Html<String> {
-    render_page("Query", include_str!("../../templates/query.html"))
+    render_page_with_meta(
+        "Query",
+        include_str!("../../templates/query.html"),
+        Some(&META_QUERY),
+    )
 }
 
 pub async fn page_replay() -> Html<String> {
-    render_page("Replay", include_str!("../../templates/replay.html"))
+    render_page_with_meta(
+        "Replay",
+        include_str!("../../templates/replay.html"),
+        Some(&META_REPLAY),
+    )
 }
 
 pub async fn page_receivers() -> Html<String> {
-    render_page("Receivers", include_str!("../../templates/receivers.html"))
+    render_page_with_meta(
+        "Receivers",
+        include_str!("../../templates/receivers.html"),
+        Some(&META_RECEIVERS),
+    )
+}
+
+pub async fn page_register() -> Html<String> {
+    render_page_with_meta(
+        "Register",
+        include_str!("../../templates/register.html"),
+        Some(&META_REGISTER),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// AI/SEO utility routes
+// ---------------------------------------------------------------------------
+
+/// GET /robots.txt
+pub async fn robots_txt() -> impl IntoResponse {
+    (
+        [("content-type", "text/plain")],
+        "User-agent: *\nAllow: /\n\nSitemap: /sitemap.xml\n",
+    )
+}
+
+/// GET /llms.txt — AI model context file
+pub async fn llms_txt() -> impl IntoResponse {
+    (
+        [("content-type", "text/plain")],
+        r#"# adsb-decode
+
+> Real-time ADS-B aircraft and AIS vessel tracking dashboard by Blue Octopus Technology.
+
+## What this site does
+
+This is a live aircraft and vessel tracking system. It receives radio signals from aircraft (ADS-B on 1090 MHz) and ships (AIS), decodes them, and displays positions on a real-time map.
+
+## Key features
+
+- Live aircraft map with altitude-colored trails
+- 3D globe view (Cesium)
+- Military aircraft and emergency squawk detection
+- Natural language queries ("show me military jets above FL300")
+- 4D replay of historical flights
+- Multi-receiver network aggregation
+- AIS vessel tracking (ships, ferries, cargo)
+- Aircraft photo integration
+- Geofence alerting
+
+## API
+
+REST API available at /api/. Key endpoints:
+- GET /api/positions — current aircraft positions
+- GET /api/trails — recent flight trails
+- GET /api/aircraft — aircraft metadata
+- GET /api/events — detected events
+- GET /api/vessels — tracked vessels
+- GET /api/stats — system statistics
+- POST /api/register — register a new receiver
+
+## Built with
+
+Rust (Axum, SQLx), Leaflet, CesiumJS, PostgreSQL/TimescaleDB
+
+## Contact
+
+Blue Octopus Technology — https://blueoctopustechnology.com
+"#,
+    )
 }

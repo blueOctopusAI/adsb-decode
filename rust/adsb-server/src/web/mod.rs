@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, RwLock};
 
+use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -27,6 +28,9 @@ pub struct AppState {
     pub geofences: RwLock<Vec<GeofenceEntry>>,
     pub geofence_next_id: RwLock<u64>,
     pub auth_token: Option<String>,
+    pub photo_cache: std::sync::Mutex<std::collections::HashMap<String, Option<serde_json::Value>>>,
+    pub airspace_cache: std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+    pub ollama_url: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -56,6 +60,10 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
         .route("/query", axum::routing::get(pages::page_query))
         .route("/replay", axum::routing::get(pages::page_replay))
         .route("/receivers", axum::routing::get(pages::page_receivers))
+        .route("/register", axum::routing::get(pages::page_register))
+        // SEO + AI routes
+        .route("/robots.txt", axum::routing::get(pages::robots_txt))
+        .route("/llms.txt", axum::routing::get(pages::llms_txt))
         // API routes
         .route("/api/aircraft", axum::routing::get(routes::api_aircraft))
         .route(
@@ -82,6 +90,21 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
             "/api/geofences/:id",
             axum::routing::delete(routes::api_geofences_delete),
         )
+        .route("/api/photos/:icao", axum::routing::get(routes::api_photos))
+        .route("/api/airspace", axum::routing::get(routes::api_airspace))
+        .route("/api/nlp-query", axum::routing::post(routes::api_nlp_query))
+        // Vessel (AIS) API
+        .route("/api/vessels", axum::routing::get(routes::api_vessels))
+        .route(
+            "/api/vessel-positions",
+            axum::routing::get(routes::api_vessel_positions),
+        )
+        .route(
+            "/api/vessel-positions/latest",
+            axum::routing::get(routes::api_vessel_positions_latest),
+        )
+        // Registration API
+        .route("/api/register", axum::routing::post(ingest::api_register))
         // Ingest API (multi-receiver)
         .route(
             "/api/v1/frames",
@@ -95,7 +118,8 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
             "/api/v1/receivers",
             axum::routing::get(ingest::api_receivers),
         )
-        .with_state(state);
+        .with_state(state)
+        .layer(DefaultBodyLimit::max(512 * 1024)); // 512 KB max request body
 
     // CORS — only add when explicitly configured
     if let Some(origin) = cors_origin {
@@ -103,8 +127,8 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
             .allow_origin(AllowOrigin::exact(
                 HeaderValue::from_str(origin).expect("invalid CORS origin"),
             ))
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any);
+            .allow_methods([http::Method::GET, http::Method::POST, http::Method::DELETE])
+            .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION]);
         app = app.layer(cors);
     }
 
@@ -133,6 +157,7 @@ pub async fn serve(
     port: u16,
     cors_origin: Option<&str>,
     auth_token: Option<String>,
+    ollama_url: Option<String>,
 ) {
     let state = Arc::new(AppState {
         db,
@@ -140,6 +165,9 @@ pub async fn serve(
         geofences: RwLock::new(Vec::new()),
         geofence_next_id: RwLock::new(1),
         auth_token,
+        photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        airspace_cache: std::sync::Mutex::new(None),
+        ollama_url,
     });
 
     let app = build_router(state, cors_origin);

@@ -1,5 +1,25 @@
 <style>
-#replay-map { width: 100%; height: calc(100vh - 120px); }
+#replay-map { width: 100%; height: calc(100vh - 160px); }
+#range-panel {
+    background: #111;
+    border-bottom: 1px solid #333;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+#range-panel label { color: #888; font-size: 12px; }
+#range-panel input[type="datetime-local"] {
+    background: #222;
+    color: #00ff88;
+    border: 1px solid #333;
+    padding: 4px 8px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    border-radius: 3px;
+}
+#range-panel input[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
 #controls {
     background: #111;
     border-top: 1px solid #333;
@@ -9,8 +29,28 @@
     gap: 16px;
     height: 79px;
 }
-#time-slider { flex: 1; accent-color: #00ff88; }
+#slider-container { flex: 1; position: relative; }
+#time-slider { width: 100%; accent-color: #00ff88; }
+#event-track {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+}
+.event-dot {
+    position: absolute;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    top: 50%; transform: translateY(-50%);
+    pointer-events: auto;
+    cursor: pointer;
+    z-index: 10;
+}
 #time-display { color: #00ff88; font-size: 14px; font-weight: bold; min-width: 200px; }
+#ac-count {
+    color: #00ff88; font-size: 14px; font-weight: bold;
+    background: #1a1a1a; border: 1px solid #333;
+    padding: 4px 10px; border-radius: 3px; min-width: 40px; text-align: center;
+}
 .ctrl-btn {
     background: #222;
     color: #00ff88;
@@ -22,18 +62,41 @@
 }
 .ctrl-btn:hover { border-color: #00ff88; }
 .ctrl-btn.active { background: #00ff88; color: #000; }
+.ctrl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 #speed-label { color: #888; font-size: 12px; }
+#data-info { color: #888; font-size: 12px; margin-left: auto; }
+#timestamp-overlay {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.75); color: #00ff88;
+    font-family: 'Courier New', monospace; font-size: 18px; font-weight: bold;
+    padding: 6px 16px; border-radius: 4px; border: 1px solid #333;
+    pointer-events: none; z-index: 1000; display: none;
+}
 .leaflet-container { background: #0a0a0a; }
 </style>
+<div id="range-panel">
+    <label>From:</label>
+    <input type="datetime-local" id="range-start">
+    <label>To:</label>
+    <input type="datetime-local" id="range-end">
+    <button class="ctrl-btn" id="load-range">Load Range</button>
+    <button class="ctrl-btn" id="load-all">Load All</button>
+    <span id="data-info">Loading...</span>
+</div>
 <div id="replay-map"></div>
 <div id="controls">
     <button class="ctrl-btn" id="play-btn">Play</button>
-    <input type="range" id="time-slider" min="0" max="100" value="0">
-    <span id="time-display">Loading...</span>
+    <div id="slider-container">
+        <input type="range" id="time-slider" min="0" max="10000" value="0">
+        <div id="event-track"></div>
+    </div>
+    <span id="ac-count" title="Active aircraft">0</span>
+    <span id="time-display">--</span>
     <button class="ctrl-btn" id="speed-down">-</button>
     <span id="speed-label" style="min-width:40px;text-align:center;">1x</span>
     <button class="ctrl-btn" id="speed-up">+</button>
 </div>
+<div id="timestamp-overlay"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const map = L.map('replay-map', { zoomControl: true });
@@ -42,6 +105,7 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 }).addTo(map);
 
 let allPositions = [];
+let acIndex = {};       // icao -> [pos, ...] sorted by timestamp
 let timeMin = 0, timeMax = 0;
 let playing = false;
 let currentTime = 0;
@@ -50,7 +114,9 @@ const speeds = [1, 2, 5, 10, 30, 60, 120, 300, 600];
 let speedIdx = 0;
 const markers = {};
 const trails = {};
+let events = [];
 
+// ---- Altitude color ----
 function altColor(alt) {
     if (alt == null) return '#888';
     const t = Math.min(Math.max(alt / 40000, 0), 1);
@@ -63,6 +129,7 @@ function altColor(alt) {
     }
 }
 
+// ---- Aircraft classification ----
 function classifyAircraft(p) {
     if (p.is_military) return 'military';
     if (p.speed_kts != null) {
@@ -104,61 +171,214 @@ function acIcon(heading, isMilitary, acType) {
     });
 }
 
-fetch('/api/positions/all')
-    .then(r => r.json())
-    .then(data => {
-        allPositions = data;
-        if (allPositions.length === 0) {
-            document.getElementById('time-display').textContent = 'No position data';
-            return;
-        }
-        timeMin = allPositions[0].timestamp;
-        timeMax = allPositions[allPositions.length - 1].timestamp;
-        currentTime = timeMin;
-        map.setView([allPositions[0].lat, allPositions[0].lon], 8);
-        updateDisplay();
-    })
-    .catch(err => {
-        document.getElementById('time-display').textContent = 'Load failed';
-        console.error(err);
-    });
+// ---- Date/time helpers ----
+function toDateTimeLocal(ts) {
+    const d = new Date(ts * 1000);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function fromDateTimeLocal(str) {
+    return new Date(str).getTime() / 1000;
+}
+function formatTime(ts) {
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+}
 
-function updateDisplay() {
-    const slider = document.getElementById('time-slider');
-    const pct = ((currentTime - timeMin) / (timeMax - timeMin)) * 100;
-    slider.value = pct;
+// ---- Interpolation ----
+function lerpAngle(a, b, t) {
+    if (a == null || b == null) return b;
+    let diff = b - a;
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    return ((a + diff * t) % 360 + 360) % 360;
+}
 
-    const d = new Date(currentTime * 1000);
-    document.getElementById('time-display').textContent =
-        d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-
-    const latest = {};
-    const trailPoints = {};
-    for (const p of allPositions) {
-        if (p.timestamp > currentTime) break;
-        latest[p.icao] = p;
-        if (!trailPoints[p.icao]) trailPoints[p.icao] = [];
-        trailPoints[p.icao].push(p);
+function interpolateAt(icao, time) {
+    const pts = acIndex[icao];
+    if (!pts || pts.length === 0) return null;
+    if (time < pts[0].timestamp) return null;
+    if (time >= pts[pts.length - 1].timestamp) {
+        // Stale if last point is more than 5 min before currentTime
+        if (time - pts[pts.length - 1].timestamp > 300) return null;
+        return pts[pts.length - 1];
     }
+    // Binary search for bracketing pair
+    let lo = 0, hi = pts.length - 1;
+    while (lo < hi - 1) {
+        const mid = (lo + hi) >> 1;
+        if (pts[mid].timestamp <= time) lo = mid;
+        else hi = mid;
+    }
+    const a = pts[lo], b = pts[hi];
+    // Don't interpolate across gaps > 5 min
+    if (b.timestamp - a.timestamp > 300) {
+        return (time - a.timestamp < 300) ? a : null;
+    }
+    const t = (time - a.timestamp) / (b.timestamp - a.timestamp);
+    return {
+        icao: b.icao,
+        lat: a.lat + (b.lat - a.lat) * t,
+        lon: a.lon + (b.lon - a.lon) * t,
+        altitude_ft: (a.altitude_ft != null && b.altitude_ft != null)
+            ? Math.round(a.altitude_ft + (b.altitude_ft - a.altitude_ft) * t)
+            : (b.altitude_ft ?? a.altitude_ft),
+        speed_kts: b.speed_kts,
+        heading_deg: lerpAngle(a.heading_deg, b.heading_deg, t),
+        vertical_rate_fpm: b.vertical_rate_fpm,
+        is_military: b.is_military,
+        callsign: b.callsign,
+        registration: b.registration,
+        timestamp: time,
+    };
+}
+
+function getTrailPoints(icao, upToTime) {
+    const pts = acIndex[icao];
+    if (!pts) return [];
+    const result = [];
+    for (const p of pts) {
+        if (p.timestamp > upToTime) break;
+        result.push(p);
+    }
+    return result;
+}
+
+// ---- Build per-aircraft index ----
+function buildIndex(positions) {
+    acIndex = {};
+    for (const p of positions) {
+        if (!acIndex[p.icao]) acIndex[p.icao] = [];
+        acIndex[p.icao].push(p);
+    }
+}
+
+// ---- Data loading ----
+function loadPositions(start, end) {
+    const params = new URLSearchParams();
+    if (start != null) params.set('start', start);
+    if (end != null) params.set('end', end);
+    params.set('limit', '100000');
+
+    const url = '/api/positions/all' + (params.toString() ? '?' + params : '');
+    document.getElementById('data-info').textContent = 'Loading...';
+    document.getElementById('play-btn').disabled = true;
+
+    // Clear existing
+    Object.keys(markers).forEach(k => { map.removeLayer(markers[k]); delete markers[k]; });
+    Object.keys(trails).forEach(k => { trails[k].forEach(s => map.removeLayer(s)); delete trails[k]; });
+
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            allPositions = data;
+            buildIndex(allPositions);
+            if (allPositions.length === 0) {
+                document.getElementById('data-info').textContent = 'No position data in range';
+                document.getElementById('time-display').textContent = '--';
+                timeMin = 0; timeMax = 0;
+                return;
+            }
+            timeMin = allPositions[0].timestamp;
+            timeMax = allPositions[allPositions.length - 1].timestamp;
+            currentTime = timeMin;
+
+            // Set date pickers to loaded range
+            document.getElementById('range-start').value = toDateTimeLocal(timeMin);
+            document.getElementById('range-end').value = toDateTimeLocal(timeMax);
+
+            const uniqueIcao = new Set(allPositions.map(p => p.icao));
+            document.getElementById('data-info').textContent =
+                `${allPositions.length.toLocaleString()} pts, ${uniqueIcao.size} aircraft`;
+
+            map.setView([allPositions[0].lat, allPositions[0].lon], 8);
+            document.getElementById('play-btn').disabled = false;
+            loadEvents();
+            updateDisplay();
+        })
+        .catch(err => {
+            document.getElementById('data-info').textContent = 'Load failed';
+            console.error(err);
+        });
+}
+
+// ---- Event markers on timeline ----
+function loadEvents() {
+    fetch('/api/events?limit=500')
+        .then(r => r.json())
+        .then(data => {
+            events = data.filter(e => e.timestamp >= timeMin && e.timestamp <= timeMax);
+            renderEventMarkers();
+        })
+        .catch(() => { events = []; });
+}
+
+function renderEventMarkers() {
+    const track = document.getElementById('event-track');
+    track.innerHTML = '';
+    if (timeMax <= timeMin) return;
+
+    const typeColors = {
+        geofence_entry: '#ff8800',
+        geofence_exit: '#ffcc00',
+        military: '#ff4444',
+        squawk7700: '#ff0000',
+        squawk7600: '#ff6600',
+        squawk7500: '#ff00ff',
+    };
+
+    for (const ev of events) {
+        const pct = ((ev.timestamp - timeMin) / (timeMax - timeMin)) * 100;
+        const dot = document.createElement('div');
+        dot.className = 'event-dot';
+        dot.style.left = pct + '%';
+        dot.style.background = typeColors[ev.event_type] || '#888';
+        dot.title = `${ev.event_type}: ${ev.icao || ''} ${ev.description || ''} (${formatTime(ev.timestamp)})`;
+        track.appendChild(dot);
+    }
+}
+
+// ---- Display update ----
+function updateDisplay() {
+    if (timeMax <= timeMin) return;
+
+    const slider = document.getElementById('time-slider');
+    const pct = ((currentTime - timeMin) / (timeMax - timeMin)) * 10000;
+    slider.value = Math.round(pct);
+
+    const timeStr = formatTime(currentTime);
+    document.getElementById('time-display').textContent = timeStr;
+    const overlay = document.getElementById('timestamp-overlay');
+    overlay.textContent = timeStr;
+    overlay.style.display = playing ? 'block' : 'none';
 
     const seen = new Set();
-    Object.entries(latest).forEach(([icao, p]) => {
+    let acCount = 0;
+
+    Object.keys(acIndex).forEach(icao => {
+        const interp = interpolateAt(icao, currentTime);
+        if (!interp) return;
+
         seen.add(icao);
-        const acType = classifyAircraft(p);
+        acCount++;
+        const acType = classifyAircraft(interp);
+
         if (markers[icao]) {
-            markers[icao].setLatLng([p.lat, p.lon]);
-            markers[icao].setIcon(acIcon(p.heading_deg, p.is_military, acType));
+            markers[icao].setLatLng([interp.lat, interp.lon]);
+            markers[icao].setIcon(acIcon(interp.heading_deg, interp.is_military, acType));
         } else {
-            markers[icao] = L.marker([p.lat, p.lon], {
-                icon: acIcon(p.heading_deg, p.is_military, acType),
+            markers[icao] = L.marker([interp.lat, interp.lon], {
+                icon: acIcon(interp.heading_deg, interp.is_military, acType),
             }).addTo(map);
         }
-        const label = p.callsign || p.registration || p.icao;
+        const label = interp.callsign || interp.registration || interp.icao;
+        markers[icao].unbindTooltip();
         markers[icao].bindTooltip(label, { permanent: false, direction: 'right' });
 
+        // Draw trail
         if (trails[icao]) { trails[icao].forEach(s => map.removeLayer(s)); }
         trails[icao] = [];
-        const pts = trailPoints[icao] || [];
+        const pts = getTrailPoints(icao, currentTime);
         for (let i = 1; i < pts.length; i++) {
             const seg = L.polyline(
                 [[pts[i-1].lat, pts[i-1].lon], [pts[i].lat, pts[i].lon]],
@@ -168,6 +388,9 @@ function updateDisplay() {
         }
     });
 
+    document.getElementById('ac-count').textContent = acCount;
+
+    // Remove aircraft no longer visible
     Object.keys(markers).forEach(k => {
         if (!seen.has(k)) {
             map.removeLayer(markers[k]);
@@ -177,6 +400,7 @@ function updateDisplay() {
     });
 }
 
+// ---- Controls ----
 document.getElementById('play-btn').addEventListener('click', function() {
     playing = !playing;
     this.textContent = playing ? 'Pause' : 'Play';
@@ -198,11 +422,30 @@ document.getElementById('speed-down').addEventListener('click', function() {
 });
 
 document.getElementById('time-slider').addEventListener('input', function() {
-    const pct = this.value / 100;
+    const pct = this.value / 10000;
     currentTime = timeMin + pct * (timeMax - timeMin);
     updateDisplay();
 });
 
+document.getElementById('load-range').addEventListener('click', function() {
+    const startVal = document.getElementById('range-start').value;
+    const endVal = document.getElementById('range-end').value;
+    const start = startVal ? fromDateTimeLocal(startVal) : null;
+    const end = endVal ? fromDateTimeLocal(endVal) : null;
+    playing = false;
+    document.getElementById('play-btn').textContent = 'Play';
+    document.getElementById('play-btn').classList.remove('active');
+    loadPositions(start, end);
+});
+
+document.getElementById('load-all').addEventListener('click', function() {
+    playing = false;
+    document.getElementById('play-btn').textContent = 'Play';
+    document.getElementById('play-btn').classList.remove('active');
+    loadPositions(null, null);
+});
+
+// ---- Playback loop ----
 setInterval(() => {
     if (!playing || timeMax <= timeMin) return;
     currentTime += playSpeed;
@@ -211,4 +454,7 @@ setInterval(() => {
     }
     updateDisplay();
 }, 100);
+
+// ---- Initial load ----
+loadPositions(null, null);
 </script>

@@ -1,12 +1,13 @@
 [Unit]
-Description=adsb-decode dashboard
-After=network.target
+Description=adsb-decode tracking dashboard
+After=network.target postgresql.service
 
 [Service]
 Type=simple
 User=adsb
 WorkingDirectory=/opt/adsb-decode
-ExecStart=/opt/adsb-decode/adsb serve --db-path /opt/adsb-decode/data/adsb.db --port 8000 --host 127.0.0.1
+EnvironmentFile=/opt/adsb-decode/.env
+ExecStart=/opt/adsb-decode/adsb serve --port 8000 --host 127.0.0.1
 Restart=always
 RestartSec=5
 
