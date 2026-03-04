@@ -1,0 +1,90 @@
+<div class="container about-page">
+<style>
+.about-page { max-width: 800px; margin: 0 auto; line-height: 1.7; }
+.about-page h1 { color: #00ff88; font-size: 28px; margin: 32px 0 16px; }
+.about-page h2 { color: #00ff88; font-size: 20px; margin: 24px 0 12px; border-bottom: 1px solid #333; padding-bottom: 8px; }
+.about-page p { color: #ccc; margin: 12px 0; font-size: 14px; }
+.about-page a { color: #00aaff; }
+.about-page .hero { text-align: center; padding: 48px 0 32px; border-bottom: 1px solid #333; margin-bottom: 32px; }
+.about-page .hero h1 { font-size: 36px; margin-bottom: 12px; }
+.about-page .hero p { font-size: 16px; color: #888; max-width: 600px; margin: 0 auto; }
+.about-page .hero .links { margin-top: 20px; }
+.about-page .hero .links a { display: inline-block; margin: 0 8px; padding: 8px 20px; border: 1px solid #333; border-radius: 4px; color: #00ff88; text-decoration: none; font-size: 14px; }
+.about-page .hero .links a:hover { background: #1a1a1a; border-color: #00ff88; }
+.about-page .stats-row { display: flex; flex-wrap: wrap; gap: 24px; margin: 24px 0; justify-content: center; }
+.about-page .stat-item { text-align: center; }
+.about-page .stat-item .val { font-size: 28px; color: #00ff88; font-weight: bold; }
+.about-page .stat-item .lbl { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+.about-page .nav-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 24px 0; }
+.about-page .nav-card { background: #111; border: 1px solid #333; border-radius: 6px; padding: 20px; text-decoration: none; transition: border-color 0.2s; }
+.about-page .nav-card:hover { border-color: #00ff88; }
+.about-page .nav-card .card-title { color: #00ff88; font-size: 15px; font-weight: bold; margin-bottom: 8px; }
+.about-page .nav-card .card-desc { color: #888; font-size: 13px; }
+.about-page .cta { background: linear-gradient(135deg, #0a1a0a, #111); border: 1px solid #00ff88; border-radius: 8px; padding: 32px; text-align: center; margin: 40px 0; }
+.about-page .cta h2 { border: none; margin-top: 0; }
+.about-page .cta p { max-width: 600px; margin: 12px auto; }
+.about-page .cta a.cta-btn { display: inline-block; margin-top: 16px; padding: 12px 32px; background: #00ff88; color: #0a0a0a; text-decoration: none; font-weight: bold; border-radius: 4px; font-size: 15px; }
+.about-page .cta a.cta-btn:hover { background: #00cc6a; }
+.about-page .tech-stack { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.about-page .tech-tag { background: #1a1a1a; border: 1px solid #333; padding: 4px 12px; border-radius: 16px; font-size: 12px; color: #ccc; }
+</style>
+
+<div class="hero">
+    <h1>adsb-decode</h1>
+    <p>A complete ADS-B aircraft tracking system &mdash; from raw 1090 MHz radio signals to identified aircraft on a live map. Built from scratch in Rust.</p>
+    <div class="links">
+        <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://www.blueoctopustechnology.com" target="_blank" rel="noopener">Blue Octopus Technology</a>
+    </div>
+</div>
+
+<div class="stats-row">
+    <div class="stat-item"><div class="val">269</div><div class="lbl">Tests</div></div>
+    <div class="stat-item"><div class="val">3</div><div class="lbl">Rust Crates</div></div>
+    <div class="stat-item"><div class="val">3,642</div><div class="lbl">Airports</div></div>
+    <div class="stat-item"><div class="val">100%</div><div class="lbl">Cross-Validated</div></div>
+</div>
+
+<p>Every aircraft broadcasts its identity, position, altitude, and velocity on 1090 MHz. These signals are unencrypted and receivable by anyone with a $25 USB radio dongle. This system captures those raw radio signals and decodes them into live aircraft intelligence &mdash; no third-party decoder, no black box libraries. Every bit is parsed, validated, and decoded from the ICAO specification.</p>
+
+<p>The system started as a Python reference decoder to prove the protocol math, then was rewritten in Rust for production. Both implementations were cross-validated frame-by-frame on a 296-frame capture &mdash; 100% field-level match, verified on every commit in CI.</p>
+
+<div class="nav-cards">
+    <a href="/how-it-works" class="nav-card">
+        <div class="card-title">How It Works &rarr;</div>
+        <div class="card-desc">The signal processing pipeline: from antenna to pixel. Capture, demodulation, CRC, CPR position decoding, and tracking.</div>
+    </a>
+    <a href="/features" class="nav-card">
+        <div class="card-title">Features &rarr;</div>
+        <div class="card-desc">3D globe, military detection, NLP queries, 4D replay, multi-receiver network, maritime AIS, heatmaps, and more.</div>
+    </a>
+    <a href="/setup" class="nav-card">
+        <div class="card-title">Set Up a Receiver &rarr;</div>
+        <div class="card-desc">What hardware you need, how to download the feeder binary, and how to start contributing aircraft data.</div>
+    </a>
+</div>
+
+<h2>Technology</h2>
+
+<div class="tech-stack">
+    <span class="tech-tag">Rust</span>
+    <span class="tech-tag">Axum</span>
+    <span class="tech-tag">TimescaleDB</span>
+    <span class="tech-tag">PostgreSQL 16</span>
+    <span class="tech-tag">Leaflet.js</span>
+    <span class="tech-tag">CesiumJS</span>
+    <span class="tech-tag">RTL-SDR</span>
+    <span class="tech-tag">GitHub Actions CI</span>
+    <span class="tech-tag">Caddy</span>
+</div>
+
+<p>Full source code, protocol documentation, and build instructions on <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener">GitHub</a>.</p>
+
+<div class="cta">
+    <h2>Built by Blue Octopus Technology</h2>
+    <p>We build data systems that turn messy inputs into clear intelligence &mdash; radio signals into aircraft maps, scattered business data into actionable dashboards, manual processes into automated pipelines.</p>
+    <p>If your business has data it's not using, we should talk.</p>
+    <a href="https://www.blueoctopustechnology.com/contact" target="_blank" rel="noopener" class="cta-btn">Get in Touch</a>
+</div>
+
+</div>

@@ -34,8 +34,24 @@ const NAV_HTML: &str = r#"<nav>
     <a href="/replay">Replay</a>
     <a href="/receivers">Receivers</a>
     <a href="/stats">Stats</a>
-    <a href="/register" style="margin-left:auto; color:#00ff88;">Register</a>
+    <a href="/about">About</a>
+    <span style="margin-left:auto; display:flex; gap:16px; align-items:center;">
+        <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener" title="GitHub" style="color:#888;">GitHub</a>
+        <a href="/register" style="color:#00ff88;">Register</a>
+    </span>
 </nav>"#;
+
+const FOOTER_HTML: &str = r#"<footer style="background:#111; border-top:1px solid #333; padding:16px 24px; margin-top:32px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; font-size:12px;">
+    <div style="color:#888;">
+        Built by <a href="https://www.blueoctopustechnology.com" target="_blank" rel="noopener" style="color:#00ff88; text-decoration:none;">Blue Octopus Technology</a>
+        &mdash; data systems that turn messy inputs into clear intelligence.
+    </div>
+    <div style="display:flex; gap:16px;">
+        <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener" style="color:#888; text-decoration:none;">GitHub</a>
+        <a href="/about" style="color:#888; text-decoration:none;">About</a>
+        <a href="https://www.blueoctopustechnology.com/contact" target="_blank" rel="noopener" style="color:#00ff88; text-decoration:none;">Contact</a>
+    </div>
+</footer>"#;
 
 /// Per-page SEO metadata.
 struct PageMeta {
@@ -115,6 +131,8 @@ fn render_page_with_meta(title: &str, body: &str, meta: Option<&PageMeta>) -> Ht
     s.push_str(NAV_HTML);
     s.push('\n');
     s.push_str(body);
+    s.push('\n');
+    s.push_str(FOOTER_HTML);
     s.push_str("\n</body>\n</html>");
     Html(s)
 }
@@ -154,6 +172,22 @@ const META_STATS: PageMeta = PageMeta {
 const META_REGISTER: PageMeta = PageMeta {
     description: "Register your ADS-B receiver to contribute aircraft tracking data to the network and get an API key.",
     path: "/register",
+};
+const META_ABOUT: PageMeta = PageMeta {
+    description: "About adsb-decode: a complete ADS-B aircraft tracking system built from scratch in Rust by Blue Octopus Technology.",
+    path: "/about",
+};
+const META_HOW_IT_WORKS: PageMeta = PageMeta {
+    description: "How ADS-B decoding works: signal capture, demodulation, CRC validation, CPR position decoding, and aircraft tracking.",
+    path: "/how-it-works",
+};
+const META_FEATURES: PageMeta = PageMeta {
+    description: "Features of adsb-decode: live map, 3D globe, military detection, NLP queries, 4D replay, multi-receiver network, and AIS vessel tracking.",
+    path: "/features",
+};
+const META_SETUP: PageMeta = PageMeta {
+    description: "Set up an ADS-B receiver: hardware requirements, feeder binary download, and step-by-step installation guide.",
+    path: "/setup",
 };
 
 pub async fn page_map() -> Html<String> {
@@ -224,6 +258,38 @@ pub async fn page_register() -> Html<String> {
     )
 }
 
+pub async fn page_about() -> Html<String> {
+    render_page_with_meta(
+        "About",
+        include_str!("../../templates/about.html"),
+        Some(&META_ABOUT),
+    )
+}
+
+pub async fn page_how_it_works() -> Html<String> {
+    render_page_with_meta(
+        "How It Works",
+        include_str!("../../templates/how-it-works.html"),
+        Some(&META_HOW_IT_WORKS),
+    )
+}
+
+pub async fn page_features() -> Html<String> {
+    render_page_with_meta(
+        "Features",
+        include_str!("../../templates/features.html"),
+        Some(&META_FEATURES),
+    )
+}
+
+pub async fn page_setup() -> Html<String> {
+    render_page_with_meta(
+        "Setup",
+        include_str!("../../templates/setup.html"),
+        Some(&META_SETUP),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // AI/SEO utility routes
 // ---------------------------------------------------------------------------
@@ -233,6 +299,28 @@ pub async fn robots_txt() -> impl IntoResponse {
     (
         [("content-type", "text/plain")],
         "User-agent: *\nAllow: /\n\nSitemap: /sitemap.xml\n",
+    )
+}
+
+/// GET /sitemap.xml
+pub async fn sitemap_xml() -> impl IntoResponse {
+    (
+        [("content-type", "application/xml")],
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://adsb.blueoctopustechnology.com/</loc><priority>1.0</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/about</loc><priority>0.9</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/how-it-works</loc><priority>0.8</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/features</loc><priority>0.8</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/setup</loc><priority>0.8</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/table</loc><priority>0.7</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/events</loc><priority>0.6</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/query</loc><priority>0.6</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/replay</loc><priority>0.6</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/receivers</loc><priority>0.5</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/stats</loc><priority>0.5</priority></url>
+    <url><loc>https://adsb.blueoctopustechnology.com/register</loc><priority>0.7</priority></url>
+</urlset>"#,
     )
 }
 

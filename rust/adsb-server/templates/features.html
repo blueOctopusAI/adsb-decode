@@ -1,0 +1,125 @@
+<div class="container feat-page">
+<style>
+.feat-page { max-width: 800px; margin: 0 auto; line-height: 1.7; }
+.feat-page h1 { color: #00ff88; font-size: 28px; margin: 32px 0 16px; }
+.feat-page p { color: #ccc; margin: 10px 0; font-size: 14px; }
+.feat-page a { color: #00aaff; }
+.feat-page .breadcrumb { font-size: 12px; color: #666; margin-bottom: 24px; }
+.feat-page .breadcrumb a { color: #888; text-decoration: none; }
+.feat-page .breadcrumb a:hover { color: #00ff88; }
+.feat-page .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin: 24px 0; }
+.feat-page .feature { background: #111; border: 1px solid #333; border-radius: 6px; padding: 20px; }
+.feat-page .feature .title { color: #00ff88; font-size: 14px; font-weight: bold; margin-bottom: 8px; }
+.feat-page .feature .detail { color: #888; font-size: 13px; line-height: 1.5; }
+.feat-page .section-title { color: #00ff88; font-size: 18px; margin: 32px 0 12px; border-bottom: 1px solid #333; padding-bottom: 8px; }
+</style>
+
+<div class="breadcrumb"><a href="/about">About</a> / Features</div>
+
+<h1>Features</h1>
+
+<p>Everything adsb-decode can do &mdash; from real-time tracking to historical intelligence.</p>
+
+<h2 class="section-title">Visualization</h2>
+<div class="features-grid">
+    <div class="feature">
+        <div class="title">Live Aircraft Map</div>
+        <div class="detail">Real-time Leaflet map with altitude-colored trails, heading indicators, and automatic position updates. 5 map styles: dark, satellite, topo, streets, dark matter.</div>
+    </div>
+    <div class="feature">
+        <div class="title">3D Globe View</div>
+        <div class="detail">CesiumJS globe with aircraft rendered at true altitudes, altitude stalks, flight level labels, and synchronized mode switching between 2D and 3D.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Density Heatmaps</div>
+        <div class="detail">Aggregate aircraft positions into color-coded density heatmaps with adjustable time sliders. See traffic patterns at a glance.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Ghost Aircraft</div>
+        <div class="detail">Historical aircraft that have stopped transmitting appear as faded markers, showing where traffic was in the recent past.</div>
+    </div>
+</div>
+
+<h2 class="section-title">Detection &amp; Alerting</h2>
+<div class="features-grid">
+    <div class="feature">
+        <div class="title">Military Detection</div>
+        <div class="detail">Automatic military transponder identification. Military aircraft are highlighted in red across the map, table, and event log.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Emergency Squawks</div>
+        <div class="detail">Instant alerting on squawk codes 7500 (hijack), 7600 (radio failure), and 7700 (general emergency).</div>
+    </div>
+    <div class="feature">
+        <div class="title">Geofence Alerts</div>
+        <div class="detail">Define geographic zones on the map and get alerts when aircraft enter or exit. Click the map to place a fence with custom radius.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Unusual Activity</div>
+        <div class="detail">Detects unusual altitude patterns: fast, low-altitude aircraft far from airports. Configurable filter engine with 8 filter types.</div>
+    </div>
+</div>
+
+<h2 class="section-title">Intelligence</h2>
+<div class="features-grid">
+    <div class="feature">
+        <div class="title">Natural Language Query</div>
+        <div class="detail">Ask questions in plain English: &quot;show me military jets above FL300&quot; or &quot;fastest aircraft right now.&quot; Powered by LLM integration.</div>
+    </div>
+    <div class="feature">
+        <div class="title">4D Replay</div>
+        <div class="detail">Select a time range and replay historical flights on the map. Watch traffic patterns unfold in accelerated time.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Aircraft Enrichment</div>
+        <div class="detail">Automatic lookups for aircraft type, operator, registration, and photos via hexdb.io and Planespotters API.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Route Prediction</div>
+        <div class="detail">Extrapolate future aircraft positions from heading, ground speed, and historical trail data.</div>
+    </div>
+</div>
+
+<h2 class="section-title">Network &amp; Data</h2>
+<div class="features-grid">
+    <div class="feature">
+        <div class="title">Multi-Receiver Network</div>
+        <div class="detail">Distributed receiver stations feed a central server. Self-service registration, per-receiver UUID authentication, automatic frame deduplication.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Maritime AIS</div>
+        <div class="detail">Track ships and vessels alongside aircraft on the same map. AIS protocol support for ferries, cargo ships, and marine traffic.</div>
+    </div>
+    <div class="feature">
+        <div class="title">REST API</div>
+        <div class="detail">Full JSON API: positions, trails, events, vessels, airports, statistics, and registration. Build your own integrations and dashboards.</div>
+    </div>
+    <div class="feature">
+        <div class="title">TimescaleDB Backend</div>
+        <div class="detail">Time-series database with hypertable compression, retention policies, and efficient queries for millions of position records.</div>
+    </div>
+</div>
+
+<h2 class="section-title">Quality</h2>
+<div class="features-grid">
+    <div class="feature">
+        <div class="title">269 Tests</div>
+        <div class="detail">Comprehensive test coverage across 3 Rust crates: core decoder (153), feeder (13), and server (90). Plus 394 Python reference tests.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Cross-Validated</div>
+        <div class="detail">296-frame capture decoded by both Rust and Python implementations, compared field-by-field. 100% match. Runs in CI on every commit.</div>
+    </div>
+    <div class="feature">
+        <div class="title">Security Audited</div>
+        <div class="detail">XSS prevention, SSRF validation, request body limits, cache caps, rate limiting, input validation, and tightened CORS across all endpoints.</div>
+    </div>
+    <div class="feature">
+        <div class="title">3,642 Airports</div>
+        <div class="detail">OurAirports dataset embedded at compile time. Major, medium, and small airports shown on the map with ICAO codes.</div>
+    </div>
+</div>
+
+<p style="margin-top:32px;"><a href="/about">&larr; Back to About</a> &nbsp;|&nbsp; <a href="/setup">Set Up a Receiver &rarr;</a></p>
+
+</div>

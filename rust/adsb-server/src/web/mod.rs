@@ -61,8 +61,16 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
         .route("/replay", axum::routing::get(pages::page_replay))
         .route("/receivers", axum::routing::get(pages::page_receivers))
         .route("/register", axum::routing::get(pages::page_register))
+        .route("/about", axum::routing::get(pages::page_about))
+        .route(
+            "/how-it-works",
+            axum::routing::get(pages::page_how_it_works),
+        )
+        .route("/features", axum::routing::get(pages::page_features))
+        .route("/setup", axum::routing::get(pages::page_setup))
         // SEO + AI routes
         .route("/robots.txt", axum::routing::get(pages::robots_txt))
+        .route("/sitemap.xml", axum::routing::get(pages::sitemap_xml))
         .route("/llms.txt", axum::routing::get(pages::llms_txt))
         // API routes
         .route("/api/aircraft", axum::routing::get(routes::api_aircraft))

@@ -1,0 +1,127 @@
+<div class="container setup-page">
+<style>
+.setup-page { max-width: 800px; margin: 0 auto; line-height: 1.7; }
+.setup-page h1 { color: #00ff88; font-size: 28px; margin: 32px 0 16px; }
+.setup-page h2 { color: #00ff88; font-size: 18px; margin: 28px 0 10px; border-bottom: 1px solid #333; padding-bottom: 8px; }
+.setup-page p { color: #ccc; margin: 10px 0; font-size: 14px; }
+.setup-page a { color: #00aaff; }
+.setup-page code { background: #1a1a1a; padding: 2px 6px; border-radius: 3px; color: #00ff88; font-size: 13px; }
+.setup-page .breadcrumb { font-size: 12px; color: #666; margin-bottom: 24px; }
+.setup-page .breadcrumb a { color: #888; text-decoration: none; }
+.setup-page .breadcrumb a:hover { color: #00ff88; }
+.setup-page .step { background: #111; border: 1px solid #333; border-radius: 6px; padding: 20px; margin: 16px 0; position: relative; }
+.setup-page .step .step-num { position: absolute; top: -12px; left: 16px; background: #00ff88; color: #0a0a0a; font-weight: bold; font-size: 12px; padding: 2px 10px; border-radius: 10px; }
+.setup-page .step h3 { color: #e0e0e0; font-size: 15px; margin: 4px 0 8px; }
+.setup-page .code-block { display: block; margin: 10px 0; padding: 10px 14px; background: #0a0a0a; border: 1px solid #222; border-radius: 4px; font-size: 13px; color: #00ff88; font-family: 'Courier New', monospace; word-break: break-all; overflow-x: auto; }
+.setup-page .hardware-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 16px 0; }
+.setup-page .hw-item { background: #111; border: 1px solid #333; border-radius: 6px; padding: 16px; }
+.setup-page .hw-item .hw-name { color: #00ff88; font-weight: bold; font-size: 13px; }
+.setup-page .hw-item .hw-detail { color: #888; font-size: 12px; margin-top: 4px; }
+.setup-page .hw-item .hw-price { color: #ccc; font-size: 14px; margin-top: 6px; }
+.setup-page .note { background: #0a1a0a; border: 1px solid #1a3a1a; border-radius: 6px; padding: 14px 18px; margin: 16px 0; font-size: 13px; color: #aadaaa; }
+</style>
+
+<div class="breadcrumb"><a href="/about">About</a> / Setup</div>
+
+<h1>Set Up a Receiver</h1>
+
+<p>Contribute aircraft data to the tracking network. All you need is a USB radio dongle and something to plug it into.</p>
+
+<h2>What You Need</h2>
+
+<div class="hardware-list">
+    <div class="hw-item">
+        <div class="hw-name">RTL-SDR Blog V4</div>
+        <div class="hw-detail">USB software-defined radio with 1090 MHz antenna. The standard ADS-B receiver.</div>
+        <div class="hw-price">~$35</div>
+    </div>
+    <div class="hw-item">
+        <div class="hw-name">Raspberry Pi 4/5</div>
+        <div class="hw-detail">Dedicated, low-power, always-on. Plug in the dongle and forget about it. Pre-built binaries available.</div>
+        <div class="hw-price">~$35-80</div>
+    </div>
+    <div class="hw-item">
+        <div class="hw-name">Any Linux Box</div>
+        <div class="hw-detail">x86_64 or ARM. An old laptop, mini PC, or NUC works great. Just needs a USB port and line-of-sight to the sky.</div>
+        <div class="hw-price">Whatever you have</div>
+    </div>
+</div>
+
+<div class="note">
+    <strong>Tip:</strong> Antenna placement matters more than hardware quality. A $35 dongle on the roof will outperform a $200 setup in a basement. Higher = farther range. Expect 100-200 nautical miles with decent antenna placement.
+</div>
+
+<h2>Setup Steps</h2>
+
+<div class="step">
+    <div class="step-num">1</div>
+    <h3>Register Your Receiver</h3>
+    <p>Visit the <a href="/register">registration page</a> to create a receiver entry and get your API key. Each receiver gets a unique UUID for authentication and tracking.</p>
+</div>
+
+<div class="step">
+    <div class="step-num">2</div>
+    <h3>Download the Feeder Binary</h3>
+    <p>Pre-built binaries for all major architectures are published with every release:</p>
+    <div class="code-block">
+# Raspberry Pi 4/5 (64-bit)<br>
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-feeder-aarch64-unknown-linux-gnu.tar.gz | tar xz<br>
+<br>
+# Raspberry Pi 3 (32-bit)<br>
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-feeder-armv7-unknown-linux-gnueabihf.tar.gz | tar xz<br>
+<br>
+# x86_64 Linux<br>
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-feeder-x86_64-unknown-linux-gnu.tar.gz | tar xz
+    </div>
+</div>
+
+<div class="step">
+    <div class="step-num">3</div>
+    <h3>Plug In and Start</h3>
+    <p>Connect the RTL-SDR dongle to USB, make sure <code>rtl_adsb</code> is installed (<code>sudo apt install rtl-sdr</code>), and start the feeder:</p>
+    <div class="code-block">
+chmod +x adsb-feeder<br>
+./adsb-feeder --server https://adsb.blueoctopustechnology.com --api-key YOUR_API_KEY
+    </div>
+    <p>Aircraft will appear on the <a href="/">live map</a> within seconds.</p>
+</div>
+
+<div class="step">
+    <div class="step-num">4</div>
+    <h3>Verify</h3>
+    <p>Check the <a href="/receivers">receivers dashboard</a> to see your station online. It shows frame count, uptime, active aircraft count, and last heartbeat time.</p>
+</div>
+
+<h2>Run as a Service</h2>
+<p>To keep the feeder running after logout, set it up as a systemd service:</p>
+<div class="code-block">
+sudo tee /etc/systemd/system/adsb-feeder.service &lt;&lt;EOF<br>
+[Unit]<br>
+Description=adsb-decode feeder<br>
+After=network.target<br>
+<br>
+[Service]<br>
+ExecStart=/opt/adsb-feeder/adsb-feeder --server https://adsb.blueoctopustechnology.com --api-key YOUR_API_KEY<br>
+Restart=always<br>
+RestartSec=10<br>
+User=pi<br>
+<br>
+[Install]<br>
+WantedBy=multi-user.target<br>
+EOF<br>
+<br>
+sudo systemctl enable --now adsb-feeder
+</div>
+
+<h2>Build from Source</h2>
+<p>If you prefer to build from source:</p>
+<div class="code-block">
+git clone https://github.com/blueOctopusAI/adsb-decode.git<br>
+cd adsb-decode/rust<br>
+cargo build --release -p adsb-feeder<br>
+# Binary at target/release/adsb-feeder
+</div>
+
+<p style="margin-top:32px;"><a href="/about">&larr; Back to About</a> &nbsp;|&nbsp; <a href="/register">Register a Receiver &rarr;</a></p>
+
+</div>

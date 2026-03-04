@@ -131,6 +131,9 @@
                     <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="apt-small"> Small</label>
                 </span>
             </div>
+            <div style="margin-top:4px;">
+                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="receiver-toggle"> Receivers</label>
+            </div>
             <div style="margin-top:6px;">
                 <span style="font-size:10px;color:#888;">Trail:</span>
                 <span style="font-size:11px;color:#00ff88;float:right;" id="trail-dur-label">1h</span>
@@ -739,6 +742,75 @@ function renderVisibleAirports() {
 }
 
 map.on('moveend', renderVisibleAirports);
+
+// --- Receiver layer ---
+let receiverLayer = L.layerGroup().addTo(map);
+let receiverData = null;
+
+const receiverIcon = L.divIcon({
+    className: '',
+    html: `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="#00ff88" stroke-width="2" opacity="0.9"/><circle cx="8" cy="8" r="2.5" fill="#00ff88" opacity="0.9"/></svg>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8]
+});
+
+const receiverIconOffline = L.divIcon({
+    className: '',
+    html: `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="#666" stroke-width="2" opacity="0.7"/><circle cx="8" cy="8" r="2.5" fill="#666" opacity="0.7"/></svg>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8]
+});
+
+function formatUptime(sec) {
+    if (!sec || sec <= 0) return 'offline';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm';
+    if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+    return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
+}
+
+function renderReceivers() {
+    receiverLayer.clearLayers();
+    if (!receiverData || !document.getElementById('receiver-toggle').checked) return;
+    receiverData.forEach(rx => {
+        if (rx.lat == null || rx.lon == null) return;
+        const icon = rx.online ? receiverIcon : receiverIconOffline;
+        const statusColor = rx.online ? '#00ff88' : '#ff4444';
+        const statusText = rx.online ? 'Online' : 'Offline';
+        const popupContent = `<div class="ac-popup">
+            <div class="popup-title" style="color:#00ff88;">${esc(rx.name || 'Receiver')}</div>
+            <div class="popup-row"><span class="popup-label">Status</span><span class="popup-value" style="color:${statusColor};">${statusText}</span></div>
+            <div class="popup-row"><span class="popup-label">Uptime</span><span class="popup-value">${formatUptime(rx.uptime_sec)}</span></div>
+            <div class="popup-row"><span class="popup-label">Frames</span><span class="popup-value">${(rx.frames_captured || 0).toLocaleString()}</span></div>
+            <div class="popup-row"><span class="popup-label">Aircraft</span><span class="popup-value">${rx.active_aircraft || 0}</span></div>
+            <div class="popup-row"><span class="popup-label">Coords</span><span class="popup-value">${rx.lat.toFixed(4)}, ${rx.lon.toFixed(4)}</span></div>
+        </div>`;
+        L.marker([rx.lat, rx.lon], { icon, interactive: true })
+            .bindTooltip(esc(rx.name || 'Receiver') + (rx.online ? '' : ' (offline)'), { permanent: false, direction: 'right', className: 'dark-tooltip' })
+            .bindPopup(popupContent, { maxWidth: 280 })
+            .addTo(receiverLayer);
+    });
+}
+
+document.getElementById('receiver-toggle').addEventListener('change', () => {
+    if (document.getElementById('receiver-toggle').checked && !receiverData) {
+        fetch('/api/v1/receivers').then(r => r.json()).then(data => {
+            receiverData = data;
+            renderReceivers();
+        });
+    } else {
+        renderReceivers();
+    }
+});
+
+// Refresh receiver data every 30 seconds if the toggle is on
+setInterval(() => {
+    if (document.getElementById('receiver-toggle').checked) {
+        fetch('/api/v1/receivers').then(r => r.json()).then(data => {
+            receiverData = data;
+            renderReceivers();
+        }).catch(() => {});
+    }
+}, 30000);
 
 // --- Heatmap layer ---
 let heatLayer = null;

@@ -1,0 +1,115 @@
+<div class="container hiw-page">
+<style>
+.hiw-page { max-width: 800px; margin: 0 auto; line-height: 1.7; }
+.hiw-page h1 { color: #00ff88; font-size: 28px; margin: 32px 0 16px; }
+.hiw-page h2 { color: #00ff88; font-size: 18px; margin: 28px 0 10px; }
+.hiw-page p { color: #ccc; margin: 10px 0; font-size: 14px; }
+.hiw-page a { color: #00aaff; }
+.hiw-page code { background: #1a1a1a; padding: 2px 6px; border-radius: 3px; color: #00ff88; font-size: 13px; }
+.hiw-page .breadcrumb { font-size: 12px; color: #666; margin-bottom: 24px; }
+.hiw-page .breadcrumb a { color: #888; text-decoration: none; }
+.hiw-page .breadcrumb a:hover { color: #00ff88; }
+.hiw-page .stage-block { background: #111; border-left: 3px solid #00ff88; padding: 16px 20px; margin: 16px 0; border-radius: 0 6px 6px 0; }
+.hiw-page .stage-block .stage-title { color: #00ff88; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+.hiw-page .stage-block h2 { margin-top: 0; border: none; }
+.hiw-page .detail-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+.hiw-page .detail-table th { background: #1a1a1a; color: #00ff88; padding: 6px 10px; text-align: left; }
+.hiw-page .detail-table td { padding: 6px 10px; border-bottom: 1px solid #1a1a1a; color: #ccc; }
+.hiw-page .pipeline { display: flex; flex-wrap: wrap; gap: 0; margin: 20px 0; justify-content: center; align-items: center; }
+.hiw-page .pip-step { background: #111; border: 1px solid #333; padding: 8px 14px; font-size: 12px; color: #ccc; text-align: center; min-width: 100px; }
+.hiw-page .pip-step strong { color: #00ff88; display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+.hiw-page .pip-arrow { color: #333; font-size: 18px; padding: 0 4px; }
+</style>
+
+<div class="breadcrumb"><a href="/about">About</a> / How It Works</div>
+
+<h1>How It Works</h1>
+
+<p>ADS-B (Automatic Dependent Surveillance-Broadcast) is a surveillance protocol where aircraft broadcast their identity, position, altitude, and velocity on <strong>1090 MHz</strong>. The signal is unencrypted &mdash; any receiver within line-of-sight (~100-200 nautical miles depending on altitude) can hear every aircraft in the sky.</p>
+
+<p>The signal uses Pulse Position Modulation (PPM) at 1 Megabit/second. Messages are either 56 bits (short, Mode S) or 112 bits (long, ADS-B extended squitter). Every message starts with an 8-microsecond preamble that receivers use to detect the frame.</p>
+
+<div class="pipeline">
+    <div class="pip-step"><strong>Antenna</strong>1090 MHz</div>
+    <span class="pip-arrow">&rarr;</span>
+    <div class="pip-step"><strong>RTL-SDR</strong>IQ Samples</div>
+    <span class="pip-arrow">&rarr;</span>
+    <div class="pip-step"><strong>Demod</strong>Bit Recovery</div>
+    <span class="pip-arrow">&rarr;</span>
+    <div class="pip-step"><strong>CRC</strong>Validation</div>
+    <span class="pip-arrow">&rarr;</span>
+    <div class="pip-step"><strong>Decode</strong>ADS-B Fields</div>
+    <span class="pip-arrow">&rarr;</span>
+    <div class="pip-step"><strong>CPR</strong>Position</div>
+    <span class="pip-arrow">&rarr;</span>
+    <div class="pip-step"><strong>Track</strong>Intelligence</div>
+</div>
+
+<div class="stage-block">
+    <div class="stage-title">Stage 1</div>
+    <h2>Capture</h2>
+    <p>The RTL-SDR dongle is a software-defined radio that samples the 1090 MHz band and produces IQ (In-phase/Quadrature) samples &mdash; pairs of 8-bit unsigned integers representing signal amplitude and phase.</p>
+    <table class="detail-table">
+        <tr><th>Parameter</th><th>Value</th></tr>
+        <tr><td>Sample rate</td><td>2 MHz (2 million sample pairs/sec)</td></tr>
+        <tr><td>Sample format</td><td>Interleaved uint8 pairs [I&#8320;, Q&#8320;, I&#8321;, Q&#8321;, ...]</td></tr>
+        <tr><td>Center frequency</td><td>1090 MHz</td></tr>
+    </table>
+    <p>We also support pre-demodulated hex frame input from tools like <code>rtl_adsb</code> or <code>dump1090 --raw</code> for testing without raw IQ processing.</p>
+</div>
+
+<div class="stage-block">
+    <div class="stage-title">Stage 2</div>
+    <h2>Demodulation</h2>
+    <p>Raw IQ samples are converted to magnitude: <code>mag = sqrt(I&sup2; + Q&sup2;)</code>. In practice we use squared magnitude to avoid the sqrt &mdash; relative comparisons still work. The Rust implementation uses a compile-time 256&times;256 lookup table.</p>
+    <p>A sliding window searches for the preamble pattern: pulses at sample positions 0, 2, 7, 9 (at 2 MHz) with gaps between them. When found, the next 112 samples are extracted as the message data.</p>
+    <p>Bit recovery: each bit occupies 2 samples. If the first sample is stronger than the second, the bit is '1'. Otherwise '0'. This produces a raw bitstream of 56 or 112 bits.</p>
+</div>
+
+<div class="stage-block">
+    <div class="stage-title">Stage 3</div>
+    <h2>CRC &amp; Frame Parsing</h2>
+    <p>Every Mode S message includes a 24-bit CRC using the ICAO polynomial (<code>0xFFF409</code>). For ADS-B (DF17) messages, valid frames produce remainder <code>0x000000</code>. For all-call (DF11) messages, the remainder is XORed with the ICAO address.</p>
+    <p>Both implementations include syndrome-table error correction for 1-2 bit errors. The Rust CRC lookup table is built at compile time via <code>const fn</code>. Safety rule: never correct bits 0-4 (the Downlink Format field) to prevent turning one message type into another.</p>
+    <table class="detail-table">
+        <tr><th>DF</th><th>Bits</th><th>Content</th></tr>
+        <tr><td>0, 4</td><td>56</td><td>Altitude replies</td></tr>
+        <tr><td>5</td><td>56</td><td>Squawk code (identity)</td></tr>
+        <tr><td>11</td><td>56</td><td>All-call (ICAO acquisition)</td></tr>
+        <tr><td>17</td><td>112</td><td>ADS-B extended squitter &mdash; the main event</td></tr>
+        <tr><td>20, 21</td><td>112</td><td>Comm-B data (BDS)</td></tr>
+    </table>
+</div>
+
+<div class="stage-block">
+    <div class="stage-title">Stage 4</div>
+    <h2>ADS-B Decoding</h2>
+    <p>The 56-bit ME (Message Extended) field in DF17 frames carries the payload. The first 5 bits are the Type Code (TC):</p>
+    <table class="detail-table">
+        <tr><th>TC</th><th>Content</th><th>Details</th></tr>
+        <tr><td>1-4</td><td>Identification</td><td>Callsign as 8 chars from 64-char alphabet (6 bits each)</td></tr>
+        <tr><td>9-18</td><td>Airborne position</td><td>Gillham-coded altitude + CPR-encoded lat/lon</td></tr>
+        <tr><td>19</td><td>Velocity</td><td>Ground speed (N/S + E/W components) or airspeed + heading</td></tr>
+    </table>
+    <p>Altitude uses Gillham coding: either 25-ft increments (modern) or 100-ft Gray code (legacy). Special squawk codes 7500 (hijack), 7600 (radio failure), and 7700 (emergency) trigger immediate alerts.</p>
+</div>
+
+<div class="stage-block">
+    <div class="stage-title">Stage 5</div>
+    <h2>CPR Position Decoding</h2>
+    <p>Compact Position Reporting is the trickiest part of ADS-B. It compresses latitude and longitude into 17-bit values using a zone system with 15 latitude zones per hemisphere.</p>
+    <p>Aircraft alternate between even and odd frames (different zone counts: 15 vs 14). By combining one even and one odd frame, the receiver determines which zone the aircraft is in and computes position to ~5.1 meter precision.</p>
+    <p>Global decode requires two frames; local decode uses a single frame plus a known reference position (e.g., the receiver's location). Both methods are implemented and tested.</p>
+</div>
+
+<div class="stage-block">
+    <div class="stage-title">Stage 6</div>
+    <h2>Tracking &amp; Intelligence</h2>
+    <p>Decoded messages feed into a tracker that maintains state per aircraft: position history, altitude profile, velocity trend, and identification. The tracker detects military transponders, emergency squawks, and unusual altitude patterns.</p>
+    <p>Aircraft data is enriched via external APIs (hexdb.io for type/operator, Planespotters for photos) and persisted to a TimescaleDB time-series database for historical queries, heatmaps, and 4D replay.</p>
+    <p>Multiple receivers can feed the same server. Frames are deduplicated by ICAO + timestamp, and each receiver is tracked independently for coverage analysis.</p>
+</div>
+
+<p style="margin-top:32px;"><a href="/about">&larr; Back to About</a> &nbsp;|&nbsp; <a href="/features">Features &rarr;</a></p>
+
+</div>
