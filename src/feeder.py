@@ -1,5 +1,12 @@
 """Feeder agent — lightweight frame forwarder for remote receivers.
 
+DEPRECATED: Use the Rust `adsb-receiver` binary instead. It's a single
+self-contained binary with no Python dependency. See deploy/receiver-setup.sh
+or visit /setup on the server for installation instructions.
+
+This Python feeder is kept for reference but is no longer the recommended
+deployment path.
+
 Runs on any machine with an RTL-SDR dongle. Captures frames using our
 custom demodulator (pyrtlsdr + IQ→magnitude→preamble→PPM) and POSTs
 them to a central adsb-decode server in batches.

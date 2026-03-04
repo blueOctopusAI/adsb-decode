@@ -1,0 +1,13 @@
+[Unit]
+Description=adsb-decode receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/adsb-receiver.env
+ExecStart=/opt/adsb-receiver/adsb-receiver
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

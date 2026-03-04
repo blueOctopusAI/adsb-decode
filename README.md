@@ -92,6 +92,21 @@ cargo run --bin adsb -- stats --db-path data/flights.db
 cargo run --bin adsb -- export --db-path data/flights.db --format json
 ```
 
+### Receiver Setup
+
+Set up a remote receiver to feed data to a central server:
+
+```bash
+# Download the receiver binary (or build: cargo build --release -p adsb-receiver)
+# Install RTL-SDR drivers: sudo apt install rtl-sdr
+
+# Run directly
+adsb-receiver --server https://adsb.blueoctopustechnology.com --name my-pi --api-key YOUR_KEY
+
+# Or configure via environment variables for systemd
+# See deploy/receiver-setup.sh for automated installation
+```
+
 ### Quick Start (Python reference)
 
 ```bash
@@ -156,9 +171,10 @@ Hub-and-spoke architecture for distributed coverage:
                             Axum API + SQLite
 ```
 
-- **Feeder agent** (`adsb-feeder` binary) runs on each receiver node
+- **Receiver agent** (`adsb-receiver` binary) runs on each receiver node — single binary, no Python
 - Bearer token authentication for frame ingestion
 - Heartbeat monitoring with online/offline status
+- Environment variable + CLI flag configuration for systemd deployment
 - ~$60/node (Pi + dongle + antenna)
 
 ## Why This Exists
@@ -192,10 +208,17 @@ rust/
 │       ├── config.rs         # YAML config load/save
 │       └── airports.csv      # OurAirports US airport database (embedded at compile time)
 │
-├── adsb-feeder/              # Binary: edge device (Pi + RTL-SDR)
+├── adsb-feeder/              # Binary: offline demodulation tool
 │   └── src/
-│       ├── main.rs           # Capture → decode → batch POST
+│       ├── main.rs           # Capture → decode (file-based)
 │       └── capture.rs        # FrameReader, IQReader, LiveDemodCapture
+│
+├── adsb-receiver/            # Binary: networked receiver daemon
+│   └── src/
+│       ├── main.rs           # CLI (clap + env vars), startup, Ctrl+C shutdown
+│       ├── capture.rs        # rtl_adsb subprocess + native-sdr fallback
+│       ├── sender.rs         # HTTP client, batch POST, heartbeat
+│       └── stats.rs          # Atomic counters (frames, uptime)
 │
 ├── adsb-server/              # Binary: web server + CLI + database
 │   ├── src/
@@ -238,12 +261,13 @@ src/
     └── templates/   # Jinja2 templates (9 pages)
 ```
 
-**Rust:** 199 tests, ~10,700 lines across 3 crates. **Python:** 394 tests, ~7,300 lines across 22 modules. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
+**Rust:** 291 tests, ~11,500 lines across 4 crates. **Python:** 394 tests, ~7,300 lines across 22 modules. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
 
 ## Future
 
 - **TimescaleDB production backend** — Implemented behind a feature flag (`db_pg.rs`). Includes hypertables, compression policies, retention policies, and continuous aggregates. Requires a PostgreSQL instance to activate.
-- **Cross-compiled Pi binaries** — GitHub Actions CI configured for aarch64 (Pi 4/5) and armv7 (Pi 3) targets via `cross`. Release binaries not yet published.
+- **Self-contained receiver binary** (`adsb-receiver`) — Captures, decodes, and feeds frames to a central server. Single binary, no Python dependency. Supports environment variable configuration for systemd. Replaces the Python `feeder.py`.
+- **Cross-compiled Pi binaries** — GitHub Actions CI configured for aarch64 (Pi 4/5) and armv7 (Pi 3) targets via `cross` for all three binaries (feeder, receiver, server).
 
 ## License
 

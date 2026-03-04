@@ -23,33 +23,63 @@ tr:hover { background: #111; }
 .stat-card { display: inline-block; background: #111; border: 1px solid #333; padding: 16px 24px; margin: 8px; border-radius: 4px; }
 .stat-card .value { font-size: 32px; color: #00ff88; font-weight: bold; }
 .stat-card .label { font-size: 12px; color: #888; margin-top: 4px; }
-a { color: #00aaff; }"#;
+a { color: #00aaff; }
+.nav-hamburger { display: none; background: none; border: none; color: #888; font-size: 22px; cursor: pointer; padding: 4px 8px; line-height: 1; }
+.nav-hamburger:hover { color: #00ff88; }
+.nav-links { display: contents; }
+.nav-right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+footer .footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+footer .footer-links { display: flex; gap: 16px; }
+@media (max-width: 768px) {
+    body { overflow-x: hidden; }
+    .container { padding: 12px; }
+    nav { flex-wrap: wrap; padding: 8px 12px; gap: 0; }
+    nav .brand { margin-right: auto; }
+    .nav-hamburger { display: block; }
+    .nav-links { display: none; flex-direction: column; width: 100%; padding: 8px 0 4px; gap: 2px; }
+    .nav-links.open { display: flex; }
+    .nav-links a { padding: 10px 12px; min-height: 44px; display: flex; align-items: center; font-size: 14px; border-radius: 4px; }
+    .nav-links a:hover { background: rgba(255,255,255,0.05); }
+    .nav-right { margin-left: 0; width: 100%; justify-content: stretch; gap: 8px; padding-top: 4px; border-top: 1px solid #222; margin-top: 4px; }
+    .nav-right a { flex: 1; text-align: center; padding: 10px 12px; min-height: 44px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+    footer .footer-inner { flex-direction: column; text-align: center; gap: 12px; }
+    footer .footer-links { justify-content: center; }
+    table { font-size: 12px; }
+    th, td { padding: 6px 4px; }
+    .stat-card { padding: 12px 16px; margin: 4px; }
+    .stat-card .value { font-size: 24px; }
+}"#;
 
 const NAV_HTML: &str = r#"<nav>
     <a href="/" class="brand">adsb-decode</a>
-    <a href="/">Map</a>
-    <a href="/table">Table</a>
-    <a href="/events">Events</a>
-    <a href="/query">Query</a>
-    <a href="/replay">Replay</a>
-    <a href="/receivers">Receivers</a>
-    <a href="/stats">Stats</a>
-    <a href="/about">About</a>
-    <span style="margin-left:auto; display:flex; gap:16px; align-items:center;">
-        <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener" title="GitHub" style="color:#888;">GitHub</a>
-        <a href="/register" style="color:#00ff88;">Register</a>
-    </span>
+    <button class="nav-hamburger" onclick="document.querySelector('.nav-links').classList.toggle('open')" aria-label="Toggle navigation">&#9776;</button>
+    <div class="nav-links">
+        <a href="/">Map</a>
+        <a href="/table">Table</a>
+        <a href="/events">Events</a>
+        <a href="/query">Query</a>
+        <a href="/replay">Replay</a>
+        <a href="/receivers">Receivers</a>
+        <a href="/stats">Stats</a>
+        <a href="/about">About</a>
+        <div class="nav-right">
+            <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener" title="GitHub" style="color:#888;">GitHub</a>
+            <a href="/register" style="color:#00ff88;">Register</a>
+        </div>
+    </div>
 </nav>"#;
 
-const FOOTER_HTML: &str = r#"<footer style="background:#111; border-top:1px solid #333; padding:16px 24px; margin-top:32px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; font-size:12px;">
-    <div style="color:#888;">
-        Built by <a href="https://www.blueoctopustechnology.com" target="_blank" rel="noopener" style="color:#00ff88; text-decoration:none;">Blue Octopus Technology</a>
-        &mdash; data systems that turn messy inputs into clear intelligence.
-    </div>
-    <div style="display:flex; gap:16px;">
-        <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener" style="color:#888; text-decoration:none;">GitHub</a>
-        <a href="/about" style="color:#888; text-decoration:none;">About</a>
-        <a href="https://www.blueoctopustechnology.com/contact" target="_blank" rel="noopener" style="color:#00ff88; text-decoration:none;">Contact</a>
+const FOOTER_HTML: &str = r#"<footer style="background:#111; border-top:1px solid #333; padding:16px 24px; margin-top:32px; font-size:12px;">
+    <div class="footer-inner">
+        <div style="color:#888;">
+            Built by <a href="https://www.blueoctopustechnology.com" target="_blank" rel="noopener" style="color:#00ff88; text-decoration:none;">Blue Octopus Technology</a>
+            &mdash; data systems that turn messy inputs into clear intelligence.
+        </div>
+        <div class="footer-links">
+            <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener" style="color:#888; text-decoration:none;">GitHub</a>
+            <a href="/about" style="color:#888; text-decoration:none;">About</a>
+            <a href="https://www.blueoctopustechnology.com/contact" target="_blank" rel="noopener" style="color:#00ff88; text-decoration:none;">Contact</a>
+        </div>
     </div>
 </footer>"#;
 

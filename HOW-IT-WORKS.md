@@ -26,14 +26,15 @@ The RTL-SDR dongle is a software-defined radio that samples the 1090 MHz band an
 
 We also support pre-demodulated frame input — hex strings from tools like `rtl_adsb` or `dump1090 --raw` — for testing without raw IQ processing.
 
-**Current live capture:** The Rust implementation uses `rtl_adsb` subprocess for hex frame input. The Python implementation has native IQ demodulation via `pyrtlsdr` (reading raw IQ bytes directly from the USB dongle and piping through our own demodulator). Both also support file-based input (hex frame files and raw IQ files).
+**Current live capture:** The `adsb-receiver` binary spawns `rtl_adsb` as a subprocess, parses its `*HEX;` output, and forwards decoded frames to the central server via HTTP. It also supports native RTL-SDR USB access behind the `native-sdr` feature flag. The Python implementation has native IQ demodulation via `pyrtlsdr` but is deprecated in favor of the Rust receiver. Both also support file-based input (hex frame files and raw IQ files).
 
 | | Rust | Python |
 |---|---|---|
 | Hex frame files | `capture.rs` FrameReader | `capture.py` FrameReader |
 | Raw IQ files | `capture.rs` IQReader | `capture.py` IQReader |
-| Live capture | `main.rs` spawns `rtl_adsb` | `capture.py` LiveDemodCapture (pyrtlsdr) |
-| Demod module | `demod.rs` (implemented, not wired to live) | `demodulator.py` (active in live path) |
+| Live capture | `adsb-receiver` spawns `rtl_adsb` | `capture.py` LiveDemodCapture (pyrtlsdr) |
+| Demod module | `demod.rs` (implemented, available via native-sdr) | `demodulator.py` (active in live path) |
+| Remote feeding | `adsb-receiver` binary (HTTP POST) | `feeder.py` (deprecated) |
 
 ---
 
@@ -422,7 +423,7 @@ The system supports distributed coverage through a hub-and-spoke architecture:
                             Axum API + SQLite
 ```
 
-The **feeder agent** (`adsb-feeder` binary) runs on each receiver node — a Raspberry Pi with an RTL-SDR dongle, a laptop, any machine with a radio. It captures frames, decodes them locally, and batches position data into HTTP POST requests to the central server.
+The **receiver agent** (`adsb-receiver` binary) runs on each receiver node — a Raspberry Pi with an RTL-SDR dongle, a laptop, any machine with a radio. It captures frames via `rtl_adsb`, and batches them into HTTP POST requests to the central server every 2 seconds. Configuration is via CLI flags or environment variables (for systemd `EnvironmentFile` support). The receiver sends heartbeats every 30 seconds with frame counts and uptime. On send failure, frames are re-buffered and retried on the next cycle. Clean shutdown flushes remaining frames before exit.
 
 The **ingest API** (`POST /api/v1/frames`) accepts frame batches with bearer token authentication. A heartbeat endpoint (`POST /api/v1/heartbeat`) tracks whether each feeder is online. The receiver management page shows connection status and coverage circles.
 

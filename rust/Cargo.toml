@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["adsb-core", "adsb-server", "adsb-feeder"]
+members = ["adsb-core", "adsb-server", "adsb-feeder", "adsb-receiver"]
 
 [workspace.package]
 version = "0.1.0"

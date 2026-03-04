@@ -93,10 +93,93 @@
 .leaflet-popup-tip { background: #111; }
 .ac-ghost td { opacity: 0.45; }
 .ac-ghost td a { color: #667; }
+
+.panel-handle { display: none; text-align: center; padding: 8px; cursor: pointer; user-select: none; flex-shrink: 0; }
+.panel-handle .handle-bar { display: block; width: 40px; height: 4px; background: rgba(255,255,255,0.3); border-radius: 2px; margin: 0 auto 4px; }
+.panel-handle .handle-text { font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 1px; }
+
+@media (max-width: 768px) {
+    #map { height: calc(100vh - 44px); width: 100%; }
+    #cesium-container { height: calc(100vh - 44px); }
+
+    #control-panel {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        top: auto;
+        width: 100%;
+        max-height: 55vh;
+        border-radius: 12px 12px 0 0;
+        border: none;
+        border-top: 1px solid #333;
+        transform: translateY(calc(100% - 44px));
+        transition: transform 0.3s ease;
+        z-index: 1000;
+        background: rgba(10,10,10,0.95);
+    }
+    #control-panel.expanded {
+        transform: translateY(0);
+    }
+    .panel-handle { display: block; }
+
+    #panel-header .stat-row { gap: 8px; font-size: 11px; }
+
+    #controls-section {
+        padding: 10px 14px;
+    }
+    #controls-section label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 4px;
+        font-size: 13px;
+        min-height: 36px;
+        cursor: pointer;
+    }
+    #controls-section input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+    }
+    #controls-section input[type="range"] {
+        height: 28px;
+    }
+    #controls-section select {
+        font-size: 13px;
+        min-height: 36px;
+        padding: 4px 8px;
+    }
+    #controls-section button {
+        font-size: 12px;
+        min-height: 36px;
+        padding: 4px 10px;
+    }
+
+    #ac-list-section { max-height: 30vh; overflow-y: auto; }
+    #ac-list-section table { font-size: 11px; }
+    #ac-list-section td { padding: 4px 4px; }
+
+    #alt-legend {
+        bottom: 52px;
+        left: 8px;
+        padding: 6px 8px;
+        font-size: 10px;
+    }
+    #alt-legend .legend-bar { height: 80px; width: 10px; }
+    #alt-legend .legend-labels { height: 80px; font-size: 9px; }
+
+    .leaflet-popup-content-wrapper { max-width: 280px; }
+    .ac-popup .popup-row { font-size: 11px; }
+}
 </style>
 <div id="map"></div>
 <div id="cesium-container"></div>
 <div id="control-panel">
+    <div class="panel-handle" onclick="document.getElementById('control-panel').classList.toggle('expanded')">
+        <span class="handle-bar"></span>
+        <span class="handle-text">Controls</span>
+    </div>
     <div id="panel-header">
         <div class="stat-row">
             <span><span class="stat-value" id="so-aircraft">0</span> <span class="stat-label">ac</span></span>

@@ -51,9 +51,9 @@ function loadReceivers() {
             cards.innerHTML = `<div class="empty-state">
                 <div style="font-size:24px;margin-bottom:12px;">📡</div>
                 <div>Running with <strong style="color:#00ff88;">local receiver</strong> — no remote feeders connected.</div>
-                <div style="margin-top:12px;">To add remote feeders, run <code>adsb-feeder</code> on another device<br>pointed at this server's ingest API.</div>
+                <div style="margin-top:12px;">To add remote receivers, run <code>adsb-receiver</code> on another device<br>pointed at this server.</div>
                 <div style="margin-top:16px;font-size:11px;color:#555;">
-                    <code>adsb-feeder live --server http://THIS_HOST:8080 --name pi-station</code>
+                    <code>adsb-receiver --server http://THIS_HOST:8080 --name pi-station</code>
                 </div>
             </div>`;
             return;

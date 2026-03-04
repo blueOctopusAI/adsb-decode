@@ -61,56 +61,97 @@
 
 <div class="step">
     <div class="step-num">2</div>
-    <h3>Download the Feeder Binary</h3>
-    <p>Pre-built binaries for all major architectures are published with every release:</p>
+    <h3>Install RTL-SDR Drivers</h3>
+    <p>The receiver needs the <code>rtl_adsb</code> command from the rtl-sdr package:</p>
     <div class="code-block">
-# Raspberry Pi 4/5 (64-bit)<br>
-curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-feeder-aarch64-unknown-linux-gnu.tar.gz | tar xz<br>
-<br>
-# Raspberry Pi 3 (32-bit)<br>
-curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-feeder-armv7-unknown-linux-gnueabihf.tar.gz | tar xz<br>
-<br>
-# x86_64 Linux<br>
-curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-feeder-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo apt install rtl-sdr
+    </div>
+    <p>Then blacklist the DVB kernel module so it doesn't conflict:</p>
+    <div class="code-block">
+echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf<br>
+sudo modprobe -r dvb_usb_rtl28xxu
     </div>
 </div>
 
 <div class="step">
     <div class="step-num">3</div>
-    <h3>Plug In and Start</h3>
-    <p>Connect the RTL-SDR dongle to USB, make sure <code>rtl_adsb</code> is installed (<code>sudo apt install rtl-sdr</code>), and start the feeder:</p>
+    <h3>Download the Receiver Binary</h3>
+    <p>Pre-built binaries for all major architectures:</p>
     <div class="code-block">
-chmod +x adsb-feeder<br>
-./adsb-feeder --server https://adsb.blueoctopustechnology.com --api-key YOUR_API_KEY
+# Raspberry Pi 4/5 (64-bit)<br>
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-aarch64-unknown-linux-gnu.tar.gz | tar xz<br>
+<br>
+# Raspberry Pi 3 (32-bit)<br>
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-armv7-unknown-linux-gnueabihf.tar.gz | tar xz<br>
+<br>
+# x86_64 Linux<br>
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-x86_64-unknown-linux-gnu.tar.gz | tar xz<br>
+<br>
+sudo mkdir -p /opt/adsb-receiver<br>
+sudo mv adsb-receiver /opt/adsb-receiver/<br>
+sudo chmod +x /opt/adsb-receiver/adsb-receiver
     </div>
-    <p>Aircraft will appear on the <a href="/">live map</a> within seconds.</p>
+    <p>Or use the automated setup script:</p>
+    <div class="code-block">
+curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo bash
+    </div>
 </div>
 
 <div class="step">
     <div class="step-num">4</div>
-    <h3>Verify</h3>
-    <p>Check the <a href="/receivers">receivers dashboard</a> to see your station online. It shows frame count, uptime, active aircraft count, and last heartbeat time.</p>
+    <h3>Configure</h3>
+    <p>Create an environment file with your settings:</p>
+    <div class="code-block">
+sudo tee /etc/adsb-receiver.env &lt;&lt;EOF<br>
+ADSB_SERVER=https://adsb.blueoctopustechnology.com<br>
+ADSB_NAME=my-receiver<br>
+ADSB_API_KEY=your-api-key-from-step-1<br>
+ADSB_LAT=35.0<br>
+ADSB_LON=-83.0<br>
+EOF<br>
+sudo chmod 600 /etc/adsb-receiver.env
+    </div>
 </div>
 
-<h2>Run as a Service</h2>
-<p>To keep the feeder running after logout, set it up as a systemd service:</p>
-<div class="code-block">
-sudo tee /etc/systemd/system/adsb-feeder.service &lt;&lt;EOF<br>
+<div class="step">
+    <div class="step-num">5</div>
+    <h3>Start the Service</h3>
+    <p>Install and enable the systemd service:</p>
+    <div class="code-block">
+sudo tee /etc/systemd/system/adsb-receiver.service &lt;&lt;EOF<br>
 [Unit]<br>
-Description=adsb-decode feeder<br>
-After=network.target<br>
+Description=adsb-decode receiver<br>
+After=network-online.target<br>
+Wants=network-online.target<br>
 <br>
 [Service]<br>
-ExecStart=/opt/adsb-feeder/adsb-feeder --server https://adsb.blueoctopustechnology.com --api-key YOUR_API_KEY<br>
+EnvironmentFile=/etc/adsb-receiver.env<br>
+ExecStart=/opt/adsb-receiver/adsb-receiver<br>
 Restart=always<br>
 RestartSec=10<br>
-User=pi<br>
 <br>
 [Install]<br>
 WantedBy=multi-user.target<br>
 EOF<br>
 <br>
-sudo systemctl enable --now adsb-feeder
+sudo systemctl daemon-reload<br>
+sudo systemctl enable --now adsb-receiver
+    </div>
+</div>
+
+<div class="step">
+    <div class="step-num">6</div>
+    <h3>Verify</h3>
+    <p>Check that frames are flowing:</p>
+    <div class="code-block">
+sudo journalctl -u adsb-receiver -f
+    </div>
+    <p>Then check the <a href="/receivers">receivers dashboard</a> to see your station online. It shows frame count, uptime, active aircraft count, and last heartbeat time.</p>
+</div>
+
+<div class="note">
+    <strong>Quick test:</strong> You can also run the receiver directly without systemd:<br><br>
+    <code>/opt/adsb-receiver/adsb-receiver --server https://adsb.blueoctopustechnology.com --name test --api-key YOUR_KEY</code>
 </div>
 
 <h2>Build from Source</h2>
@@ -118,8 +159,24 @@ sudo systemctl enable --now adsb-feeder
 <div class="code-block">
 git clone https://github.com/blueOctopusAI/adsb-decode.git<br>
 cd adsb-decode/rust<br>
-cargo build --release -p adsb-feeder<br>
-# Binary at target/release/adsb-feeder
+cargo build --release -p adsb-receiver<br>
+# Binary at target/release/adsb-receiver
+</div>
+
+<h2>All Options</h2>
+<p>The receiver binary supports these flags (all also configurable via environment variables):</p>
+<div class="code-block">
+adsb-receiver --help<br>
+<br>
+  --server &lt;URL&gt;      Server URL (env: ADSB_SERVER)<br>
+  --name &lt;NAME&gt;        Receiver name (env: ADSB_NAME)<br>
+  --api-key &lt;KEY&gt;      API key (env: ADSB_API_KEY)<br>
+  --lat &lt;LAT&gt;          Latitude (env: ADSB_LAT)<br>
+  --lon &lt;LON&gt;          Longitude (env: ADSB_LON)<br>
+  --interval &lt;SECS&gt;    Batch interval, default 2.0 (env: ADSB_INTERVAL)<br>
+  --device &lt;N&gt;         RTL-SDR device index, default 0 (env: ADSB_DEVICE)<br>
+  --gain &lt;N&gt;           RTL-SDR gain (env: ADSB_GAIN)<br>
+  --ppm &lt;N&gt;            PPM correction (env: ADSB_PPM)
 </div>
 
 <p style="margin-top:32px;"><a href="/about">&larr; Back to About</a> &nbsp;|&nbsp; <a href="/register">Register a Receiver &rarr;</a></p>

@@ -1,0 +1,18 @@
+[package]
+name = "adsb-receiver"
+version = "0.1.0"
+edition = "2021"
+description = "Self-contained ADS-B receiver daemon — captures, decodes, and feeds frames to an adsb-decode server"
+
+[dependencies]
+adsb-core = { path = "../adsb-core" }
+adsb-feeder = { path = "../adsb-feeder" }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+
+[features]
+default = []
+native-sdr = ["adsb-feeder/native-sdr"]

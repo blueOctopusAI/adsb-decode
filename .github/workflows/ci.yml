@@ -112,6 +112,11 @@ jobs:
         working-directory: rust
         run: cargo build --release --target ${{ matrix.target }} -p adsb-feeder
 
+      - name: Build receiver (native)
+        if: "!matrix.cross"
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.target }} -p adsb-receiver
+
       - name: Build server (native)
         if: "!matrix.cross"
         working-directory: rust
@@ -122,6 +127,11 @@ jobs:
         working-directory: rust
         run: cross build --release --target ${{ matrix.target }} -p adsb-feeder
 
+      - name: Build receiver (cross)
+        if: matrix.cross
+        working-directory: rust
+        run: cross build --release --target ${{ matrix.target }} -p adsb-receiver
+
       - name: Build server (cross)
         if: matrix.cross
         working-directory: rust
@@ -131,6 +141,7 @@ jobs:
         if: "!matrix.cross && matrix.os == 'ubuntu-latest'"
         run: |
           strip rust/target/${{ matrix.target }}/release/adsb-feeder
+          strip rust/target/${{ matrix.target }}/release/adsb-receiver
           strip rust/target/${{ matrix.target }}/release/adsb
 
       - name: Upload feeder
@@ -138,6 +149,12 @@ jobs:
         with:
           name: adsb-feeder-${{ matrix.target }}
           path: rust/target/${{ matrix.target }}/release/adsb-feeder${{ matrix.binary_suffix }}
+
+      - name: Upload receiver
+        uses: actions/upload-artifact@v4
+        with:
+          name: adsb-receiver-${{ matrix.target }}
+          path: rust/target/${{ matrix.target }}/release/adsb-receiver${{ matrix.binary_suffix }}
 
       - name: Upload server
         uses: actions/upload-artifact@v4
