@@ -67,7 +67,8 @@ class Feeder:
 
         frames = []
         while self.buffer:
-            frames.append(self.buffer.popleft())
+            hex_str = self.buffer.popleft()
+            frames.append({"hex": hex_str})
 
         payload = {
             "receiver": self.receiver_name,
