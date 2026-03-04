@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 use adsb_core::types::icao_to_string;
 
+use crate::db::{AircraftRow, HistoryRow};
 use crate::web::AppState;
 
 // ---------------------------------------------------------------------------
@@ -217,7 +218,40 @@ pub async fn api_positions(
     }
 
     let positions = state.db.get_recent_positions(minutes, 50000).await;
-    Json(serde_json::to_value(&positions).unwrap_or(json!([])))
+
+    // Enrich positions with aircraft + sighting data (callsign, registration, etc.)
+    // so the map has the same fields as the live tracker path.
+    let aircraft = state.db.get_all_aircraft().await;
+    let history = state.db.get_aircraft_history(minutes / 60.0 + 1.0).await;
+
+    let ac_map: std::collections::HashMap<&str, &AircraftRow> =
+        aircraft.iter().map(|a| (a.icao.as_str(), a)).collect();
+    let hist_map: std::collections::HashMap<&str, &HistoryRow> =
+        history.iter().map(|h| (h.icao.as_str(), h)).collect();
+
+    let enriched: Vec<Value> = positions
+        .iter()
+        .map(|p| {
+            let ac = ac_map.get(p.icao.as_str());
+            let hi = hist_map.get(p.icao.as_str());
+            json!({
+                "icao": p.icao,
+                "lat": p.lat,
+                "lon": p.lon,
+                "altitude_ft": p.altitude_ft,
+                "speed_kts": p.speed_kts,
+                "heading_deg": p.heading_deg,
+                "vertical_rate_fpm": p.vertical_rate_fpm,
+                "timestamp": p.timestamp,
+                "callsign": hi.and_then(|h| h.callsign.as_deref()),
+                "registration": ac.and_then(|a| a.registration.as_deref()),
+                "country": ac.and_then(|a| a.country.as_deref()),
+                "is_military": ac.map(|a| a.is_military).unwrap_or(false),
+            })
+        })
+        .collect();
+
+    Json(json!(enriched))
 }
 
 /// GET /api/trails — position trails per aircraft.
