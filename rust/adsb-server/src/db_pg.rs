@@ -634,7 +634,7 @@ impl AdsbDatabase for TimescaleDb {
         let rows = sqlx::query(
             "SELECT a.icao, s.callsign, a.country, a.is_military,
                     s.min_altitude_ft, s.max_altitude_ft,
-                    COALESCE(s.message_count, 0) as message_count,
+                    COALESCE(s.message_count, 0)::BIGINT as message_count,
                     EXTRACT(EPOCH FROM a.first_seen)::double precision as first_seen,
                     EXTRACT(EPOCH FROM a.last_seen)::double precision as last_seen
              FROM aircraft a
