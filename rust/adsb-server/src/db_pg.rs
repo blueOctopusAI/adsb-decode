@@ -248,8 +248,9 @@ fn epoch_to_pg(ts: f64) -> chrono::DateTime<chrono::Utc> {
 
 /// Helper: extract a row column as f64.
 ///
-/// `EXTRACT(EPOCH FROM ...)` in PostgreSQL returns a numeric type.
-/// With sqlx 0.8, this decodes as `f64` when fetched via runtime queries.
+/// `EXTRACT(EPOCH FROM ...)` in PostgreSQL 14+ returns `numeric`, not
+/// `double precision`.  sqlx 0.8 cannot decode `numeric` as `f64`,
+/// so all EXTRACT calls in this file cast to `::double precision`.
 fn row_f64(r: &sqlx::postgres::PgRow, col: &str) -> f64 {
     r.try_get::<f64, _>(col).unwrap_or(0.0)
 }
@@ -292,8 +293,8 @@ impl AdsbDatabase for TimescaleDb {
     async fn get_all_aircraft(&self) -> Vec<AircraftRow> {
         let rows = sqlx::query(
             "SELECT icao, registration, country, is_military,
-                    EXTRACT(EPOCH FROM first_seen) as first_seen,
-                    EXTRACT(EPOCH FROM last_seen) as last_seen
+                    EXTRACT(EPOCH FROM first_seen)::double precision as first_seen,
+                    EXTRACT(EPOCH FROM last_seen)::double precision as last_seen
              FROM aircraft ORDER BY last_seen DESC",
         )
         .fetch_all(&self.pool)
@@ -315,8 +316,8 @@ impl AdsbDatabase for TimescaleDb {
     async fn get_aircraft(&self, icao: &str) -> Option<AircraftRow> {
         sqlx::query(
             "SELECT icao, registration, country, is_military,
-                    EXTRACT(EPOCH FROM first_seen) as first_seen,
-                    EXTRACT(EPOCH FROM last_seen) as last_seen
+                    EXTRACT(EPOCH FROM first_seen)::double precision as first_seen,
+                    EXTRACT(EPOCH FROM last_seen)::double precision as last_seen
              FROM aircraft WHERE icao = $1",
         )
         .bind(icao)
@@ -337,7 +338,7 @@ impl AdsbDatabase for TimescaleDb {
     async fn get_positions(&self, icao: &str, limit: i64) -> Vec<PositionRow> {
         let rows = sqlx::query(
             "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                    vertical_rate_fpm, EXTRACT(EPOCH FROM time) as timestamp
+                    vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM positions WHERE icao = $1 ORDER BY time DESC LIMIT $2",
         )
         .bind(icao)
@@ -355,7 +356,7 @@ impl AdsbDatabase for TimescaleDb {
         let rows = sqlx::query(
             "SELECT DISTINCT ON (icao) icao, lat, lon, altitude_ft, speed_kts,
                     heading_deg, vertical_rate_fpm,
-                    EXTRACT(EPOCH FROM time) as timestamp
+                    EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM positions
              WHERE time >= NOW() - $1::INTERVAL
              ORDER BY icao, time DESC
@@ -380,7 +381,7 @@ impl AdsbDatabase for TimescaleDb {
             match (event_type, icao) {
                 (Some(et), Some(ic)) => sqlx::query(
                     "SELECT 0::BIGINT as id, icao, event_type, description, lat, lon, altitude_ft,
-                            EXTRACT(EPOCH FROM time) as timestamp
+                            EXTRACT(EPOCH FROM time)::double precision as timestamp
                      FROM events WHERE event_type = $1 AND icao = $2
                      ORDER BY time DESC LIMIT $3",
                 )
@@ -391,7 +392,7 @@ impl AdsbDatabase for TimescaleDb {
                 .await,
                 (Some(et), None) => sqlx::query(
                     "SELECT 0::BIGINT as id, icao, event_type, description, lat, lon, altitude_ft,
-                            EXTRACT(EPOCH FROM time) as timestamp
+                            EXTRACT(EPOCH FROM time)::double precision as timestamp
                      FROM events WHERE event_type = $1
                      ORDER BY time DESC LIMIT $2",
                 )
@@ -401,7 +402,7 @@ impl AdsbDatabase for TimescaleDb {
                 .await,
                 (None, Some(ic)) => sqlx::query(
                     "SELECT 0::BIGINT as id, icao, event_type, description, lat, lon, altitude_ft,
-                            EXTRACT(EPOCH FROM time) as timestamp
+                            EXTRACT(EPOCH FROM time)::double precision as timestamp
                      FROM events WHERE icao = $1
                      ORDER BY time DESC LIMIT $2",
                 )
@@ -411,7 +412,7 @@ impl AdsbDatabase for TimescaleDb {
                 .await,
                 (None, None) => sqlx::query(
                     "SELECT 0::BIGINT as id, icao, event_type, description, lat, lon, altitude_ft,
-                            EXTRACT(EPOCH FROM time) as timestamp
+                            EXTRACT(EPOCH FROM time)::double precision as timestamp
                      FROM events ORDER BY time DESC LIMIT $1",
                 )
                 .bind(limit)
@@ -448,7 +449,7 @@ impl AdsbDatabase for TimescaleDb {
                  ORDER BY icao, time, receiver_id
              )
              SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                    vertical_rate_fpm, EXTRACT(EPOCH FROM time) as timestamp
+                    vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM (
                  SELECT *, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY time DESC) as rn
                  FROM deduped
@@ -551,7 +552,7 @@ impl AdsbDatabase for TimescaleDb {
         let where_clause = conditions.join(" AND ");
         let sql = format!(
             "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg,
-                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time) as timestamp
+                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time)::double precision as timestamp
              FROM positions p
              LEFT JOIN aircraft a ON p.icao = a.icao
              WHERE {where_clause}
@@ -590,7 +591,7 @@ impl AdsbDatabase for TimescaleDb {
 
         let rows = sqlx::query(
             "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                    vertical_rate_fpm, EXTRACT(EPOCH FROM time) as timestamp
+                    vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM positions
              WHERE ($2::TIMESTAMPTZ IS NULL OR time >= $2)
                AND ($3::TIMESTAMPTZ IS NULL OR time <= $3)
@@ -609,7 +610,7 @@ impl AdsbDatabase for TimescaleDb {
     async fn get_receivers(&self) -> Vec<ReceiverRow> {
         let rows = sqlx::query(
             "SELECT id, name, lat, lon, description,
-                    EXTRACT(EPOCH FROM created_at) as created_at
+                    EXTRACT(EPOCH FROM created_at)::double precision as created_at
              FROM receivers ORDER BY id",
         )
         .fetch_all(&self.pool)
@@ -634,8 +635,8 @@ impl AdsbDatabase for TimescaleDb {
             "SELECT a.icao, s.callsign, a.country, a.is_military,
                     s.min_altitude_ft, s.max_altitude_ft,
                     COALESCE(s.message_count, 0) as message_count,
-                    EXTRACT(EPOCH FROM a.first_seen) as first_seen,
-                    EXTRACT(EPOCH FROM a.last_seen) as last_seen
+                    EXTRACT(EPOCH FROM a.first_seen)::double precision as first_seen,
+                    EXTRACT(EPOCH FROM a.last_seen)::double precision as last_seen
              FROM aircraft a
              LEFT JOIN sightings s ON a.icao = s.icao
              WHERE a.last_seen >= NOW() - $1::INTERVAL
@@ -687,7 +688,7 @@ impl AdsbDatabase for TimescaleDb {
 
         let sql = format!(
             "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                    vertical_rate_fpm, EXTRACT(EPOCH FROM time) as timestamp
+                    vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM positions WHERE {where_clause}
              ORDER BY time ASC LIMIT ${idx}"
         );
@@ -862,8 +863,8 @@ impl AdsbDatabase for TimescaleDb {
     async fn get_vessels(&self, limit: i64) -> Vec<VesselRow> {
         let rows = sqlx::query(
             "SELECT mmsi, name, vessel_type, flag,
-                    EXTRACT(EPOCH FROM first_seen) as first_seen,
-                    EXTRACT(EPOCH FROM last_seen) as last_seen
+                    EXTRACT(EPOCH FROM first_seen)::double precision as first_seen,
+                    EXTRACT(EPOCH FROM last_seen)::double precision as last_seen
              FROM vessels ORDER BY last_seen DESC LIMIT $1",
         )
         .bind(limit)
@@ -887,7 +888,7 @@ impl AdsbDatabase for TimescaleDb {
         let interval = format!("{} minutes", minutes as i64);
         let rows = sqlx::query(
             "SELECT mmsi, lat, lon, speed_kts, course_deg, heading_deg,
-                    EXTRACT(EPOCH FROM time) as timestamp
+                    EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM vessel_positions
              WHERE time >= NOW() - $1::INTERVAL
              ORDER BY time DESC LIMIT $2",
@@ -904,7 +905,7 @@ impl AdsbDatabase for TimescaleDb {
     async fn get_recent_vessel_positions(&self, limit: i64) -> Vec<VesselPositionRow> {
         let rows = sqlx::query(
             "SELECT DISTINCT ON (mmsi) mmsi, lat, lon, speed_kts, course_deg, heading_deg,
-                    EXTRACT(EPOCH FROM time) as timestamp
+                    EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM vessel_positions
              ORDER BY mmsi, time DESC
              LIMIT $1",
