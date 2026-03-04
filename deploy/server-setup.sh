@@ -69,26 +69,27 @@ ENVEOF
 chmod 600 /opt/adsb-decode/.env
 chown adsb:adsb /opt/adsb-decode/.env
 
-# Download latest release binary
+# Download latest release binary (TimescaleDB variant for production)
 ARCH=$(uname -m)
 case "$ARCH" in
-    aarch64) TARGET="aarch64-unknown-linux-musl" ;;
-    x86_64)  TARGET="x86_64-unknown-linux-musl" ;;
+    aarch64) ASSET="adsb-server-aarch64-unknown-linux-gnu" ;;
+    x86_64)  ASSET="adsb-server-x86_64-unknown-linux-gnu-timescaledb" ;;
     *)       echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
 REPO="blueOctopusAI/adsb-decode"
-ASSET="adsb-${TARGET}"
 
 DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep "browser_download_url.*${ASSET}" \
+    | grep "browser_download_url.*${ASSET}.tar.gz" \
     | head -1 \
     | cut -d '"' -f 4)
 
 if [ -n "$DOWNLOAD_URL" ]; then
-    echo "Downloading binary..."
-    curl -sL -o /opt/adsb-decode/adsb "$DOWNLOAD_URL"
+    echo "Downloading ${ASSET}..."
+    curl -sL -o /tmp/adsb-release.tar.gz "$DOWNLOAD_URL"
+    tar -xzf /tmp/adsb-release.tar.gz -C /opt/adsb-decode/
     chmod +x /opt/adsb-decode/adsb
+    rm -f /tmp/adsb-release.tar.gz
 else
     echo "Warning: no release binary found. Upload manually to /opt/adsb-decode/adsb"
 fi
