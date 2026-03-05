@@ -416,6 +416,7 @@ const MAX_GLOBAL_REGISTRATIONS_PER_HOUR: usize = 20;
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     pub name: String,
+    pub email: Option<String>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub description: Option<String>,
@@ -480,23 +481,53 @@ pub async fn api_register(
         global.push(current);
     }
 
+    let email = body.email.as_deref().map(|e| e.trim()).filter(|e| !e.is_empty());
+
     match state
         .db
-        .register_receiver(name, body.lat, body.lon, body.description.as_deref())
+        .register_receiver(name, email, body.lat, body.lon, body.description.as_deref())
         .await
     {
-        Some((id, api_key)) => (
-            StatusCode::CREATED,
-            Json(json!({
-                "id": id,
-                "name": name,
-                "api_key": api_key,
-                "instructions": format!(
-                    "Use this API key in the Authorization header: Bearer {}",
-                    api_key
-                ),
-            })),
-        ),
+        Some((id, api_key)) => {
+            // Fire-and-forget POST to shared Supabase leads table
+            if let Some(email_val) = email {
+                if let (Ok(supa_url), Ok(supa_key)) = (
+                    std::env::var("SUPABASE_URL"),
+                    std::env::var("SUPABASE_ANON_KEY"),
+                ) {
+                    let url = format!("{}/rest/v1/leads", supa_url);
+                    let body = json!({
+                        "email": email_val,
+                        "source": "adsb-decode-registration",
+                        "product": "adsb-decode",
+                        "metadata": { "receiver_name": name, "receiver_id": id }
+                    });
+                    tokio::spawn(async move {
+                        let _ = reqwest::Client::new()
+                            .post(&url)
+                            .header("apikey", &supa_key)
+                            .header("Authorization", format!("Bearer {}", supa_key))
+                            .header("Content-Type", "application/json")
+                            .json(&body)
+                            .send()
+                            .await;
+                    });
+                }
+            }
+
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "id": id,
+                    "name": name,
+                    "api_key": api_key,
+                    "instructions": format!(
+                        "Use this API key in the Authorization header: Bearer {}",
+                        api_key
+                    ),
+                })),
+            )
+        }
         None => (
             StatusCode::CONFLICT,
             Json(json!({"error": "a receiver with that name already exists"})),
@@ -872,7 +903,7 @@ mod tests {
         // Register a receiver to get an API key
         let api_key = state
             .db
-            .register_receiver("auth-test-rx", Some(35.5), Some(-82.5), None)
+            .register_receiver("auth-test-rx", None, Some(35.5), Some(-82.5), None)
             .await
             .unwrap()
             .1;
@@ -905,7 +936,7 @@ mod tests {
         // Register a receiver so per-receiver mode has at least one key
         state
             .db
-            .register_receiver("some-rx", None, None, None)
+            .register_receiver("some-rx", None, None, None, None)
             .await;
 
         let app = crate::web::build_router(state, None);

@@ -15,6 +15,7 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS receivers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
+    email TEXT,
     lat REAL,
     lon REAL,
     altitude_ft REAL,
@@ -747,6 +748,7 @@ impl Database {
     pub fn register_receiver(
         &mut self,
         name: &str,
+        email: Option<&str>,
         lat: Option<f64>,
         lon: Option<f64>,
         description: Option<&str>,
@@ -754,9 +756,9 @@ impl Database {
         let api_key = uuid::Uuid::new_v4().to_string();
         let ts = now();
         match self.conn.execute(
-            "INSERT INTO receivers (name, lat, lon, description, api_key, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![name, lat, lon, description, api_key, ts],
+            "INSERT INTO receivers (name, email, lat, lon, description, api_key, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![name, email, lat, lon, description, api_key, ts],
         ) {
             Ok(_) => {
                 let id = self.conn.last_insert_rowid();
@@ -870,6 +872,7 @@ pub struct EventRow {
 pub struct ReceiverRow {
     pub id: i64,
     pub name: String,
+    pub email: Option<String>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub description: Option<String>,
@@ -1281,7 +1284,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, name, lat, lon, description, created_at FROM receivers ORDER BY id",
+                "SELECT id, name, email, lat, lon, description, created_at FROM receivers ORDER BY id",
             )
             .unwrap();
 
@@ -1289,10 +1292,11 @@ impl Database {
             Ok(ReceiverRow {
                 id: r.get(0)?,
                 name: r.get(1)?,
-                lat: r.get(2)?,
-                lon: r.get(3)?,
-                description: r.get(4)?,
-                created_at: r.get(5)?,
+                email: r.get(2)?,
+                lat: r.get(3)?,
+                lon: r.get(4)?,
+                description: r.get(5)?,
+                created_at: r.get(6)?,
             })
         })
         .unwrap()
@@ -1391,6 +1395,7 @@ pub trait AdsbDatabase: Send + Sync {
     async fn register_receiver(
         &self,
         name: &str,
+        email: Option<&str>,
         lat: Option<f64>,
         lon: Option<f64>,
         description: Option<&str>,
@@ -1584,11 +1589,12 @@ impl AdsbDatabase for SqliteDb {
     async fn register_receiver(
         &self,
         name: &str,
+        email: Option<&str>,
         lat: Option<f64>,
         lon: Option<f64>,
         description: Option<&str>,
     ) -> Option<(i64, String)> {
-        self.open().register_receiver(name, lat, lon, description)
+        self.open().register_receiver(name, email, lat, lon, description)
     }
 
     async fn lookup_receiver_by_api_key(&self, key: &str) -> Option<(i64, String)> {
@@ -2121,7 +2127,7 @@ mod tests {
     #[test]
     fn test_register_receiver() {
         let mut db = test_db();
-        let result = db.register_receiver("home-pi", Some(35.5), Some(-82.5), Some("RTL-SDR"));
+        let result = db.register_receiver("home-pi", Some("test@example.com"), Some(35.5), Some(-82.5), Some("RTL-SDR"));
         assert!(result.is_some());
         let (id, api_key) = result.unwrap();
         assert!(id > 0);
@@ -2134,16 +2140,16 @@ mod tests {
     #[test]
     fn test_register_receiver_duplicate_name() {
         let mut db = test_db();
-        let first = db.register_receiver("my-rx", None, None, None);
+        let first = db.register_receiver("my-rx", None, None, None, None);
         assert!(first.is_some());
-        let second = db.register_receiver("my-rx", None, None, None);
+        let second = db.register_receiver("my-rx", None, None, None, None);
         assert!(second.is_none(), "Duplicate name should fail");
     }
 
     #[test]
     fn test_lookup_receiver_by_api_key() {
         let mut db = test_db();
-        let (id, api_key) = db.register_receiver("test-rx", None, None, None).unwrap();
+        let (id, api_key) = db.register_receiver("test-rx", None, None, None, None).unwrap();
 
         let lookup = db.lookup_receiver_by_api_key(&api_key);
         assert!(lookup.is_some());
@@ -2162,8 +2168,8 @@ mod tests {
     #[test]
     fn test_register_receiver_unique_keys() {
         let mut db = test_db();
-        let (_, key1) = db.register_receiver("rx-1", None, None, None).unwrap();
-        let (_, key2) = db.register_receiver("rx-2", None, None, None).unwrap();
+        let (_, key1) = db.register_receiver("rx-1", None, None, None, None).unwrap();
+        let (_, key2) = db.register_receiver("rx-2", None, None, None, None).unwrap();
         assert_ne!(key1, key2, "Each receiver should get a unique API key");
     }
 }

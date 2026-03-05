@@ -21,6 +21,7 @@ const TIMESCALE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS receivers (
     id BIGSERIAL PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
+    email TEXT,
     lat DOUBLE PRECISION,
     lon DOUBLE PRECISION,
     altitude_ft DOUBLE PRECISION,
@@ -609,7 +610,7 @@ impl AdsbDatabase for TimescaleDb {
 
     async fn get_receivers(&self) -> Vec<ReceiverRow> {
         let rows = sqlx::query(
-            "SELECT id, name, lat, lon, description,
+            "SELECT id, name, email, lat, lon, description,
                     EXTRACT(EPOCH FROM created_at)::double precision as created_at
              FROM receivers ORDER BY id",
         )
@@ -621,6 +622,7 @@ impl AdsbDatabase for TimescaleDb {
             .map(|r| ReceiverRow {
                 id: r.get("id"),
                 name: r.get("name"),
+                email: r.get("email"),
                 lat: r.get("lat"),
                 lon: r.get("lon"),
                 description: r.get("description"),
@@ -925,17 +927,19 @@ impl AdsbDatabase for TimescaleDb {
     async fn register_receiver(
         &self,
         name: &str,
+        email: Option<&str>,
         lat: Option<f64>,
         lon: Option<f64>,
         description: Option<&str>,
     ) -> Option<(i64, String)> {
         let api_key = uuid::Uuid::new_v4().to_string();
         let row = sqlx::query(
-            "INSERT INTO receivers (name, lat, lon, description, api_key)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO receivers (name, email, lat, lon, description, api_key)
+             VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING id",
         )
         .bind(name)
+        .bind(email)
         .bind(lat)
         .bind(lon)
         .bind(description)
