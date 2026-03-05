@@ -1594,7 +1594,8 @@ impl AdsbDatabase for SqliteDb {
         lon: Option<f64>,
         description: Option<&str>,
     ) -> Option<(i64, String)> {
-        self.open().register_receiver(name, email, lat, lon, description)
+        self.open()
+            .register_receiver(name, email, lat, lon, description)
     }
 
     async fn lookup_receiver_by_api_key(&self, key: &str) -> Option<(i64, String)> {
@@ -2127,7 +2128,13 @@ mod tests {
     #[test]
     fn test_register_receiver() {
         let mut db = test_db();
-        let result = db.register_receiver("home-pi", Some("test@example.com"), Some(35.5), Some(-82.5), Some("RTL-SDR"));
+        let result = db.register_receiver(
+            "home-pi",
+            Some("test@example.com"),
+            Some(35.5),
+            Some(-82.5),
+            Some("RTL-SDR"),
+        );
         assert!(result.is_some());
         let (id, api_key) = result.unwrap();
         assert!(id > 0);
@@ -2149,7 +2156,9 @@ mod tests {
     #[test]
     fn test_lookup_receiver_by_api_key() {
         let mut db = test_db();
-        let (id, api_key) = db.register_receiver("test-rx", None, None, None, None).unwrap();
+        let (id, api_key) = db
+            .register_receiver("test-rx", None, None, None, None)
+            .unwrap();
 
         let lookup = db.lookup_receiver_by_api_key(&api_key);
         assert!(lookup.is_some());
@@ -2168,8 +2177,12 @@ mod tests {
     #[test]
     fn test_register_receiver_unique_keys() {
         let mut db = test_db();
-        let (_, key1) = db.register_receiver("rx-1", None, None, None, None).unwrap();
-        let (_, key2) = db.register_receiver("rx-2", None, None, None, None).unwrap();
+        let (_, key1) = db
+            .register_receiver("rx-1", None, None, None, None)
+            .unwrap();
+        let (_, key2) = db
+            .register_receiver("rx-2", None, None, None, None)
+            .unwrap();
         assert_ne!(key1, key2, "Each receiver should get a unique API key");
     }
 }

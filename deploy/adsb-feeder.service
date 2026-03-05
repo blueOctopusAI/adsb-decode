@@ -1,0 +1,15 @@
+[Unit]
+Description=adsb-decode feeder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/adsb-feeder.env
+ExecStart=/usr/bin/python3 -m src.feeder --server ${SERVER_URL} --name ${RECEIVER_NAME} --key ${API_KEY} --lat ${LAT} --lon ${LON}
+WorkingDirectory=/opt/adsb-feeder/adsb-decode
+Restart=always
+RestartSec=10
+User=jashanno
+
+[Install]
+WantedBy=multi-user.target

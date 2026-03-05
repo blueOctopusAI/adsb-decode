@@ -1,0 +1,258 @@
+{
+  "python": {
+    "total_frames": 158,
+    "valid_frames": 49,
+    "aircraft_count": 11,
+    "aircraft": {
+      "0D113B": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 38000,
+        "speed_kts": null,
+        "heading_deg": null,
+        "vertical_rate": null,
+        "lat": null,
+        "lon": null,
+        "messages": 1
+      },
+      "A2C90D": {
+        "callsign": "ENY3551",
+        "squawk": null,
+        "altitude_ft": 35000,
+        "speed_kts": 470.5,
+        "heading_deg": 145.1,
+        "vertical_rate": 64,
+        "lat": 35.3219,
+        "lon": -82.6195,
+        "messages": 7
+      },
+      "A438C3": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 29675,
+        "speed_kts": 465.8,
+        "heading_deg": 204.8,
+        "vertical_rate": -960,
+        "lat": 35.1182,
+        "lon": -83.4369,
+        "messages": 7
+      },
+      "AC4BB8": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 36000,
+        "speed_kts": 421.3,
+        "heading_deg": 236.4,
+        "vertical_rate": 0,
+        "lat": 35.5684,
+        "lon": -83.856,
+        "messages": 3
+      },
+      "A8947E": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 37000,
+        "speed_kts": 472.8,
+        "heading_deg": 160.6,
+        "vertical_rate": -64,
+        "lat": 28.8549,
+        "lon": -85.3648,
+        "messages": 3
+      },
+      "AB1C04": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 23325,
+        "speed_kts": 375.8,
+        "heading_deg": 266.2,
+        "vertical_rate": 1216,
+        "lat": 35.5537,
+        "lon": -83.3658,
+        "messages": 6
+      },
+      "ABC49B": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 37000,
+        "speed_kts": null,
+        "heading_deg": null,
+        "vertical_rate": null,
+        "lat": null,
+        "lon": null,
+        "messages": 1
+      },
+      "A9778D": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 14750,
+        "speed_kts": 360.0,
+        "heading_deg": 110.2,
+        "vertical_rate": -1472,
+        "lat": null,
+        "lon": null,
+        "messages": 7
+      },
+      "A41804": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 24000,
+        "speed_kts": 378.8,
+        "heading_deg": 248.3,
+        "vertical_rate": 0,
+        "lat": 34.7849,
+        "lon": -83.0716,
+        "messages": 11
+      },
+      "A2E57E": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 25725,
+        "speed_kts": 408.4,
+        "heading_deg": 285.8,
+        "vertical_rate": 832,
+        "lat": null,
+        "lon": null,
+        "messages": 2
+      },
+      "A4000F": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": null,
+        "speed_kts": 445.5,
+        "heading_deg": 224.3,
+        "vertical_rate": -960,
+        "lat": null,
+        "lon": null,
+        "messages": 1
+      }
+    }
+  },
+  "rust": {
+    "total_frames": 158,
+    "decoded_frames": 49,
+    "aircraft_count": 11,
+    "aircraft": {
+      "A41804": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 24000,
+        "speed_kts": 378.8,
+        "heading_deg": 248.3,
+        "vertical_rate": 0,
+        "lat": 34.7849,
+        "lon": -83.0716,
+        "messages": 11
+      },
+      "A2C90D": {
+        "callsign": "ENY3551",
+        "squawk": null,
+        "altitude_ft": 35000,
+        "speed_kts": 470.5,
+        "heading_deg": 145.1,
+        "vertical_rate": 64,
+        "lat": 35.3219,
+        "lon": -82.6195,
+        "messages": 7
+      },
+      "A438C3": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 29675,
+        "speed_kts": 465.8,
+        "heading_deg": 204.8,
+        "vertical_rate": -960,
+        "lat": 35.1182,
+        "lon": -83.4369,
+        "messages": 7
+      },
+      "A9778D": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 14750,
+        "speed_kts": 360.0,
+        "heading_deg": 110.2,
+        "vertical_rate": -1472,
+        "lat": null,
+        "lon": null,
+        "messages": 7
+      },
+      "AB1C04": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 23325,
+        "speed_kts": 375.8,
+        "heading_deg": 266.2,
+        "vertical_rate": 1216,
+        "lat": 35.5537,
+        "lon": -83.3658,
+        "messages": 6
+      },
+      "AC4BB8": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 36000,
+        "speed_kts": 421.3,
+        "heading_deg": 236.4,
+        "vertical_rate": 0,
+        "lat": 35.5684,
+        "lon": -83.856,
+        "messages": 3
+      },
+      "A8947E": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 37000,
+        "speed_kts": 472.8,
+        "heading_deg": 160.6,
+        "vertical_rate": -64,
+        "lat": 28.8549,
+        "lon": -85.3648,
+        "messages": 3
+      },
+      "A2E57E": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 25725,
+        "speed_kts": 408.4,
+        "heading_deg": 285.8,
+        "vertical_rate": 832,
+        "lat": null,
+        "lon": null,
+        "messages": 2
+      },
+      "A4000F": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": null,
+        "speed_kts": 445.5,
+        "heading_deg": 224.3,
+        "vertical_rate": -960,
+        "lat": null,
+        "lon": null,
+        "messages": 1
+      },
+      "ABC49B": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 37000,
+        "speed_kts": null,
+        "heading_deg": null,
+        "vertical_rate": null,
+        "lat": null,
+        "lon": null,
+        "messages": 1
+      },
+      "0D113B": {
+        "callsign": null,
+        "squawk": null,
+        "altitude_ft": 38000,
+        "speed_kts": null,
+        "heading_deg": null,
+        "vertical_rate": null,
+        "lat": null,
+        "lon": null,
+        "messages": 1
+      }
+    }
+  }
+}

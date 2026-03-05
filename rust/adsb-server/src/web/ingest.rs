@@ -481,7 +481,11 @@ pub async fn api_register(
         global.push(current);
     }
 
-    let email = body.email.as_deref().map(|e| e.trim()).filter(|e| !e.is_empty());
+    let email = body
+        .email
+        .as_deref()
+        .map(|e| e.trim())
+        .filter(|e| !e.is_empty());
 
     match state
         .db
