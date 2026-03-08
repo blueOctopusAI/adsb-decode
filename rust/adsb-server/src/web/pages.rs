@@ -104,6 +104,12 @@ fn render_page_with_meta(title: &str, body: &str, meta: Option<&PageMeta>) -> Ht
     s.push_str("<meta charset=\"UTF-8\">\n");
     s.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
 
+    const BASE_URL: &str = "https://adsb.blueoctopustechnology.com";
+
+    // Favicon (inline SVG — radar sweep icon in brand green)
+    s.push_str(r#"<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230a0a0a' stroke='%2300ff88' stroke-width='2'/><path d='M16 16 L16 4 A12 12 0 0 1 27.4 10Z' fill='%2300ff88' opacity='0.6'/><circle cx='16' cy='16' r='3' fill='%2300ff88'/></svg>">"#);
+    s.push('\n');
+
     // SEO meta tags
     s.push_str("<meta name=\"description\" content=\"");
     s.push_str(description);
@@ -121,9 +127,34 @@ fn render_page_with_meta(title: &str, body: &str, meta: Option<&PageMeta>) -> Ht
     s.push_str("<meta property=\"og:description\" content=\"");
     s.push_str(description);
     s.push_str("\">\n");
+    s.push_str("<meta property=\"og:url\" content=\"");
+    s.push_str(BASE_URL);
+    s.push_str(canonical_path);
+    s.push_str("\">\n");
+    s.push_str("<meta property=\"og:image\" content=\"");
+    s.push_str(BASE_URL);
+    s.push_str("/og-image.png\">\n");
+    s.push_str("<meta property=\"og:image:width\" content=\"1200\">\n");
+    s.push_str("<meta property=\"og:image:height\" content=\"630\">\n");
 
-    // Canonical URL (relative — works behind any domain)
+    // Twitter Card
+    s.push_str("<meta name=\"twitter:card\" content=\"summary_large_image\">\n");
+    s.push_str("<meta name=\"twitter:title\" content=\"adsb-decode");
+    if !title.is_empty() {
+        s.push_str(" \u{2014} ");
+        s.push_str(title);
+    }
+    s.push_str("\">\n");
+    s.push_str("<meta name=\"twitter:description\" content=\"");
+    s.push_str(description);
+    s.push_str("\">\n");
+    s.push_str("<meta name=\"twitter:image\" content=\"");
+    s.push_str(BASE_URL);
+    s.push_str("/og-image.png\">\n");
+
+    // Canonical URL (absolute)
     s.push_str("<link rel=\"canonical\" href=\"");
+    s.push_str(BASE_URL);
     s.push_str(canonical_path);
     s.push_str("\">\n");
 
@@ -397,5 +428,41 @@ Rust (Axum, SQLx), Leaflet, CesiumJS, PostgreSQL/TimescaleDB
 
 Blue Octopus Technology — https://blueoctopustechnology.com
 "#,
+    )
+}
+
+/// GET /og-image.png — Open Graph social share image (SVG served as image).
+pub async fn og_image() -> impl IntoResponse {
+    (
+        [
+            ("content-type", "image/svg+xml"),
+            ("cache-control", "public, max-age=86400"),
+        ],
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0a0a0a"/>
+  <!-- Grid lines -->
+  <g stroke="#1a1a1a" stroke-width="1">
+    <line x1="0" y1="157" x2="1200" y2="157"/><line x1="0" y1="315" x2="1200" y2="315"/>
+    <line x1="0" y1="472" x2="1200" y2="472"/><line x1="300" y1="0" x2="300" y2="630"/>
+    <line x1="600" y1="0" x2="600" y2="630"/><line x1="900" y1="0" x2="900" y2="630"/>
+  </g>
+  <!-- Radar sweep -->
+  <circle cx="850" cy="340" r="180" fill="none" stroke="#00ff88" stroke-width="1" opacity="0.2"/>
+  <circle cx="850" cy="340" r="120" fill="none" stroke="#00ff88" stroke-width="1" opacity="0.15"/>
+  <circle cx="850" cy="340" r="60" fill="none" stroke="#00ff88" stroke-width="1" opacity="0.1"/>
+  <path d="M850 340 L850 160 A180 180 0 0 1 1005 255Z" fill="#00ff88" opacity="0.08"/>
+  <circle cx="850" cy="340" r="4" fill="#00ff88"/>
+  <!-- Aircraft dots -->
+  <circle cx="920" cy="260" r="5" fill="#00aaff"/><circle cx="780" cy="290" r="4" fill="#00ff88"/>
+  <circle cx="900" cy="400" r="4" fill="#ffaa00"/><circle cx="810" cy="370" r="3" fill="#ff4444"/>
+  <!-- Trail line -->
+  <polyline points="780,290 760,295 740,300 720,308 700,318" fill="none" stroke="#00ff88" stroke-width="2" opacity="0.5"/>
+  <!-- Title -->
+  <text x="80" y="260" font-family="monospace" font-size="72" font-weight="bold" fill="#00ff88">adsb-decode</text>
+  <text x="80" y="320" font-family="monospace" font-size="28" fill="#888">Real-time aircraft tracking</text>
+  <text x="80" y="365" font-family="monospace" font-size="20" fill="#555">ADS-B • AIS • 3D Globe • Military Alerts</text>
+  <!-- Blue Octopus branding -->
+  <text x="80" y="560" font-family="monospace" font-size="16" fill="#4FB4E8">Blue Octopus Technology</text>
+</svg>"##,
     )
 }

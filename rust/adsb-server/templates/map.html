@@ -219,8 +219,8 @@
             </div>
             <div style="margin-top:6px;">
                 <span style="font-size:10px;color:#888;">Trail:</span>
-                <span style="font-size:11px;color:#00ff88;float:right;" id="trail-dur-label">1h</span>
-                <input type="range" id="trail-dur-slider" min="0" max="7" value="3" style="width:100%;accent-color:#00ff88;margin-top:2px;">
+                <span style="font-size:11px;color:#00ff88;float:right;" id="trail-dur-label">5m</span>
+                <input type="range" id="trail-dur-slider" min="0" max="3" value="0" style="width:100%;accent-color:#00ff88;margin-top:2px;">
             </div>
             <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="notify-toggle"> Alerts</label>
@@ -1039,7 +1039,7 @@ trailToggle.addEventListener('change', function() {
 // --- Trail duration slider ---
 const trailDurSteps = [5, 15, 30, 60, 120, 360, 720, 1440];
 const trailDurLabels = ['5m', '15m', '30m', '1h', '2h', '6h', '12h', '24h'];
-let trailMinutes = 60;
+let trailMinutes = 5;
 const trailDurSlider = document.getElementById('trail-dur-slider');
 const trailDurLabel = document.getElementById('trail-dur-label');
 trailDurSlider.addEventListener('input', function() {
@@ -1593,7 +1593,8 @@ function updateCesium3D() {
     Promise.all([
         fetch(`/api/positions?minutes=${trailMinutes}`).then(r => r.json()),
         fetch(`/api/trails?minutes=${trailMinutes}`).then(r => r.json()),
-    ]).then(([posData, trailData]) => {
+    ]).then(([posData, rawTrailData]) => {
+        const trailData = rawTrailData.trails || rawTrailData;
         const seen = new Set();
 
         posData.forEach(p => {
