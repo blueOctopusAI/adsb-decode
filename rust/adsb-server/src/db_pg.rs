@@ -453,12 +453,15 @@ impl AdsbDatabase for TimescaleDb {
             "positions"
         };
 
-        let time_col = if source_table == "positions" { "time" } else { "bucket" };
+        let time_col = if source_table == "positions" {
+            "time"
+        } else {
+            "bucket"
+        };
 
         let sql = if source_table == "positions" {
             // Raw positions: deduplicate across receivers
-            format!(
-                "WITH deduped AS (
+            "WITH deduped AS (
                      SELECT DISTINCT ON (icao, time) icao, lat, lon, altitude_ft,
                             speed_kts, heading_deg, vertical_rate_fpm, time
                      FROM positions
@@ -472,7 +475,7 @@ impl AdsbDatabase for TimescaleDb {
                      FROM deduped
                  ) sub WHERE rn <= $2
                  ORDER BY icao, time ASC"
-            )
+                .to_string()
         } else {
             // Continuous aggregates: already deduplicated and bucketed
             format!(
@@ -529,8 +532,16 @@ impl AdsbDatabase for TimescaleDb {
         let interval = format!("{} minutes", minutes as i64);
         // Use 5-minute aggregate for heatmap (doesn't need raw resolution)
         // and cap at 5000 cells to prevent massive responses
-        let source = if minutes > 120.0 { "positions_5m" } else { "positions" };
-        let time_col = if source == "positions" { "time" } else { "bucket" };
+        let source = if minutes > 120.0 {
+            "positions_5m"
+        } else {
+            "positions"
+        };
+        let time_col = if source == "positions" {
+            "time"
+        } else {
+            "bucket"
+        };
         let sql = format!(
             "SELECT
                  ROUND(lat / $1) * $1 AS cell_lat,
@@ -544,11 +555,11 @@ impl AdsbDatabase for TimescaleDb {
              LIMIT 5000"
         );
         let rows = sqlx::query(&sql)
-        .bind(resolution)
-        .bind(&interval)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+            .bind(resolution)
+            .bind(&interval)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
 
         rows.iter()
             .map(|r| HeatmapCell {

@@ -146,7 +146,7 @@ pub async fn api_aircraft(
 
     let total = aircraft.len();
     let offset = params.offset.unwrap_or(0).max(0) as usize;
-    let limit = params.limit.unwrap_or(500).max(1).min(5000) as usize;
+    let limit = params.limit.unwrap_or(500).clamp(1, 5000) as usize;
     let page: Vec<_> = aircraft.into_iter().skip(offset).take(limit).collect();
 
     Json(json!({
