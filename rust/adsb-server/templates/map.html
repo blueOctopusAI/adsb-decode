@@ -280,6 +280,7 @@ const map = L.map('map', {
     center: [35.18, -83.38],
     zoom: 7,
     zoomControl: true,
+    preferCanvas: true,  // Render polylines on canvas instead of SVG DOM nodes
 });
 
 // --- Map tile styles ---
@@ -493,7 +494,7 @@ function renderPhoto(el, data) {
         <div style="font-size:9px;color:#666;">\u00A9 ${credit}</div>`;
 }
 
-// --- Draw trail (uses object format from Rust API) ---
+// --- Draw trail (batched by altitude band for fewer canvas draw calls) ---
 function drawTrail(icao, points) {
     if (trailLines[icao]) {
         trailLines[icao].forEach(seg => map.removeLayer(seg));
@@ -502,16 +503,36 @@ function drawTrail(icao, points) {
     if (!trailsEnabled) return;
     if (points.length < 2) return;
 
+    // Batch consecutive points in the same altitude band (5000ft) into single polylines
+    let batchCoords = [[points[0].lat, points[0].lon]];
+    let batchColor = altColor(points[0].altitude_ft);
+    let batchAltBand = points[0].altitude_ft != null ? Math.floor(points[0].altitude_ft / 5000) : -1;
+
     for (let i = 1; i < points.length; i++) {
-        const prev = points[i - 1];
         const curr = points[i];
-        const alt = curr.altitude_ft;
-        const color = altColor(alt);
-        const opacity = activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity) * (i / points.length);
-        const seg = L.polyline(
-            [[prev.lat, prev.lon], [curr.lat, curr.lon]],
-            { color: color, weight: activeTheme.trailWeight, opacity: opacity }
-        ).addTo(map);
+        const currAltBand = curr.altitude_ft != null ? Math.floor(curr.altitude_ft / 5000) : -1;
+        const coord = [curr.lat, curr.lon];
+
+        if (currAltBand === batchAltBand) {
+            batchCoords.push(coord);
+        } else {
+            if (batchCoords.length >= 2) {
+                const opacity = activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity) * (i / points.length);
+                const seg = L.polyline(batchCoords, {
+                    color: batchColor, weight: activeTheme.trailWeight, opacity: opacity
+                }).addTo(map);
+                trailLines[icao].push(seg);
+            }
+            batchCoords = [batchCoords[batchCoords.length - 1], coord];
+            batchColor = altColor(curr.altitude_ft);
+            batchAltBand = currAltBand;
+        }
+    }
+    if (batchCoords.length >= 2) {
+        const seg = L.polyline(batchCoords, {
+            color: batchColor, weight: activeTheme.trailWeight,
+            opacity: activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity)
+        }).addTo(map);
         trailLines[icao].push(seg);
     }
 }
@@ -554,12 +575,28 @@ function updateStats() {
         .catch(() => {});
 }
 
-// --- Main update loop ---
+// --- Cached trail data (refreshed separately from positions) ---
+let cachedTrails = {};
+let trailFetchPending = false;
+
+function updateTrails() {
+    if (trailFetchPending) return;
+    trailFetchPending = true;
+    fetch(`/api/trails?minutes=${trailMinutes}`)
+        .then(r => r.json())
+        .then(data => {
+            cachedTrails = data.trails || data;
+            trailFetchPending = false;
+            // Redraw trails for current markers
+            Object.keys(markers).forEach(key => drawTrail(key, cachedTrails[key] || []));
+        })
+        .catch(err => { trailFetchPending = false; console.error('Trail fetch failed:', err); });
+}
+
+// --- Main update loop (positions only — lightweight) ---
 function updateMap() {
-    Promise.all([
-        fetch(`/api/positions?minutes=${trailMinutes}`).then(r => r.json()),
-        fetch(`/api/trails?minutes=${trailMinutes}`).then(r => r.json()),
-    ]).then(([posData, trailData]) => {
+    const trailData = cachedTrails;
+    fetch(`/api/positions?minutes=${trailMinutes}`).then(r => r.json()).then(posData => {
         document.getElementById('ac-count').textContent = posData.length;
         document.getElementById('so-aircraft').textContent = posData.length;
         const tbody = document.querySelector('#ac-table tbody');
@@ -569,8 +606,6 @@ function updateMap() {
         posData.forEach(p => {
             const key = p.icao;
             seen.add(key);
-
-            drawTrail(key, trailData[key] || []);
 
             const acType = classifyAircraft(p);
             if (markers[key]) {
@@ -1012,7 +1047,7 @@ trailDurSlider.addEventListener('input', function() {
     trailMinutes = trailDurSteps[idx];
     trailDurLabel.textContent = trailDurLabels[idx];
     saveState();
-    updateMap();
+    updateTrails(); // Immediate trail refresh on slider change
 });
 
 // --- Persist state in localStorage ---
@@ -2328,10 +2363,12 @@ document.getElementById('panel-header').addEventListener('click', function() {
 restoreState();
 centerOnReceiver();
 updateMap();
+updateTrails();
 updateStats();
-setInterval(updateMap, 500);
+setInterval(updateMap, 2000);      // Position markers: every 2s (was 500ms)
+setInterval(updateTrails, 10000);  // Trail data: every 10s (was 500ms via updateMap)
 setInterval(updateStats, 10000);
-setInterval(updateHeatmap, 15000);
+setInterval(updateHeatmap, 30000); // Heatmap: every 30s (was 15s)
 setInterval(pollEvents, 5000);
 setInterval(fetchEventMarkers, 10000);
 pollEvents();

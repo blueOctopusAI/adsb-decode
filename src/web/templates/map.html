@@ -179,6 +179,7 @@ const map = L.map('map', {
     center: [35.18, -83.38],  // Default, overridden by receiver location
     zoom: 7,
     zoomControl: true,
+    preferCanvas: true,  // Render polylines on canvas instead of SVG DOM nodes
 });
 
 // --- Map tile styles ---
@@ -325,6 +326,8 @@ function popupHtml(p, acType) {
 }
 
 // --- Draw altitude-colored trail ---
+// Batches consecutive points with similar altitude into single polylines
+// to minimize canvas draw calls. ~5-10 polylines per aircraft instead of ~500.
 function drawTrail(icao, points) {
     // Remove old trail
     if (trailLines[icao]) {
@@ -335,17 +338,46 @@ function drawTrail(icao, points) {
     if (!trailsEnabled) return;
     if (points.length < 2) return;
 
+    // Normalize point access — backend may send objects {lat,lon,altitude_ft} or arrays [lat,lon,alt]
+    function ptLat(p) { return p.lat !== undefined ? p.lat : p[0]; }
+    function ptLon(p) { return p.lon !== undefined ? p.lon : p[1]; }
+    function ptAlt(p) { return p.altitude_ft !== undefined ? p.altitude_ft : p[2]; }
+
+    // Batch segments by altitude band (5000ft bands) for fewer draw calls
+    let batchCoords = [[ptLat(points[0]), ptLon(points[0])]];
+    let batchColor = altColor(ptAlt(points[0]));
+    let batchAltBand = ptAlt(points[0]) != null ? Math.floor(ptAlt(points[0]) / 5000) : -1;
+
     for (let i = 1; i < points.length; i++) {
-        const prev = points[i - 1];
         const curr = points[i];
-        const alt = curr[2];  // altitude_ft
-        const color = altColor(alt);
-        // Fade older segments
-        const opacity = activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity) * (i / points.length);
-        const seg = L.polyline(
-            [[prev[0], prev[1]], [curr[0], curr[1]]],
-            { color: color, weight: activeTheme.trailWeight, opacity: opacity }
-        ).addTo(map);
+        const currAlt = ptAlt(curr);
+        const currAltBand = currAlt != null ? Math.floor(currAlt / 5000) : -1;
+        const coord = [ptLat(curr), ptLon(curr)];
+
+        if (currAltBand === batchAltBand) {
+            // Same altitude band — extend current batch
+            batchCoords.push(coord);
+        } else {
+            // Altitude band changed — flush current batch, start new one
+            if (batchCoords.length >= 2) {
+                const opacity = activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity) * (i / points.length);
+                const seg = L.polyline(batchCoords, {
+                    color: batchColor, weight: activeTheme.trailWeight, opacity: opacity
+                }).addTo(map);
+                trailLines[icao].push(seg);
+            }
+            // Start new batch (overlap last point for continuity)
+            batchCoords = [batchCoords[batchCoords.length - 1], coord];
+            batchColor = altColor(currAlt);
+            batchAltBand = currAltBand;
+        }
+    }
+    // Flush final batch
+    if (batchCoords.length >= 2) {
+        const seg = L.polyline(batchCoords, {
+            color: batchColor, weight: activeTheme.trailWeight,
+            opacity: activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity)
+        }).addTo(map);
         trailLines[icao].push(seg);
     }
 }
@@ -390,70 +422,94 @@ function updateStats() {
         .catch(() => {});
 }
 
-// --- Main update loop ---
-function updateMap() {
-    // Fetch positions and trails in parallel
-    Promise.all([
-        fetch(`/api/positions?minutes=${trailMinutes}`).then(r => r.json()),
-        fetch(`/api/trails?minutes=${trailMinutes}`).then(r => r.json()),
-    ]).then(([posData, trailData]) => {
-        document.getElementById('ac-count').textContent = posData.count;
-        document.getElementById('so-aircraft').textContent = posData.count;
-        const tbody = document.querySelector('#ac-table tbody');
-        tbody.innerHTML = '';
+// --- Cached trail data (refreshed separately from positions) ---
+let cachedTrails = {};
+let trailFetchPending = false;
 
-        const seen = new Set();
-        posData.positions.forEach(p => {
-            const key = p.icao;
-            seen.add(key);
-
-            // Draw trail (always call to clear stale segments)
-            drawTrail(key, trailData.trails[key] || []);
-
-            // Update or create marker
-            const acType = classifyAircraft(p);
-            if (markers[key]) {
-                markers[key].setLatLng([p.lat, p.lon]);
-                markers[key].setIcon(acIcon(p.heading_deg, p.is_military, acType));
-                markers[key].setPopupContent(popupHtml(p, acType));
-            } else {
-                markers[key] = L.marker([p.lat, p.lon], {
-                    icon: acIcon(p.heading_deg, p.is_military, acType),
-                }).addTo(map);
-                markers[key].bindPopup(popupHtml(p, acType), { maxWidth: 250 });
-            }
-
-            const label = p.callsign || p.registration || p.icao;
-            markers[key].bindTooltip(label, {
-                permanent: false,
-                direction: 'right',
-                className: 'dark-tooltip',
+function updateTrails() {
+    if (trailFetchPending) return;
+    trailFetchPending = true;
+    fetch(`/api/trails?minutes=${trailMinutes}`)
+        .then(r => r.json())
+        .then(data => {
+            cachedTrails = data.trails || data;
+            trailFetchPending = false;
+            // Redraw trails for all current aircraft
+            Object.keys(markers).forEach(key => {
+                drawTrail(key, cachedTrails[key] || []);
             });
-
-            // Sidebar row
-            const cls = p.is_military ? 'mil' : '';
-            const hdg = p.heading_deg != null ? Math.round(p.heading_deg) + '°' : '-';
-            tbody.innerHTML += `<tr>
-                <td><a href="/aircraft/${p.icao}" class="${cls}">${p.icao}</a></td>
-                <td>${p.callsign || p.registration || '-'}</td>
-                <td>${p.altitude_ft != null ? p.altitude_ft.toLocaleString() : '-'}</td>
-                <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
-                <td>${hdg}</td>
-            </tr>`;
-        });
-
-        // Remove markers + trails for aircraft no longer in response
-        Object.keys(markers).forEach(key => {
-            if (!seen.has(key)) {
-                map.removeLayer(markers[key]);
-                delete markers[key];
-                if (trailLines[key]) {
+            // Clean up trails for aircraft no longer tracked
+            Object.keys(trailLines).forEach(key => {
+                if (!markers[key]) {
                     trailLines[key].forEach(seg => map.removeLayer(seg));
                     delete trailLines[key];
                 }
-            }
-        });
-    }).catch(err => console.error('Update failed:', err));
+            });
+        })
+        .catch(err => { trailFetchPending = false; console.error('Trail fetch failed:', err); });
+}
+
+// --- Main update loop (positions only — lightweight) ---
+function updateMap() {
+    fetch(`/api/positions?minutes=${trailMinutes}`)
+        .then(r => r.json())
+        .then(posData => {
+            const positions = posData.positions || posData;
+            const count = posData.count || positions.length;
+            document.getElementById('ac-count').textContent = count;
+            document.getElementById('so-aircraft').textContent = count;
+            const tbody = document.querySelector('#ac-table tbody');
+            tbody.innerHTML = '';
+
+            const seen = new Set();
+            positions.forEach(p => {
+                const key = p.icao;
+                seen.add(key);
+
+                // Update or create marker
+                const acType = classifyAircraft(p);
+                if (markers[key]) {
+                    markers[key].setLatLng([p.lat, p.lon]);
+                    markers[key].setIcon(acIcon(p.heading_deg, p.is_military, acType));
+                    markers[key].setPopupContent(popupHtml(p, acType));
+                } else {
+                    markers[key] = L.marker([p.lat, p.lon], {
+                        icon: acIcon(p.heading_deg, p.is_military, acType),
+                    }).addTo(map);
+                    markers[key].bindPopup(popupHtml(p, acType), { maxWidth: 250 });
+                }
+
+                const label = p.callsign || p.registration || p.icao;
+                markers[key].bindTooltip(label, {
+                    permanent: false,
+                    direction: 'right',
+                    className: 'dark-tooltip',
+                });
+
+                // Sidebar row
+                const cls = p.is_military ? 'mil' : '';
+                const hdg = p.heading_deg != null ? Math.round(p.heading_deg) + '°' : '-';
+                tbody.innerHTML += `<tr>
+                    <td><a href="/aircraft/${p.icao}" class="${cls}">${p.icao}</a></td>
+                    <td>${p.callsign || p.registration || '-'}</td>
+                    <td>${p.altitude_ft != null ? p.altitude_ft.toLocaleString() : '-'}</td>
+                    <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>
+                    <td>${hdg}</td>
+                </tr>`;
+            });
+
+            // Remove markers + trails for aircraft no longer in response
+            Object.keys(markers).forEach(key => {
+                if (!seen.has(key)) {
+                    map.removeLayer(markers[key]);
+                    delete markers[key];
+                    if (trailLines[key]) {
+                        trailLines[key].forEach(seg => map.removeLayer(seg));
+                        delete trailLines[key];
+                    }
+                }
+            });
+        }).catch(err => console.error('Update failed:', err));
 }
 
 // --- Airport layer ---
@@ -598,7 +654,7 @@ trailDurSlider.addEventListener('input', function() {
     trailMinutes = trailDurSteps[idx];
     trailDurLabel.textContent = trailDurLabels[idx];
     saveState();
-    updateMap(); // immediate refresh
+    updateTrails(); // immediate trail refresh
 });
 
 // --- Persist checkbox state in localStorage ---
@@ -821,10 +877,12 @@ document.getElementById('panel-header').addEventListener('click', function() {
 restoreState();
 centerOnReceiver();
 updateMap();
+updateTrails();
 updateStats();
-setInterval(updateMap, 500);
+setInterval(updateMap, 2000);      // Position markers: every 2s (was 500ms)
+setInterval(updateTrails, 10000);  // Trail data: every 10s (was 500ms via updateMap)
 setInterval(updateStats, 10000);
-setInterval(updateHeatmap, 15000);
+setInterval(updateHeatmap, 30000); // Heatmap: every 30s (was 15s)
 setInterval(pollEvents, 5000);
 pollEvents(); // Set baseline
 </script>

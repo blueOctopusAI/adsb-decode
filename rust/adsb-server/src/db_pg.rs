@@ -440,28 +440,59 @@ impl AdsbDatabase for TimescaleDb {
 
     async fn get_trails(&self, minutes: f64, limit_per_aircraft: i64) -> Vec<PositionRow> {
         let interval = format!("{} minutes", minutes as i64);
-        // Deduplicate across receivers: one position per (icao, time) then limit per aircraft
-        let rows = sqlx::query(
-            "WITH deduped AS (
-                 SELECT DISTINCT ON (icao, time) icao, lat, lon, altitude_ft,
-                        speed_kts, heading_deg, vertical_rate_fpm, time
-                 FROM positions
-                 WHERE time >= NOW() - $1::INTERVAL
-                 ORDER BY icao, time, receiver_id
-             )
-             SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                    vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
-             FROM (
-                 SELECT *, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY time DESC) as rn
-                 FROM deduped
-             ) sub WHERE rn <= $2
-             ORDER BY icao, time ASC",
-        )
-        .bind(&interval)
-        .bind(limit_per_aircraft)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+
+        // Use continuous aggregates for longer time windows to avoid full table scans.
+        // <2h: raw positions (full resolution)
+        // 2-6h: positions_30s (30-second buckets)
+        // >6h: positions_5m (5-minute buckets)
+        let source_table = if minutes > 360.0 {
+            "positions_5m"
+        } else if minutes > 120.0 {
+            "positions_30s"
+        } else {
+            "positions"
+        };
+
+        let time_col = if source_table == "positions" { "time" } else { "bucket" };
+
+        let sql = if source_table == "positions" {
+            // Raw positions: deduplicate across receivers
+            format!(
+                "WITH deduped AS (
+                     SELECT DISTINCT ON (icao, time) icao, lat, lon, altitude_ft,
+                            speed_kts, heading_deg, vertical_rate_fpm, time
+                     FROM positions
+                     WHERE time >= NOW() - $1::INTERVAL
+                     ORDER BY icao, time, receiver_id
+                 )
+                 SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
+                        vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
+                 FROM (
+                     SELECT *, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY time DESC) as rn
+                     FROM deduped
+                 ) sub WHERE rn <= $2
+                 ORDER BY icao, time ASC"
+            )
+        } else {
+            // Continuous aggregates: already deduplicated and bucketed
+            format!(
+                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
+                        vertical_rate_fpm, EXTRACT(EPOCH FROM {time_col})::double precision as timestamp
+                 FROM (
+                     SELECT *, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY {time_col} DESC) as rn
+                     FROM {source_table}
+                     WHERE {time_col} >= NOW() - $1::INTERVAL
+                 ) sub WHERE rn <= $2
+                 ORDER BY icao, {time_col} ASC"
+            )
+        };
+
+        let rows = sqlx::query(&sql)
+            .bind(&interval)
+            .bind(limit_per_aircraft)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
 
         rows.iter().map(row_to_position).collect()
     }
@@ -496,17 +527,23 @@ impl AdsbDatabase for TimescaleDb {
 
     async fn get_heatmap_density(&self, minutes: f64, resolution: f64) -> Vec<HeatmapCell> {
         let interval = format!("{} minutes", minutes as i64);
-        let rows = sqlx::query(
+        // Use 5-minute aggregate for heatmap (doesn't need raw resolution)
+        // and cap at 5000 cells to prevent massive responses
+        let source = if minutes > 120.0 { "positions_5m" } else { "positions" };
+        let time_col = if source == "positions" { "time" } else { "bucket" };
+        let sql = format!(
             "SELECT
                  ROUND(lat / $1) * $1 AS cell_lat,
                  ROUND(lon / $1) * $1 AS cell_lon,
                  COUNT(*) AS cnt,
                  AVG(altitude_ft)::INTEGER AS avg_alt
-             FROM positions
-             WHERE time >= NOW() - $2::INTERVAL
+             FROM {source}
+             WHERE {time_col} >= NOW() - $2::INTERVAL
              GROUP BY cell_lat, cell_lon
-             ORDER BY cnt DESC",
-        )
+             ORDER BY cnt DESC
+             LIMIT 5000"
+        );
+        let rows = sqlx::query(&sql)
         .bind(resolution)
         .bind(&interval)
         .fetch_all(&self.pool)

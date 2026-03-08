@@ -25,6 +25,8 @@ use crate::web::AppState;
 #[derive(Deserialize)]
 pub struct AircraftParams {
     military: Option<bool>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -142,7 +144,17 @@ pub async fn api_aircraft(
         aircraft.retain(|a| a.is_military);
     }
 
-    Json(serde_json::to_value(&aircraft).unwrap_or(json!([])))
+    let total = aircraft.len();
+    let offset = params.offset.unwrap_or(0).max(0) as usize;
+    let limit = params.limit.unwrap_or(500).max(1).min(5000) as usize;
+    let page: Vec<_> = aircraft.into_iter().skip(offset).take(limit).collect();
+
+    Json(json!({
+        "aircraft": page,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }))
 }
 
 /// GET /api/aircraft/:icao — single aircraft detail + positions + events.
@@ -276,7 +288,7 @@ pub async fn api_trails(
         }));
     }
 
-    Json(json!(trails))
+    Json(json!({ "trails": trails, "count": trails.len() }))
 }
 
 /// GET /api/positions/all — all positions for replay.
@@ -890,7 +902,8 @@ mod tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert!(json.as_array().unwrap().len() >= 1);
+        assert!(json["aircraft"].as_array().unwrap().len() >= 1);
+        assert!(json["total"].as_u64().unwrap() >= 1);
     }
 
     #[tokio::test]
@@ -1664,8 +1677,59 @@ mod tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        // Should be a map of ICAO -> array of positions
-        assert!(json.is_object());
+        // Response wraps trails in {"trails": {...}, "count": N}
+        assert!(json["trails"].is_object(), "trails key should be an object");
+        assert!(json["count"].is_u64(), "count key should be a number");
+    }
+
+    #[tokio::test]
+    async fn test_api_trails_contains_position_data() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/trails?minutes=1440")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        let trails = &json["trails"];
+        // Test data has one aircraft (4840D6) with one position
+        if let Some(points) = trails["4840D6"].as_array() {
+            assert!(!points.is_empty());
+            let point = &points[0];
+            assert!(point["lat"].as_f64().is_some());
+            assert!(point["lon"].as_f64().is_some());
+            assert!(point["altitude_ft"].is_number());
+            assert!(point["timestamp"].is_number());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_trails_minutes_clamped() {
+        let (state, _dir) = test_state();
+        // Request with absurdly high minutes — should be clamped, not error
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/trails?minutes=999999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -1768,5 +1832,154 @@ mod tests {
         assert!(vessel["name"].as_str().is_some());
         assert!(vessel["vessel_type"].as_str().is_some());
         assert!(vessel["flag"].as_str().is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Aircraft pagination tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_api_aircraft_pagination_response_format() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/aircraft")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        // Paginated response must have aircraft array, total, offset, limit
+        assert!(json["aircraft"].is_array());
+        assert!(json["total"].is_u64());
+        assert!(json["offset"].is_u64());
+        assert!(json["limit"].is_u64());
+    }
+
+    #[tokio::test]
+    async fn test_api_aircraft_pagination_with_limit() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/aircraft?limit=1&offset=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["aircraft"].as_array().unwrap().len(), 1);
+        assert_eq!(json["total"].as_u64().unwrap(), 1);
+        assert_eq!(json["offset"].as_u64().unwrap(), 0);
+        assert_eq!(json["limit"].as_u64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_api_aircraft_pagination_offset_beyond_total() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        // Offset past all records — should return empty page but still report total
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/aircraft?offset=999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["aircraft"].as_array().unwrap().len(), 0);
+        assert_eq!(json["total"].as_u64().unwrap(), 1); // Still 1 in DB
+    }
+
+    #[tokio::test]
+    async fn test_api_aircraft_military_filter_with_pagination() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        // Test data has no military aircraft
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/aircraft?military=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["aircraft"].as_array().unwrap().len(), 0);
+        assert_eq!(json["total"].as_u64().unwrap(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Heatmap tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_api_heatmap_returns_array() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/heatmap?minutes=60")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.is_array(), "Heatmap should return an array of cells");
+    }
+
+    #[tokio::test]
+    async fn test_api_heatmap_minutes_clamped() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        // Absurdly high minutes — should be clamped, not error
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/heatmap?minutes=999999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
