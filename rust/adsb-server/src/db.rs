@@ -1387,6 +1387,7 @@ pub trait AdsbDatabase: Send + Sync {
     );
 
     // Event write methods
+    #[allow(clippy::too_many_arguments)]
     async fn add_event(
         &self,
         icao: &str,
@@ -1600,8 +1601,15 @@ impl AdsbDatabase for SqliteDb {
             Some(i) => i,
             None => return,
         };
-        self.open()
-            .add_event(&icao, event_type, description, lat, lon, altitude_ft, timestamp);
+        self.open().add_event(
+            &icao,
+            event_type,
+            description,
+            lat,
+            lon,
+            altitude_ft,
+            timestamp,
+        );
     }
 
     async fn get_vessels(&self, limit: i64) -> Vec<VesselRow> {
