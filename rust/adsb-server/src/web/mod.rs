@@ -3,14 +3,16 @@
 //! Shared state includes the database backend (SQLite or TimescaleDB),
 //! an optional live tracker for real-time positions, and in-memory geofences.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 
+use adsb_core::filter::FilterEngine;
 use adsb_core::tracker::Tracker;
+use adsb_core::types::icao_to_string;
 
 use crate::db::AdsbDatabase;
 
@@ -159,7 +161,7 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
     app
 }
 
-/// Start the web server.
+/// Start the web server with background filter engine for event detection.
 pub async fn serve(
     db: Arc<dyn AdsbDatabase>,
     host: String,
@@ -169,7 +171,7 @@ pub async fn serve(
     ollama_url: Option<String>,
 ) {
     let state = Arc::new(AppState {
-        db,
+        db: db.clone(),
         tracker: None,
         geofences: RwLock::new(Vec::new()),
         geofence_next_id: RwLock::new(1),
@@ -177,6 +179,80 @@ pub async fn serve(
         photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         airspace_cache: std::sync::Mutex::new(None),
         ollama_url,
+    });
+
+    // Spawn background filter engine — checks feeder aircraft for events every 10s
+    let filter_db = db.clone();
+    let filter_state = state.clone();
+    tokio::spawn(async move {
+        let filter_engine = Mutex::new(FilterEngine::new());
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+
+            let aircraft = ingest::collect_all_aircraft();
+            if aircraft.is_empty() {
+                continue;
+            }
+
+            // Sync geofences from AppState
+            {
+                let entries = filter_state.geofences.read().unwrap();
+                let mut fe = filter_engine.lock().unwrap();
+                fe.geofences = entries
+                    .iter()
+                    .map(|e| adsb_core::filter::Geofence {
+                        name: e.name.clone(),
+                        lat: e.lat,
+                        lon: e.lon,
+                        radius_nm: e.radius_nm,
+                    })
+                    .collect();
+            }
+
+            // Collect all events under the lock, then release before await
+            let all_events = {
+                let mut fe = filter_engine.lock().unwrap();
+
+                let mut events = Vec::new();
+                for ac in &aircraft {
+                    events.extend(fe.check(ac));
+                }
+
+                // Proximity check
+                let ac_refs: Vec<_> = aircraft.iter().collect();
+                events.extend(fe.check_proximity(&ac_refs));
+
+                // Prune filter state for stale aircraft
+                let now_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64();
+                for ac in &aircraft {
+                    if ac.is_stale(now_ts) {
+                        fe.clear(&ac.icao);
+                    }
+                }
+
+                events
+            }; // MutexGuard dropped here
+
+            // Write events to database (async, no lock held)
+            for evt in &all_events {
+                let icao_str = icao_to_string(&evt.icao);
+                filter_db
+                    .add_event(
+                        &icao_str,
+                        evt.event_type,
+                        &evt.description,
+                        evt.lat,
+                        evt.lon,
+                        evt.altitude_ft,
+                        evt.timestamp,
+                    )
+                    .await;
+            }
+        }
     });
 
     let app = build_router(state, cors_origin);

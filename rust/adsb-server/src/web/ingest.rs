@@ -51,6 +51,18 @@ struct ReceiverStatus {
     online: bool,
 }
 
+/// Collect all aircraft from all feeder trackers for filter processing.
+pub fn collect_all_aircraft() -> Vec<adsb_core::tracker::AircraftState> {
+    let feeders = FEEDER_TRACKERS.read().unwrap();
+    let mut all = Vec::new();
+    for feeder in feeders.values() {
+        for ac in feeder.tracker.aircraft.values() {
+            all.push(ac.clone());
+        }
+    }
+    all
+}
+
 // ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------

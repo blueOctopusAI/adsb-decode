@@ -1386,6 +1386,18 @@ pub trait AdsbDatabase: Send + Sync {
         timestamp: f64,
     );
 
+    // Event write methods
+    async fn add_event(
+        &self,
+        icao: &str,
+        event_type: &str,
+        description: &str,
+        lat: Option<f64>,
+        lon: Option<f64>,
+        altitude_ft: Option<i32>,
+        timestamp: f64,
+    );
+
     // Vessel (AIS) methods
     async fn get_vessels(&self, limit: i64) -> Vec<VesselRow>;
     async fn get_vessel_positions(&self, minutes: f64, limit: i64) -> Vec<VesselPositionRow>;
@@ -1572,6 +1584,24 @@ impl AdsbDatabase for SqliteDb {
             receiver_id,
             timestamp,
         );
+    }
+
+    async fn add_event(
+        &self,
+        icao_str: &str,
+        event_type: &str,
+        description: &str,
+        lat: Option<f64>,
+        lon: Option<f64>,
+        altitude_ft: Option<i32>,
+        timestamp: f64,
+    ) {
+        let icao = match icao_from_hex(icao_str) {
+            Some(i) => i,
+            None => return,
+        };
+        self.open()
+            .add_event(&icao, event_type, description, lat, lon, altitude_ft, timestamp);
     }
 
     async fn get_vessels(&self, limit: i64) -> Vec<VesselRow> {

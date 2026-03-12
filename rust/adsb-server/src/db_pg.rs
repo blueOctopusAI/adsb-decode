@@ -906,6 +906,32 @@ impl AdsbDatabase for TimescaleDb {
         .await;
     }
 
+    async fn add_event(
+        &self,
+        icao: &str,
+        event_type: &str,
+        description: &str,
+        lat: Option<f64>,
+        lon: Option<f64>,
+        altitude_ft: Option<i32>,
+        timestamp: f64,
+    ) {
+        let ts = epoch_to_pg(timestamp);
+        let _ = sqlx::query(
+            "INSERT INTO events (time, icao, event_type, description, lat, lon, altitude_ft)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(ts)
+        .bind(icao)
+        .bind(event_type)
+        .bind(description)
+        .bind(lat)
+        .bind(lon)
+        .bind(altitude_ft)
+        .execute(&self.pool)
+        .await;
+    }
+
     // -----------------------------------------------------------------------
     // Vessel (AIS) methods
     // -----------------------------------------------------------------------
