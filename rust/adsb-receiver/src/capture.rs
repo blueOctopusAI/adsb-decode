@@ -24,7 +24,10 @@ pub fn parse_rtl_adsb_line(line: &str) -> Option<String> {
 pub enum CaptureMode {
     /// Use rtl_adsb subprocess (always available)
     RtlAdsb,
-    /// Native SDR via adsb-feeder's LiveCapture (requires native-sdr feature)
+    /// Native SDR via adsb-feeder's LiveCapture (requires native-sdr feature).
+    /// Currently unused — rtl_adsb subprocess is preferred for stability.
+    /// Kept as a compile-gated variant for future direct-SDR integration
+    /// once the capture bridge in adsb-feeder is proven reliable.
     #[cfg(feature = "native-sdr")]
     NativeSdr,
 }
@@ -91,11 +94,12 @@ pub fn start_rtl_adsb(
 /// Detect which capture mode is available.
 /// Try native SDR first (if compiled with feature), fall back to rtl_adsb.
 pub fn detect_capture_mode() -> CaptureMode {
+    // Native SDR path: compile-gated placeholder for future direct-SDR capture.
+    // Currently falls through to rtl_adsb below. The feature flag exists so we can
+    // add native IQ capture without changing the public API — just fill in this block
+    // and return CaptureMode::NativeSdr when the bridge is stable.
     #[cfg(feature = "native-sdr")]
     {
-        // Try to detect RTL-SDR device directly
-        // For now, always prefer rtl_adsb for stability
-        // Native SDR support will be added once the capture bridge is proven
         eprintln!("[capture] native-sdr feature enabled but using rtl_adsb for stability");
     }
 

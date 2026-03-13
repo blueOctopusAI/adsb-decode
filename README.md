@@ -4,11 +4,30 @@ ADS-B radio protocol decoder — from raw 1090 MHz radio signals to identified a
 
 Built from scratch. No dump1090 dependency, no borrowed decoders. Every byte of the protocol is decoded and documented, from the preamble pulse pattern to the Compact Position Reporting trigonometry.
 
-Two implementations:
-- **Python** — the original reference implementation (22 modules, 394 tests, ~7,300 lines)
-- **Rust** — the primary/active implementation (3-crate workspace, 199 tests, ~10,700 lines)
+**Rust is the primary implementation.** Python exists as the original reference decoder used to prove the protocol math. Both decode identically — cross-validated on a 296-frame capture file with 100% field-level match.
 
-Both decode the same protocol identically. Cross-validated: 296-frame capture file produces 100% matching output between Python and Rust.
+---
+
+## Table of Contents
+
+- [What It Does](#what-it-does)
+- [Quick Start](#quick-start)
+  - [Decode a capture file](#decode-a-capture-file)
+  - [Live tracking with a dongle](#live-tracking-with-a-dongle)
+  - [Set up a remote receiver (Pi)](#set-up-a-remote-receiver-pi)
+- [The Three Binaries](#the-three-binaries)
+- [Verify It Works](#verify-it-works)
+- [The Signal Chain](#the-signal-chain)
+- [Hardware](#hardware)
+- [Intelligence Features](#intelligence-features)
+- [Web Dashboard](#web-dashboard)
+- [Multi-Receiver Network](#multi-receiver-network)
+- [Why This Exists](#why-this-exists)
+- [Project Structure](#project-structure)
+- [Python Reference Implementation](#python-reference-implementation)
+- [Future](#future)
+
+---
 
 ## What It Does
 
@@ -25,6 +44,107 @@ Plugs into an RTL-SDR USB dongle, tunes to 1090 MHz, and decodes ADS-B broadcast
 | Single receiver | Multi-receiver network (hub-and-spoke, feeder agents) |
 | No enrichment | Aircraft type classification, 3,642 airports, operator lookup |
 | C, hard to modify | Readable, documented, tested |
+
+## Quick Start
+
+> **Prerequisite:** All live-capture paths require RTL-SDR drivers. Install them first:
+> ```bash
+> sudo apt install rtl-sdr
+> ```
+> Then blacklist the DVB kernel module so it doesn't conflict:
+> ```bash
+> echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
+> sudo modprobe -r dvb_usb_rtl28xxu
+> ```
+
+### Decode a capture file
+
+No hardware needed. Good for testing or analyzing recorded data.
+
+```bash
+cd rust
+cargo build --release
+
+# Decode and display
+cargo run --bin adsb -- decode data/live_capture.txt
+
+# Decode with tracking + database
+cargo run --bin adsb -- track data/live_capture.txt --db-path data/flights.db
+
+# Export flight paths from database
+cargo run --bin adsb -- export --db-path data/flights.db --format json
+
+# Database statistics
+cargo run --bin adsb -- stats --db-path data/flights.db
+```
+
+### Live tracking with a dongle
+
+Plug in an RTL-SDR dongle and track aircraft in real time with a web dashboard.
+
+```bash
+cd rust
+cargo build --release
+
+# Live tracking with web dashboard (opens on port 8080)
+cargo run --bin adsb -- track --live --port 8080
+
+# Serve dashboard from existing database (no dongle needed)
+cargo run --bin adsb -- serve --db-path data/adsb.db --port 8080
+```
+
+Then open `http://127.0.0.1:8080` in your browser.
+
+### Set up a remote receiver (Pi)
+
+Deploy a dedicated receiver that feeds data to a central server. One command does everything — installs drivers, downloads the binary, configures systemd:
+
+```bash
+curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo bash
+```
+
+Or set it up manually — see the [Receiver Setup](#multi-receiver-network) section and [`deploy/receiver-setup.sh`](deploy/receiver-setup.sh) for details.
+
+## The Three Binaries
+
+The Rust workspace produces three binaries:
+
+| Binary | Crate | Purpose |
+|--------|-------|---------|
+| `adsb` | `adsb-server` | The main tool. Decode files, track live, serve the web dashboard, query the database, export data. This is what most users want. |
+| `adsb-receiver` | `adsb-receiver` | Headless receiver daemon. Captures frames from an RTL-SDR dongle and feeds them to a central `adsb` server over HTTP. Designed for Pis and remote stations. |
+| `adsb-feeder` | `adsb-feeder` | Offline demodulation tool. Reads raw IQ sample files and decodes them. For signal processing work, not typical use. |
+
+Build all three:
+```bash
+cd rust
+cargo build --release
+# Binaries at target/release/adsb, target/release/adsb-receiver, target/release/adsb-feeder
+```
+
+## Verify It Works
+
+After building, confirm everything is working:
+
+```bash
+# Run the test suite
+cd rust
+cargo test --workspace
+
+# Decode the included capture file — you should see aircraft
+cargo run --bin adsb -- decode data/live_capture.txt
+
+# Expected output: a table of aircraft with ICAO addresses, callsigns, altitudes
+# If you see "Total frames: 296" and "Aircraft seen: 41" — it's working.
+```
+
+If you're running a receiver, check that frames are flowing:
+```bash
+sudo journalctl -u adsb-receiver -f
+# You should see "[sender] POST 200" lines every few seconds
+```
+
+Then check the [receivers dashboard](https://adsb.blueoctopustechnology.com/receivers) to see your station online.
 
 ## The Signal Chain
 
@@ -66,56 +186,6 @@ Summary:
 
 5 aircraft fully resolved with N-number registrations. 41 total ICAO addresses heard in under a minute.
 
-## Quick Start (Rust)
-
-```bash
-# Build
-cd rust
-cargo build --release
-
-# Decode a capture file
-cargo run --bin adsb -- decode data/live_capture.txt
-
-# Track from file with persistence
-cargo run --bin adsb -- track data/live_capture.txt --db-path data/flights.db
-
-# Live tracking with web dashboard (RTL-SDR dongle required)
-cargo run --bin adsb -- track --live --port 8080
-
-# Serve dashboard from existing database (no dongle)
-cargo run --bin adsb -- serve --db-path data/adsb.db --port 8080
-
-# Database statistics
-cargo run --bin adsb -- stats --db-path data/flights.db
-
-# Export flight paths
-cargo run --bin adsb -- export --db-path data/flights.db --format json
-```
-
-### Receiver Setup
-
-Set up a remote receiver to feed data to a central server:
-
-```bash
-# Download the receiver binary (or build: cargo build --release -p adsb-receiver)
-# Install RTL-SDR drivers: sudo apt install rtl-sdr
-
-# Run directly
-adsb-receiver --server https://adsb.blueoctopustechnology.com --name my-pi --api-key YOUR_KEY
-
-# Or configure via environment variables for systemd
-# See deploy/receiver-setup.sh for automated installation
-```
-
-### Quick Start (Python reference)
-
-```bash
-pip install -e ".[dev]"
-bash scripts/setup-rtlsdr.sh
-adsb decode data/live_capture.txt
-adsb track --live --port 8080
-```
-
 ## Hardware
 
 - **RTL-SDR USB dongle** ($25-35) — any RTL2832U-based receiver
@@ -149,14 +219,14 @@ Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 - **Historical aircraft** — At trail durations >= 1h, aircraft that stopped transmitting appear as faded ghost markers with computed headings. Works in both 2D and 3D.
 - **Event markers** — Toggle to overlay detected events (military, emergency, circling, etc.) as color-coded markers directly on the map
 - **Military highlight** — Toggle to add pulsing red rings behind military aircraft
-- **Trail duration slider** — 5 minutes to 24 hours. Short windows (5m–30m) show live traffic only. Longer windows (1h+) include historical aircraft as faded markers.
+- **Trail duration slider** — 5 minutes to 24 hours. Short windows (5m-30m) show live traffic only. Longer windows (1h+) include historical aircraft as faded markers.
 - **Aircraft detail** — Split-screen view. Left: captured trail map, events, position history. Right: external intel from hexdb.io (manufacturer, type, owner), link cards to ADSBExchange/Planespotters/FlightAware/FlightRadar24/FAA Registry/OpenSky, altitude profile chart.
 - **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links. Works in both 2D (Leaflet markers) and 3D (Cesium billboards).
 - **Heatmap** — Position density visualization. 2D uses Leaflet heat layer; 3D renders colored density rectangles on the globe.
 - **Map styles** — Dark, Satellite, Topo, Streets, Dark Matter, Voyager (persisted in localStorage)
 - **Events dashboard** — Color-coded events with type filters, auto-enriched with aircraft type/owner from hexdb.io
 - **Query builder** — Preset queries (military, low altitude, fast) + custom filters with map visualization
-- **Historical replay** — Time slider with play/pause, adjustable speed (1x–10min)
+- **Historical replay** — Time slider with play/pause, adjustable speed (1x-10min)
 - **Receiver management** — Connected feeders with coverage circles
 - **Table view** — Sortable aircraft list with detail pages
 
@@ -176,6 +246,24 @@ Hub-and-spoke architecture for distributed coverage:
 - Heartbeat monitoring with online/offline status
 - Environment variable + CLI flag configuration for systemd deployment
 - ~$60/node (Pi + dongle + antenna)
+
+### Receiver Setup
+
+Set up a remote receiver to feed data to a central server:
+
+```bash
+# One-command automated setup (installs drivers, binary, systemd service):
+curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo bash
+
+# Or manually:
+# 1. Install RTL-SDR drivers: sudo apt install rtl-sdr
+# 2. Download the binary for your architecture (see deploy/receiver-setup.sh)
+# 3. Run directly:
+adsb-receiver --server https://adsb.blueoctopustechnology.com --name my-pi --api-key YOUR_KEY
+
+# Or configure via environment variables for systemd:
+# See deploy/receiver-setup.sh for the full automated path
+```
 
 ## Why This Exists
 
@@ -216,7 +304,7 @@ rust/
 ├── adsb-receiver/            # Binary: networked receiver daemon
 │   └── src/
 │       ├── main.rs           # CLI (clap + env vars), startup, Ctrl+C shutdown
-│       ├── capture.rs        # rtl_adsb subprocess + native-sdr fallback
+│       ├── capture.rs        # rtl_adsb subprocess management
 │       ├── sender.rs         # HTTP client, batch POST, heartbeat
 │       └── stats.rs          # Atomic counters (frames, uptime)
 │
@@ -233,40 +321,20 @@ rust/
 │   └── templates/            # 8 HTML pages (map, table, detail, events, query, replay, receivers, stats)
 ```
 
-### Python (reference)
+## Python Reference Implementation
 
-```
-src/
-├── capture.py       # IQ file reader, hex frame reader, native demod + fallback live capture
-├── demodulator.py   # Raw IQ → magnitude → preamble detection → PPM bit recovery
-├── frame_parser.py  # Bitstream → ModeFrame, downlink format classification
-├── crc.py           # CRC-24 validation (ICAO polynomial)
-├── decoder.py       # ModeFrame → typed messages (identification, position, velocity)
-├── cpr.py           # Compact Position Reporting — global + local decode
-├── icao.py          # Country lookup, military detection, N-number conversion
-├── tracker.py       # Per-aircraft state machine with CPR frame pairing
-├── database.py      # SQLite with WAL mode, multi-receiver schema, tiered retention
-├── filters.py       # Military, emergency, circling, holding, proximity, unusual altitude, geofence
-├── enrichment.py    # Aircraft type classification, operator lookup, 3,642 airports
-├── notifications.py # Webhook dispatch for events
-├── config.py        # Config file management (~/.adsb-decode/config.yaml)
-├── hardware.py      # RTL-SDR dongle detection, driver checks
-├── exporters.py     # CSV, JSON, KML (Google Earth), GeoJSON
-├── feeder.py        # Remote receiver agent
-├── cli.py           # Click CLI
-└── web/
-    ├── app.py       # Flask app factory
-    ├── ingest.py    # Frame ingestion API for remote feeders
-    ├── routes.py    # REST API + page routes
-    └── templates/   # Jinja2 templates (9 pages)
-```
+The Python implementation (`src/`) is the original reference decoder — 22 modules, 394 tests, ~7,300 lines. It was used to prove the protocol math before the Rust rewrite. Both decode identically and are cross-validated in CI.
 
-**Rust:** 291 tests, ~11,500 lines across 4 crates. **Python:** 394 tests, ~7,300 lines across 22 modules. See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the complete signal chain deep dive.
+```bash
+pip install -e ".[dev]"
+bash scripts/setup-rtlsdr.sh
+adsb decode data/live_capture.txt
+adsb track --live --port 8080
+```
 
 ## Future
 
 - **TimescaleDB production backend** — Implemented behind a feature flag (`db_pg.rs`). Includes hypertables, compression policies, retention policies, and continuous aggregates. Requires a PostgreSQL instance to activate.
-- **Self-contained receiver binary** (`adsb-receiver`) — Captures, decodes, and feeds frames to a central server. Single binary, no Python dependency. Supports environment variable configuration for systemd. Replaces the Python `feeder.py`.
 - **Cross-compiled Pi binaries** — GitHub Actions CI configured for aarch64 (Pi 4/5) and armv7 (Pi 3) targets via `cross` for all three binaries (feeder, receiver, server).
 
 ## License

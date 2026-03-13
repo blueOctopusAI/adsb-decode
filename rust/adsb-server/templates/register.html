@@ -23,8 +23,16 @@
 .result { margin-top: 24px; padding: 16px; border-radius: 4px; display: none; }
 .result.success { background: #0a2a1a; border: 1px solid #00ff88; }
 .result.error { background: #2a0a0a; border: 1px solid #ff4444; color: #ff4444; }
+.api-key-wrap { position: relative; margin: 8px 0; }
 .api-key { font-size: 16px; color: #00ff88; word-break: break-all; user-select: all;
-    background: #0a0a0a; padding: 8px; border: 1px solid #333; border-radius: 4px; margin: 8px 0; }
+    background: #0a0a0a; padding: 8px 48px 8px 8px; border: 1px solid #333; border-radius: 4px; }
+.btn-copy { position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+    background: #222; border: 1px solid #444; color: #ccc; padding: 4px 10px; border-radius: 3px;
+    cursor: pointer; font-size: 12px; font-family: 'Courier New', monospace; }
+.btn-copy:hover { background: #333; border-color: #00ff88; color: #00ff88; }
+.btn-copy.copied { background: #0a2a1a; border-color: #00ff88; color: #00ff88; }
+.key-warning { background: #2a1a0a; border: 1px solid #ff914d; border-radius: 4px;
+    padding: 10px 14px; margin: 12px 0 8px; font-size: 12px; color: #ffbb77; }
 .instructions { color: #888; font-size: 12px; margin-top: 12px; }
 .instructions code { color: #00aaff; background: #111; padding: 2px 6px; border-radius: 2px; }
 </style>
@@ -61,8 +69,12 @@
 
     <div class="result" id="result-success">
         <div style="color:#00ff88; font-weight:bold; margin-bottom:8px;">Receiver Registered</div>
-        <div style="color:#aaa; font-size:12px; margin-bottom:4px;">Your API Key (save this — it won't be shown again):</div>
-        <div class="api-key" id="api-key"></div>
+        <div class="key-warning">&#9888; Save this key now — you won't be able to see it again. Copy it somewhere safe before leaving this page.</div>
+        <div style="color:#aaa; font-size:12px; margin-bottom:4px;">Your API Key:</div>
+        <div class="api-key-wrap">
+            <div class="api-key" id="api-key"></div>
+            <button type="button" class="btn-copy" id="btn-copy" onclick="copyApiKey()">Copy</button>
+        </div>
         <div class="instructions">
             <p>Add this to your feeder configuration:</p>
             <p><code>Authorization: Bearer <span id="key-inline"></span></code></p>
@@ -75,6 +87,16 @@
     </div>
 </div>
 <script>
+function copyApiKey() {
+    const key = document.getElementById('api-key').textContent;
+    navigator.clipboard.writeText(key).then(function() {
+        const btn = document.getElementById('btn-copy');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+    });
+}
+
 document.getElementById('register-form').addEventListener('submit', async function(e) {
     e.preventDefault();
     const btn = document.getElementById('btn-submit');

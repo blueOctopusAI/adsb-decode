@@ -6,19 +6,23 @@
 .setup-page p { color: #ccc; margin: 10px 0; font-size: 14px; }
 .setup-page a { color: #00aaff; }
 .setup-page code { background: #1a1a1a; padding: 2px 6px; border-radius: 3px; color: #00ff88; font-size: 13px; }
+.setup-page pre { margin: 10px 0; padding: 10px 14px; background: #0a0a0a; border: 1px solid #222; border-radius: 4px; overflow-x: auto; }
+.setup-page pre code { background: none; padding: 0; border-radius: 0; font-size: 13px; color: #00ff88; font-family: 'Courier New', monospace; white-space: pre; display: block; }
 .setup-page .breadcrumb { font-size: 12px; color: #666; margin-bottom: 24px; }
 .setup-page .breadcrumb a { color: #888; text-decoration: none; }
 .setup-page .breadcrumb a:hover { color: #00ff88; }
 .setup-page .step { background: #111; border: 1px solid #333; border-radius: 6px; padding: 20px; margin: 16px 0; position: relative; }
 .setup-page .step .step-num { position: absolute; top: -12px; left: 16px; background: #00ff88; color: #0a0a0a; font-weight: bold; font-size: 12px; padding: 2px 10px; border-radius: 10px; }
 .setup-page .step h3 { color: #e0e0e0; font-size: 15px; margin: 4px 0 8px; }
-.setup-page .code-block { display: block; margin: 10px 0; padding: 10px 14px; background: #0a0a0a; border: 1px solid #222; border-radius: 4px; font-size: 13px; color: #00ff88; font-family: 'Courier New', monospace; word-break: break-all; overflow-x: auto; }
 .setup-page .hardware-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 16px 0; }
 .setup-page .hw-item { background: #111; border: 1px solid #333; border-radius: 6px; padding: 16px; }
 .setup-page .hw-item .hw-name { color: #00ff88; font-weight: bold; font-size: 13px; }
 .setup-page .hw-item .hw-detail { color: #888; font-size: 12px; margin-top: 4px; }
 .setup-page .hw-item .hw-price { color: #ccc; font-size: 14px; margin-top: 6px; }
 .setup-page .note { background: #0a1a0a; border: 1px solid #1a3a1a; border-radius: 6px; padding: 14px 18px; margin: 16px 0; font-size: 13px; color: #aadaaa; }
+.setup-page .one-cmd { background: linear-gradient(135deg, #0a1a0a, #111); border: 2px solid #00ff88; border-radius: 8px; padding: 24px; text-align: center; margin: 24px 0; }
+.setup-page .one-cmd h3 { color: #00ff88; font-size: 16px; margin: 0 0 8px; }
+.setup-page .one-cmd p { color: #888; font-size: 13px; margin: 0 0 12px; }
 </style>
 
 <div class="breadcrumb"><a href="/about">About</a> / Setup</div>
@@ -26,6 +30,13 @@
 <h1>Set Up a Receiver</h1>
 
 <p>Contribute aircraft data to the tracking network. All you need is a USB radio dongle and something to plug it into.</p>
+
+<div class="one-cmd">
+    <h3>One-Command Setup</h3>
+    <p>Installs drivers, downloads the binary, configures systemd, starts the service:</p>
+    <pre><code>curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo bash</code></pre>
+    <p>Or follow the manual steps below.</p>
+</div>
 
 <h2>What You Need</h2>
 
@@ -51,7 +62,7 @@
     <strong>Tip:</strong> Antenna placement matters more than hardware quality. A $35 dongle on the roof will outperform a $200 setup in a basement. Higher = farther range. Expect 100-200 nautical miles with decent antenna placement.
 </div>
 
-<h2>Setup Steps</h2>
+<h2>Manual Setup Steps</h2>
 
 <div class="step">
     <div class="step-num">1</div>
@@ -63,121 +74,105 @@
     <div class="step-num">2</div>
     <h3>Install RTL-SDR Drivers</h3>
     <p>The receiver needs the <code>rtl_adsb</code> command from the rtl-sdr package:</p>
-    <div class="code-block">
-sudo apt install rtl-sdr
-    </div>
+    <pre><code>sudo apt install rtl-sdr</code></pre>
     <p>Then blacklist the DVB kernel module so it doesn't conflict:</p>
-    <div class="code-block">
-echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf<br>
-sudo modprobe -r dvb_usb_rtl28xxu
-    </div>
+    <pre><code>echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
+sudo modprobe -r dvb_usb_rtl28xxu</code></pre>
 </div>
 
 <div class="step">
     <div class="step-num">3</div>
     <h3>Download the Receiver Binary</h3>
     <p>Pre-built binaries for all major architectures:</p>
-    <div class="code-block">
-# Raspberry Pi 4/5 (64-bit)<br>
-curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-aarch64-unknown-linux-gnu.tar.gz | tar xz<br>
-<br>
-# Raspberry Pi 3 (32-bit)<br>
-curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-armv7-unknown-linux-gnueabihf.tar.gz | tar xz<br>
-<br>
-# x86_64 Linux<br>
-curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-x86_64-unknown-linux-gnu.tar.gz | tar xz<br>
-<br>
-sudo mkdir -p /opt/adsb-receiver<br>
-sudo mv adsb-receiver /opt/adsb-receiver/<br>
-sudo chmod +x /opt/adsb-receiver/adsb-receiver
-    </div>
-    <p>Or use the automated setup script:</p>
-    <div class="code-block">
-curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo bash
-    </div>
+    <pre><code># Raspberry Pi 4/5 (64-bit)
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-aarch64-unknown-linux-gnu.tar.gz | tar xz
+
+# Raspberry Pi 3 (32-bit)
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-armv7-unknown-linux-gnueabihf.tar.gz | tar xz
+
+# x86_64 Linux
+curl -sL https://github.com/blueOctopusAI/adsb-decode/releases/latest/download/adsb-receiver-x86_64-unknown-linux-gnu.tar.gz | tar xz
+
+sudo mkdir -p /opt/adsb-receiver
+sudo mv adsb-receiver /opt/adsb-receiver/
+sudo chmod +x /opt/adsb-receiver/adsb-receiver</code></pre>
 </div>
 
 <div class="step">
     <div class="step-num">4</div>
     <h3>Configure</h3>
     <p>Create an environment file with your settings:</p>
-    <div class="code-block">
-sudo tee /etc/adsb-receiver.env &lt;&lt;EOF<br>
-ADSB_SERVER=https://adsb.blueoctopustechnology.com<br>
-ADSB_NAME=my-receiver<br>
-ADSB_API_KEY=your-api-key-from-step-1<br>
-ADSB_LAT=35.0<br>
-ADSB_LON=-83.0<br>
-EOF<br>
-sudo chmod 600 /etc/adsb-receiver.env
-    </div>
+    <pre><code>sudo tee /etc/adsb-receiver.env &lt;&lt;EOF
+ADSB_SERVER=https://adsb.blueoctopustechnology.com
+ADSB_NAME=my-receiver
+ADSB_API_KEY=your-api-key-from-step-1
+ADSB_LAT=35.0
+ADSB_LON=-83.0
+EOF
+sudo chmod 600 /etc/adsb-receiver.env</code></pre>
 </div>
 
 <div class="step">
     <div class="step-num">5</div>
     <h3>Start the Service</h3>
     <p>Install and enable the systemd service:</p>
-    <div class="code-block">
-sudo tee /etc/systemd/system/adsb-receiver.service &lt;&lt;EOF<br>
-[Unit]<br>
-Description=adsb-decode receiver<br>
-After=network-online.target<br>
-Wants=network-online.target<br>
-<br>
-[Service]<br>
-EnvironmentFile=/etc/adsb-receiver.env<br>
-ExecStart=/opt/adsb-receiver/adsb-receiver<br>
-Restart=always<br>
-RestartSec=10<br>
-<br>
-[Install]<br>
-WantedBy=multi-user.target<br>
-EOF<br>
-<br>
-sudo systemctl daemon-reload<br>
-sudo systemctl enable --now adsb-receiver
-    </div>
+    <pre><code>sudo tee /etc/systemd/system/adsb-receiver.service &lt;&lt;EOF
+[Unit]
+Description=adsb-decode receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/adsb-receiver.env
+ExecStart=/opt/adsb-receiver/adsb-receiver
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now adsb-receiver</code></pre>
 </div>
 
 <div class="step">
     <div class="step-num">6</div>
-    <h3>Verify</h3>
+    <h3>Verify It Works</h3>
     <p>Check that frames are flowing:</p>
-    <div class="code-block">
-sudo journalctl -u adsb-receiver -f
-    </div>
+    <pre><code>sudo journalctl -u adsb-receiver -f</code></pre>
+    <p>You should see lines like:</p>
+    <pre><code>[sender] POST 200 — 12 frames (batch 47)
+[capture] frame: 8D4840D6202CC371C32CE0576098
+[sender] heartbeat OK — 342 captured, 298 sent, uptime 1h23m</code></pre>
     <p>Then check the <a href="/receivers">receivers dashboard</a> to see your station online. It shows frame count, uptime, active aircraft count, and last heartbeat time.</p>
 </div>
 
 <div class="note">
-    <strong>Quick test:</strong> You can also run the receiver directly without systemd:<br><br>
-    <code>/opt/adsb-receiver/adsb-receiver --server https://adsb.blueoctopustechnology.com --name test --api-key YOUR_KEY</code>
+    <strong>Quick test:</strong> You can also run the receiver directly without systemd:
+    <pre><code>/opt/adsb-receiver/adsb-receiver --server https://adsb.blueoctopustechnology.com --name test --api-key YOUR_KEY</code></pre>
 </div>
 
 <h2>Build from Source</h2>
 <p>If you prefer to build from source:</p>
-<div class="code-block">
-git clone https://github.com/blueOctopusAI/adsb-decode.git<br>
-cd adsb-decode/rust<br>
-cargo build --release -p adsb-receiver<br>
-# Binary at target/release/adsb-receiver
-</div>
+<pre><code>git clone https://github.com/blueOctopusAI/adsb-decode.git
+cd adsb-decode/rust
+cargo build --release -p adsb-receiver
+# Binary at target/release/adsb-receiver</code></pre>
 
 <h2>All Options</h2>
 <p>The receiver binary supports these flags (all also configurable via environment variables):</p>
-<div class="code-block">
-adsb-receiver --help<br>
-<br>
-  --server &lt;URL&gt;      Server URL (env: ADSB_SERVER)<br>
-  --name &lt;NAME&gt;        Receiver name (env: ADSB_NAME)<br>
-  --api-key &lt;KEY&gt;      API key (env: ADSB_API_KEY)<br>
-  --lat &lt;LAT&gt;          Latitude (env: ADSB_LAT)<br>
-  --lon &lt;LON&gt;          Longitude (env: ADSB_LON)<br>
-  --interval &lt;SECS&gt;    Batch interval, default 2.0 (env: ADSB_INTERVAL)<br>
-  --device &lt;N&gt;         RTL-SDR device index, default 0 (env: ADSB_DEVICE)<br>
-  --gain &lt;N&gt;           RTL-SDR gain (env: ADSB_GAIN)<br>
-  --ppm &lt;N&gt;            PPM correction (env: ADSB_PPM)
-</div>
+<pre><code>adsb-receiver --help
+
+  --server &lt;URL&gt;      Server URL (env: ADSB_SERVER)
+  --name &lt;NAME&gt;        Receiver name (env: ADSB_NAME)
+  --api-key &lt;KEY&gt;      API key (env: ADSB_API_KEY)
+  --lat &lt;LAT&gt;          Latitude (env: ADSB_LAT)
+  --lon &lt;LON&gt;          Longitude (env: ADSB_LON)
+  --interval &lt;SECS&gt;    Batch interval, default 2.0 (env: ADSB_INTERVAL)
+  --device &lt;N&gt;         RTL-SDR device index, default 0 (env: ADSB_DEVICE)
+  --gain &lt;N&gt;           RTL-SDR gain (env: ADSB_GAIN)
+  --ppm &lt;N&gt;            PPM correction (env: ADSB_PPM)</code></pre>
 
 <p style="margin-top:32px;"><a href="/about">&larr; Back to About</a> &nbsp;|&nbsp; <a href="/register">Register a Receiver &rarr;</a></p>
 
