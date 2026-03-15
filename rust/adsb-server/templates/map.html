@@ -503,38 +503,54 @@ function drawTrail(icao, points) {
     if (!trailsEnabled) return;
     if (points.length < 2) return;
 
+    // Break trail when consecutive points are too far apart (gap = sparse reception)
+    const MAX_GAP_KM = 50;
+    function haversineKm(a, b) {
+        const R = 6371, toRad = Math.PI / 180;
+        const dLat = (b[0] - a[0]) * toRad, dLon = (b[1] - a[1]) * toRad;
+        const s = Math.sin(dLat/2)**2 + Math.cos(a[0]*toRad) * Math.cos(b[0]*toRad) * Math.sin(dLon/2)**2;
+        return 2 * R * Math.asin(Math.sqrt(s));
+    }
+
     // Batch consecutive points in the same altitude band (5000ft) into single polylines
     let batchCoords = [[points[0].lat, points[0].lon]];
     let batchColor = altColor(points[0].altitude_ft);
     let batchAltBand = points[0].altitude_ft != null ? Math.floor(points[0].altitude_ft / 5000) : -1;
 
+    function flushBatch(opacity) {
+        if (batchCoords.length >= 2) {
+            const seg = L.polyline(batchCoords, {
+                color: batchColor, weight: activeTheme.trailWeight, opacity: opacity
+            }).addTo(map);
+            trailLines[icao].push(seg);
+        }
+    }
+
     for (let i = 1; i < points.length; i++) {
         const curr = points[i];
         const currAltBand = curr.altitude_ft != null ? Math.floor(curr.altitude_ft / 5000) : -1;
         const coord = [curr.lat, curr.lon];
+        const prev = batchCoords[batchCoords.length - 1];
+        const gap = haversineKm(prev, coord);
 
-        if (currAltBand === batchAltBand) {
+        if (gap > MAX_GAP_KM) {
+            // Distance gap — flush current batch and start fresh (no connecting line)
+            const opacity = activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity) * (i / points.length);
+            flushBatch(opacity);
+            batchCoords = [coord];
+            batchColor = altColor(curr.altitude_ft);
+            batchAltBand = currAltBand;
+        } else if (currAltBand === batchAltBand) {
             batchCoords.push(coord);
         } else {
-            if (batchCoords.length >= 2) {
-                const opacity = activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity) * (i / points.length);
-                const seg = L.polyline(batchCoords, {
-                    color: batchColor, weight: activeTheme.trailWeight, opacity: opacity
-                }).addTo(map);
-                trailLines[icao].push(seg);
-            }
+            const opacity = activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity) * (i / points.length);
+            flushBatch(opacity);
             batchCoords = [batchCoords[batchCoords.length - 1], coord];
             batchColor = altColor(curr.altitude_ft);
             batchAltBand = currAltBand;
         }
     }
-    if (batchCoords.length >= 2) {
-        const seg = L.polyline(batchCoords, {
-            color: batchColor, weight: activeTheme.trailWeight,
-            opacity: activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity)
-        }).addTo(map);
-        trailLines[icao].push(seg);
-    }
+    flushBatch(activeTheme.trailMinOpacity + (1 - activeTheme.trailMinOpacity));
 }
 
 // --- Dynamic map center from receiver ---

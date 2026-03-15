@@ -269,10 +269,12 @@ impl AdsbDatabase for TimescaleDb {
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
-        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
-            .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(approximate_row_count('events'), 0)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
         let receivers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM receivers")
             .fetch_one(&self.pool)
             .await
