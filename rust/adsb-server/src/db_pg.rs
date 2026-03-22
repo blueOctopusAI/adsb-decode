@@ -135,8 +135,9 @@ ALTER TABLE positions SET (
 );
 SELECT add_compression_policy('positions', INTERVAL '7 days', if_not_exists => TRUE);
 
--- Retention policy: drop raw positions older than 90 days
-SELECT add_retention_policy('positions', INTERVAL '90 days', if_not_exists => TRUE);
+-- Retention policy: drop raw positions older than 14 days
+-- (38GB Lightsail disk fills up at ~90 days of continuous feeding)
+SELECT add_retention_policy('positions', INTERVAL '14 days', if_not_exists => TRUE);
 
 -- Events: compress after 30 days, retain for 365 days
 ALTER TABLE events SET (
@@ -154,7 +155,7 @@ ALTER TABLE vessel_positions SET (
     timescaledb.compress_orderby = 'time DESC'
 );
 SELECT add_compression_policy('vessel_positions', INTERVAL '7 days', if_not_exists => TRUE);
-SELECT add_retention_policy('vessel_positions', INTERVAL '90 days', if_not_exists => TRUE);
+SELECT add_retention_policy('vessel_positions', INTERVAL '14 days', if_not_exists => TRUE);
 "#;
 
 /// Continuous aggregate for 30-second downsampled positions.
