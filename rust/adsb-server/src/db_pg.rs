@@ -139,14 +139,15 @@ SELECT add_compression_policy('positions', INTERVAL '7 days', if_not_exists => T
 -- (38GB Lightsail disk fills up at ~90 days of continuous feeding)
 SELECT add_retention_policy('positions', INTERVAL '14 days', if_not_exists => TRUE);
 
--- Events: compress after 30 days, retain for 365 days
+-- Events: compress after 3 days, retain for 7 days
+-- (event detection runs every 10s and generates high volume — 365 days filled 38GB disk twice)
 ALTER TABLE events SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'icao',
     timescaledb.compress_orderby = 'time DESC'
 );
-SELECT add_compression_policy('events', INTERVAL '30 days', if_not_exists => TRUE);
-SELECT add_retention_policy('events', INTERVAL '365 days', if_not_exists => TRUE);
+SELECT add_compression_policy('events', INTERVAL '3 days', if_not_exists => TRUE);
+SELECT add_retention_policy('events', INTERVAL '7 days', if_not_exists => TRUE);
 
 -- Vessel positions: compress after 7 days, retain for 90 days
 ALTER TABLE vessel_positions SET (
