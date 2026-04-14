@@ -275,7 +275,9 @@ The Python implementation runs these automatically every 10 minutes during live 
 
 The Rust implementation defines an `AdsbDatabase` async trait with 13 methods, enabling backend swapping:
 - **`SqliteDb`** — stateless wrapper, opens fresh connections per request (used by web server)
-- **`TimescaleDb`** — PostgreSQL with hypertables, compression (>7d), retention (90d positions, 365d events), continuous aggregates (30s + 5m). Behind `timescaledb` feature flag. Not currently in use.
+- **`TimescaleDb`** — PostgreSQL with hypertables, compression (positions after 7d, events after 1d), retention (positions 14d, events 7d), continuous aggregates (30s + 5m). Behind `timescaledb` feature flag. **In production on the Lightsail VPS** — SQLite remains default for local/dev runs.
+
+**Retention + compression interaction (learned the hard way on 2026-04-14):** the retention cutoff MUST be greater than the compression delay. If retention drops chunks before compression kicks in, the table holds only uncompressed data and grows unbounded. Events are retained 7 days and compressed at 1 day — leaving a 6-day window for compression to reduce disk usage before retention drops the chunk.
 
 ---
 
@@ -503,7 +505,7 @@ The Rust version is now the primary codebase. It's faster, compiles to a single 
 
 These features are fully coded but not currently in use:
 
-- **TimescaleDB backend** (`db_pg.rs`) — A complete PostgreSQL backend with hypertables for time-series data, automatic compression (positions older than 7 days), retention policies (90-day positions, 365-day events), and continuous aggregates for 30-second and 5-minute rollups. Behind a `timescaledb` feature flag. The system currently uses SQLite, which handles the current data volume fine. TimescaleDB is there for when the database grows beyond what SQLite handles gracefully.
+- **Native RTL-SDR USB access** is still deferred (see below). The TimescaleDB backend, by contrast, is now **in production** on the Lightsail VPS — hypertables for time-series data, automatic compression (positions after 7 days, events after 1 day), retention policies (14-day positions, 7-day events), and continuous aggregates for 30-second and 5-minute rollups. Behind a `timescaledb` feature flag on the binary side. Local/dev still uses SQLite.
 
 - **Native RTL-SDR USB access** (`LiveCapture` in capture.rs) — Direct dongle access via the `rtlsdr_mt` crate, bypassing `rtl_adsb` entirely. Requires `librtlsdr` on the system and the `native-sdr` feature flag. Built and tested, but the subprocess approach works reliably and is easier to set up.
 

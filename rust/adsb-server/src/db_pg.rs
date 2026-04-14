@@ -146,7 +146,11 @@ ALTER TABLE events SET (
     timescaledb.compress_segmentby = 'icao',
     timescaledb.compress_orderby = 'time DESC'
 );
-SELECT add_compression_policy('events', INTERVAL '3 days', if_not_exists => TRUE);
+-- NOTE: compression must fire well before retention, or chunks are dropped
+-- before compression runs, and the table holds only uncompressed data.
+-- Discovered 2026-04-14 when a 30-day compression / 7-day retention pair
+-- grew the events hypertable to 29 GB of uncompressed data.
+SELECT add_compression_policy('events', INTERVAL '1 day', if_not_exists => TRUE);
 SELECT add_retention_policy('events', INTERVAL '7 days', if_not_exists => TRUE);
 
 -- Vessel positions: compress after 7 days, retain for 90 days
