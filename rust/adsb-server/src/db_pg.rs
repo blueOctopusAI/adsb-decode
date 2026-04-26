@@ -1077,7 +1077,12 @@ fn row_to_vessel_position(r: &sqlx::postgres::PgRow) -> VesselPositionRow {
 // Used by the ais-ingester binary that consumes AISStream.io WebSocket feed.
 // SqliteDb has equivalent sync writers in db.rs; these are the async
 // counterparts for production (TimescaleDB/PostgreSQL).
-
+//
+// dead_code is allowed because each binary in this crate gets its own
+// compilation: the `adsb` binary doesn't use vessel writers (only the
+// `ais-ingester` binary does). too_many_arguments matches the existing
+// add_position pattern.
+#[allow(dead_code, clippy::too_many_arguments)]
 impl TimescaleDb {
     /// Insert a `vessel_positions` row for one AIS PositionReport.
     pub async fn add_vessel_position(

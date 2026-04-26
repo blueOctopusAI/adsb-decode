@@ -1,3 +1,9 @@
+// Only the ais-ingester binary consumes this module. The default `adsb`
+// binary doesn't reference it, so clippy flags every helper as dead code.
+// Suppress the lint here rather than adding `#[allow(dead_code)]` to
+// every item.
+#![allow(dead_code)]
+
 //! AIS (Automatic Identification System) message parsing for the
 //! AISStream.io WebSocket feed.
 //!

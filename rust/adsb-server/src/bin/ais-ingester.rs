@@ -1,3 +1,15 @@
+// Each binary in a Cargo crate gets its own compilation. The `adsb`
+// binary doesn't use most of db.rs / db_pg.rs / ais.rs, so when those
+// modules are pulled into THIS binary's compilation, items the ingester
+// doesn't call show up as "never used." Suppress the dead-code lint at
+// the binary level rather than annotating every helper.
+//
+// `clippy::too_many_arguments` is allowed because add_position and the
+// new add_vessel_position both take >7 args; matches the existing
+// pattern in db_pg.rs.
+#![allow(dead_code)]
+#![allow(clippy::too_many_arguments)]
+
 //! AIS ingester — connects to AISStream.io's WebSocket feed and writes
 //! decoded vessel positions/static data into the same TimescaleDB
 //! instance the ADS-B server uses.
@@ -73,11 +85,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = if dry_run {
         String::new()
     } else {
-        env::var("DATABASE_URL")
-            .map_err(|_| "DATABASE_URL not set (postgres://user:pass@host/db); set AIS_DRY_RUN=1 to skip the DB")?
+        env::var("DATABASE_URL").map_err(|_| {
+            "DATABASE_URL not set (postgres://user:pass@host/db); set AIS_DRY_RUN=1 to skip the DB"
+        })?
     };
-    let bbox_json = env::var("AIS_BOUNDING_BOX")
-        .unwrap_or_else(|_| "[[[-90,-180],[90,180]]]".to_string());
+    let bbox_json =
+        env::var("AIS_BOUNDING_BOX").unwrap_or_else(|_| "[[[-90,-180],[90,180]]]".to_string());
     let reconnect_ms: u64 = env::var("AIS_RECONNECT_MS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -90,7 +103,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bounding_boxes: serde_json::Value = serde_json::from_str(&bbox_json)
         .map_err(|e| format!("AIS_BOUNDING_BOX is not valid JSON: {e}"))?;
 
-    eprintln!("ais-ingester starting{}", if dry_run { " (dry-run, no DB)" } else { "" });
+    eprintln!(
+        "ais-ingester starting{}",
+        if dry_run { " (dry-run, no DB)" } else { "" }
+    );
     eprintln!("  bounding box: {}", bbox_json);
     eprintln!("  reconnect: {} ms", reconnect_ms);
     eprintln!("  log interval: {} s", log_interval_s);
@@ -188,10 +204,14 @@ async fn run_ingester(
         if dry_run && parsed.is_none() {
             // Diagnose why we couldn't parse — peek at the top-level keys.
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                let keys: Vec<&str> = v.as_object()
+                let keys: Vec<&str> = v
+                    .as_object()
                     .map(|m| m.keys().map(|s| s.as_str()).collect())
                     .unwrap_or_default();
-                let mt = v.get("MessageType").and_then(|x| x.as_str()).unwrap_or("<missing>");
+                let mt = v
+                    .get("MessageType")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("<missing>");
                 eprintln!("PARSE_FAIL keys={:?} MessageType={}", keys, mt);
             } else {
                 eprintln!("PARSE_FAIL: not valid JSON");
