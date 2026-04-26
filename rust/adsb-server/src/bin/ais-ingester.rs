@@ -10,7 +10,12 @@
 //! Configuration (all env vars):
 //!
 //!   AISSTREAM_API_KEY   (required) — get one at https://aisstream.io/apikeys
-//!   DATABASE_URL        (required) — postgres://user:pass@host/db
+//!   DATABASE_URL        (required UNLESS AIS_DRY_RUN=1) —
+//!                                    postgres://user:pass@host/db
+//!   AIS_DRY_RUN         (optional) — `1` skips the DB entirely and prints
+//!                                    parsed messages to stdout instead.
+//!                                    Useful for verifying the WebSocket +
+//!                                    parser end-to-end without a Postgres.
 //!   AIS_BOUNDING_BOX    (optional) — JSON of `[[[lat_min, lon_min],
 //!                                    [lat_max, lon_max]]]`. Default:
 //!                                    global `[[[-90,-180],[90,180]]]`
@@ -64,8 +69,13 @@ mod db;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = env::var("AISSTREAM_API_KEY")
         .map_err(|_| "AISSTREAM_API_KEY not set; get one at https://aisstream.io/apikeys")?;
-    let database_url = env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL not set (postgres://user:pass@host/db)")?;
+    let dry_run = matches!(env::var("AIS_DRY_RUN").as_deref(), Ok("1") | Ok("true"));
+    let database_url = if dry_run {
+        String::new()
+    } else {
+        env::var("DATABASE_URL")
+            .map_err(|_| "DATABASE_URL not set (postgres://user:pass@host/db); set AIS_DRY_RUN=1 to skip the DB")?
+    };
     let bbox_json = env::var("AIS_BOUNDING_BOX")
         .unwrap_or_else(|_| "[[[-90,-180],[90,180]]]".to_string());
     let reconnect_ms: u64 = env::var("AIS_RECONNECT_MS")
@@ -80,13 +90,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bounding_boxes: serde_json::Value = serde_json::from_str(&bbox_json)
         .map_err(|e| format!("AIS_BOUNDING_BOX is not valid JSON: {e}"))?;
 
-    eprintln!("ais-ingester starting");
+    eprintln!("ais-ingester starting{}", if dry_run { " (dry-run, no DB)" } else { "" });
     eprintln!("  bounding box: {}", bbox_json);
     eprintln!("  reconnect: {} ms", reconnect_ms);
     eprintln!("  log interval: {} s", log_interval_s);
 
-    let db = Arc::new(db_pg::TimescaleDb::connect(&database_url).await?);
-    eprintln!("  connected to database");
+    let db: Option<Arc<db_pg::TimescaleDb>> = if dry_run {
+        None
+    } else {
+        let connected = db_pg::TimescaleDb::connect(&database_url).await?;
+        eprintln!("  connected to database");
+        Some(Arc::new(connected))
+    };
 
     let positions_count = Arc::new(AtomicU64::new(0));
     let static_count = Arc::new(AtomicU64::new(0));
@@ -109,6 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             positions_count.clone(),
             static_count.clone(),
             dropped_count.clone(),
+            dry_run,
         )
         .await
         {
@@ -123,10 +139,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_ingester(
     api_key: &str,
     bounding_boxes: &serde_json::Value,
-    db: Arc<db_pg::TimescaleDb>,
+    db: Option<Arc<db_pg::TimescaleDb>>,
     positions_count: Arc<AtomicU64>,
     static_count: Arc<AtomicU64>,
     dropped_count: Arc<AtomicU64>,
+    dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let url = "wss://stream.aisstream.io/v0/stream";
     let (mut socket, _) = tokio_tungstenite::connect_async(url).await?;
@@ -163,45 +180,61 @@ async fn run_ingester(
         let parsed = ais::parse_message(&text);
         match parsed {
             Some(ais::AisParsed::Position(p)) => {
-                let now = epoch_now();
-                let res = db
-                    .add_vessel_position(
-                        &p.mmsi,
-                        p.lat,
-                        p.lon,
-                        p.speed_kts,
-                        p.course_deg,
-                        p.heading_deg,
-                        now,
-                    )
-                    .await;
-                if res.is_ok() {
+                if dry_run {
+                    println!(
+                        "POS  mmsi={} lat={:.5} lon={:.5} sog={:?} cog={:?} hdg={:?} name={:?}",
+                        p.mmsi, p.lat, p.lon, p.speed_kts, p.course_deg, p.heading_deg, p.ship_name
+                    );
                     positions_count.fetch_add(1, Ordering::Relaxed);
-                    // If a ship name came through with the position, opportunistically
-                    // upsert it so the vessels table fills in even before we see a
-                    // ShipStaticData broadcast (which is rarer).
-                    if let Some(name) = p.ship_name.as_deref() {
-                        let _ = db.upsert_vessel(&p.mmsi, Some(name), None, None, now).await;
+                } else if let Some(db) = &db {
+                    let now = epoch_now();
+                    let res = db
+                        .add_vessel_position(
+                            &p.mmsi,
+                            p.lat,
+                            p.lon,
+                            p.speed_kts,
+                            p.course_deg,
+                            p.heading_deg,
+                            now,
+                        )
+                        .await;
+                    if res.is_ok() {
+                        positions_count.fetch_add(1, Ordering::Relaxed);
+                        // If a ship name came through with the position, opportunistically
+                        // upsert it so the vessels table fills in even before we see a
+                        // ShipStaticData broadcast (which is rarer).
+                        if let Some(name) = p.ship_name.as_deref() {
+                            let _ = db.upsert_vessel(&p.mmsi, Some(name), None, None, now).await;
+                        }
+                    } else {
+                        dropped_count.fetch_add(1, Ordering::Relaxed);
                     }
-                } else {
-                    dropped_count.fetch_add(1, Ordering::Relaxed);
                 }
             }
             Some(ais::AisParsed::Static(s)) => {
-                let now = epoch_now();
-                let res = db
-                    .upsert_vessel(
-                        &s.mmsi,
-                        s.name.as_deref(),
-                        s.vessel_type.as_deref(),
-                        s.flag.as_deref(),
-                        now,
-                    )
-                    .await;
-                if res.is_ok() {
+                if dry_run {
+                    println!(
+                        "STAT mmsi={} name={:?} type={:?}",
+                        s.mmsi, s.name, s.vessel_type
+                    );
                     static_count.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    dropped_count.fetch_add(1, Ordering::Relaxed);
+                } else if let Some(db) = &db {
+                    let now = epoch_now();
+                    let res = db
+                        .upsert_vessel(
+                            &s.mmsi,
+                            s.name.as_deref(),
+                            s.vessel_type.as_deref(),
+                            s.flag.as_deref(),
+                            now,
+                        )
+                        .await;
+                    if res.is_ok() {
+                        static_count.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        dropped_count.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             None => {

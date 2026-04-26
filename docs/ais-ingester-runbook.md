@@ -22,13 +22,42 @@ The free tier has no documented rate limit beyond:
 
 ## Step 2 — Run locally on Mac
 
+### Step 2a — Dry-run first (no database needed)
+
+This is the fastest way to verify the WebSocket + parsing actually works on real ship data. No Postgres, no schema setup. Just the API key:
+
 ```bash
 cd ~/Developer/projects/adsb-decode/rust
 
 # Build (one-time, ~20s)
 cargo build --bin ais-ingester --features timescaledb
 
-# Run it pointed at a local Postgres (or the production one if you want)
+# Dry-run: skips DB, prints parsed messages to stdout
+AISSTREAM_API_KEY="<your key>" \
+AIS_DRY_RUN=1 \
+AIS_BOUNDING_BOX="[[[24,-82],[45,-65]]]" \
+./target/debug/ais-ingester
+```
+
+What you'll see within ~10 seconds:
+
+```
+ais-ingester starting (dry-run, no DB)
+  bounding box: [[[24,-82],[45,-65]]]
+  ...
+subscribed to AISStream
+POS  mmsi=367123456 lat=33.45123 lon=-79.12345 sog=Some(8.4) cog=Some(180.0) hdg=Some(178.0) name=Some("ATLANTIC PIONEER")
+POS  mmsi=338901234 lat=32.78912 lon=-79.93456 sog=Some(0.0) cog=None hdg=None name=None
+STAT mmsi=367123456 name=Some("ATLANTIC PIONEER") type=Some("Cargo")
+...
+[60s] pos+1234 stat+45 | total pos=1234 stat=45 dropped=0 reconnects=0
+```
+
+If `pos+N` is positive after one minute, the parser + WebSocket are healthy. Press Ctrl-C when satisfied; the next step writes to a real DB.
+
+### Step 2b — Real run with database
+
+```bash
 AISSTREAM_API_KEY="<your key>" \
 DATABASE_URL="postgresql://localhost/adsb" \
 AIS_BOUNDING_BOX="[[[24,-82],[45,-65]]]" \
