@@ -60,7 +60,10 @@ pub enum AisParsed {
 pub fn parse_message(raw: &str) -> Option<AisParsed> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
     let msg_type = v.get("MessageType")?.as_str()?;
-    let metadata = v.get("Metadata")?;
+    // AISStream's wire format uses `MetaData` (capital D) even though their
+    // docs say `Metadata`. Accept both so we're robust if they ever align
+    // the production format with the docs.
+    let metadata = v.get("MetaData").or_else(|| v.get("Metadata"))?;
     let message = v.get("Message")?;
 
     let mmsi = mmsi_from_metadata(metadata)?;
@@ -190,7 +193,13 @@ fn ship_name_from_static(inner: &serde_json::Value) -> Option<String> {
 }
 
 fn ship_type_from_static(inner: &serde_json::Value) -> Option<String> {
-    let code = inner.get("ShipType").and_then(|v| v.as_u64())?;
+    // AISStream's wire format uses `Type` for the ship-type code,
+    // even though their published example calls it `ShipType`.
+    // Accept both for robustness.
+    let code = inner
+        .get("Type")
+        .or_else(|| inner.get("ShipType"))
+        .and_then(|v| v.as_u64())?;
     Some(ship_type_label(code as u32).to_string())
 }
 
@@ -426,6 +435,45 @@ mod tests {
             assert_eq!(p.ship_name.as_deref(), Some("TEST"));
         } else {
             panic!("expected Position");
+        }
+    }
+
+    #[test]
+    fn parse_accepts_metadata_with_capital_d() {
+        // Production AISStream wire format uses "MetaData" with capital D,
+        // even though their docs say "Metadata". Regression guard against
+        // 2026-04-26 silent-rejection bug.
+        let raw = r#"{
+            "Message": {"PositionReport": {"Latitude": 33.0, "Longitude": -80.0, "Sog": 5.0, "Cog": 90.0, "TrueHeading": 90}},
+            "MessageType": "PositionReport",
+            "MetaData": {"MMSI": 367123456, "ShipName": "TEST", "latitude": 33.0, "longitude": -80.0, "time_utc": ""}
+        }"#;
+        let parsed = parse_message(raw).unwrap();
+        if let AisParsed::Position(p) = parsed {
+            assert_eq!(p.mmsi, "367123456");
+            assert_eq!(p.ship_name.as_deref(), Some("TEST"));
+        } else {
+            panic!("expected Position");
+        }
+    }
+
+    #[test]
+    fn parse_ship_static_data_with_type_field() {
+        // AISStream sends "Type" (not "ShipType" as docs claim) in the
+        // ShipStaticData inner object. Regression guard against
+        // 2026-04-26 type=None bug.
+        let raw = r#"{
+            "Message": {"ShipStaticData": {"Name": "MORLAU", "Type": 99}},
+            "MessageType": "ShipStaticData",
+            "MetaData": {"MMSI": 211536860, "latitude": 0, "longitude": 0, "time_utc": ""}
+        }"#;
+        let parsed = parse_message(raw).unwrap();
+        if let AisParsed::Static(s) = parsed {
+            assert_eq!(s.mmsi, "211536860");
+            assert_eq!(s.name.as_deref(), Some("MORLAU"));
+            assert_eq!(s.vessel_type.as_deref(), Some("Other"));
+        } else {
+            panic!("expected Static");
         }
     }
 

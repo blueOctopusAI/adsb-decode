@@ -177,7 +177,26 @@ async fn run_ingester(
             Message::Pong(_) | Message::Frame(_) => continue,
         };
 
+        if dry_run {
+            // In dry-run, print every raw frame so we can see what AISStream
+            // is actually sending (or not). Truncate long frames for readability.
+            let preview: String = text.chars().take(700).collect();
+            eprintln!("RAW {}", preview);
+        }
+
         let parsed = ais::parse_message(&text);
+        if dry_run && parsed.is_none() {
+            // Diagnose why we couldn't parse — peek at the top-level keys.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                let keys: Vec<&str> = v.as_object()
+                    .map(|m| m.keys().map(|s| s.as_str()).collect())
+                    .unwrap_or_default();
+                let mt = v.get("MessageType").and_then(|x| x.as_str()).unwrap_or("<missing>");
+                eprintln!("PARSE_FAIL keys={:?} MessageType={}", keys, mt);
+            } else {
+                eprintln!("PARSE_FAIL: not valid JSON");
+            }
+        }
         match parsed {
             Some(ais::AisParsed::Position(p)) => {
                 if dry_run {
