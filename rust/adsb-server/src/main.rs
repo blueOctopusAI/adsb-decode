@@ -21,6 +21,7 @@ use adsb_core::types::*;
 /// Cache for hexdb.io lookups: ICAO hex string -> enrichment summary (None = lookup attempted but failed).
 type HexDbCache = Arc<Mutex<HashMap<String, Option<String>>>>;
 
+mod ais;
 mod db;
 #[cfg(feature = "timescaledb")]
 mod db_pg;

@@ -1071,3 +1071,71 @@ fn row_to_vessel_position(r: &sqlx::postgres::PgRow) -> VesselPositionRow {
         timestamp: row_f64(r, "timestamp"),
     }
 }
+
+// ----- Vessel writers (Daniel-requested maritime feed) ----------------------
+// Inherent (non-trait) methods — the AdsbDatabase trait is ADS-B-only.
+// Used by the ais-ingester binary that consumes AISStream.io WebSocket feed.
+// SqliteDb has equivalent sync writers in db.rs; these are the async
+// counterparts for production (TimescaleDB/PostgreSQL).
+
+impl TimescaleDb {
+    /// Insert a `vessel_positions` row for one AIS PositionReport.
+    pub async fn add_vessel_position(
+        &self,
+        mmsi: &str,
+        lat: f64,
+        lon: f64,
+        speed_kts: Option<f64>,
+        course_deg: Option<f64>,
+        heading_deg: Option<f64>,
+        timestamp: f64,
+    ) -> Result<(), sqlx::Error> {
+        let ts = epoch_to_pg(timestamp);
+        sqlx::query(
+            "INSERT INTO vessel_positions
+                 (time, mmsi, lat, lon, speed_kts, course_deg, heading_deg)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(ts)
+        .bind(mmsi)
+        .bind(lat)
+        .bind(lon)
+        .bind(speed_kts)
+        .bind(course_deg)
+        .bind(heading_deg)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Upsert a `vessels` row from one AIS ShipStaticData (or position-only
+    /// MMSI heard for the first time). Idempotent — preserves existing
+    /// metadata when the new row has `None` for a field.
+    pub async fn upsert_vessel(
+        &self,
+        mmsi: &str,
+        name: Option<&str>,
+        vessel_type: Option<&str>,
+        flag: Option<&str>,
+        timestamp: f64,
+    ) -> Result<(), sqlx::Error> {
+        let ts = epoch_to_pg(timestamp);
+        sqlx::query(
+            "INSERT INTO vessels (mmsi, name, vessel_type, flag, first_seen, last_seen)
+             VALUES ($1, $2, $3, $4, $5, $5)
+             ON CONFLICT (mmsi) DO UPDATE SET
+                 name = COALESCE(EXCLUDED.name, vessels.name),
+                 vessel_type = COALESCE(EXCLUDED.vessel_type, vessels.vessel_type),
+                 flag = COALESCE(EXCLUDED.flag, vessels.flag),
+                 last_seen = EXCLUDED.last_seen",
+        )
+        .bind(mmsi)
+        .bind(name)
+        .bind(vessel_type)
+        .bind(flag)
+        .bind(ts)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
