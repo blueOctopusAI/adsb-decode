@@ -1,0 +1,7 @@
+[Unit]
+Description=adsb-decode API healthcheck + auto-restart
+After=adsb-decode.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/adsb-decode-healthcheck.sh

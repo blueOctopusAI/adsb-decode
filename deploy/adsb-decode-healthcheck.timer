@@ -1,0 +1,10 @@
+[Unit]
+Description=Run adsb-decode healthcheck every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=adsb-decode-healthcheck.service
+
+[Install]
+WantedBy=timers.target
