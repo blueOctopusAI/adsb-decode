@@ -99,7 +99,7 @@ You should see vessel positions accumulating and a handful of ship metadata rows
 The endpoints are already wired up in `adsb-server`:
 
 ```bash
-curl -s "http://localhost:8000/api/vessel_positions_latest?limit=20" | jq '.[] | {mmsi, lat, lon}' | head -20
+curl -s "http://localhost:8000/api/vessel-positions/latest?limit=20" | jq '.[] | {mmsi, lat, lon}' | head -20
 curl -s "http://localhost:8000/api/vessels?limit=20" | jq '.[] | {mmsi, name, vessel_type}'
 ```
 
@@ -191,10 +191,10 @@ Memory footprint is small (single WebSocket, no large buffers) — comfortable o
 
 ## Step 6 — Add the dashboard toggle (separate, after ingester is proven)
 
-The `/api/vessel_positions_latest` endpoint is already there. The remaining UI work is:
+The `/api/vessel-positions/latest` endpoint is already there. The remaining UI work is:
 
 1. Add a "Show vessels" toggle to the map header (mirror the existing layer toggles).
-2. When toggled on, fetch `/api/vessel_positions_latest?limit=500` every 10 seconds.
+2. When toggled on, fetch `/api/vessel-positions/latest?limit=500` every 10 seconds.
 3. Render each position as a ship-shaped marker on the existing Leaflet map (rotate the marker by `course_deg` if available).
 4. On marker click, show MMSI + ship name + type + speed/course in a popup, similar to the existing aircraft popup.
 
@@ -218,5 +218,5 @@ The `/api/vessel_positions_latest` endpoint is already there. The remaining UI w
 - `rust/adsb-server/src/ais.rs` — message parser (11 tests)
 - `rust/adsb-server/src/bin/ais-ingester.rs` — the binary
 - `rust/adsb-server/src/db_pg.rs` — `add_vessel_position` + `upsert_vessel`
-- `rust/adsb-server/src/web/routes.rs` — `/api/vessels`, `/api/vessel_positions*` (already in place)
+- `rust/adsb-server/src/web/routes.rs` — `/api/vessels`, `/api/vessel-positions`, `/api/vessel-positions/latest` (already in place)
 - `rust/adsb-server/src/demo.rs` — the existing fake-vessel generator (still fine for offline testing without an API key)

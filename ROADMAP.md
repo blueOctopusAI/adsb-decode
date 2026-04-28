@@ -88,8 +88,8 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 - Found correlator API contract mismatch via real round-trip; source + tests fixed; new `positions_in_window()` method added.
 - Schema discipline doc shipped.
 - Auto-recovery healthcheck unit shipped (deployed on the new VPS).
-- **AIS ingester shipped to production.** Built on VPS, systemd unit + EnvironmentFile pattern, 4 ships/sec sustained ingest, hundreds of unique vessels in the first minutes. Maritime feed is now live alongside aircraft. `/api/vessels` returning real ship data (e.g. *FIRST DRAFT V*, *FOUNTAINHEAD*).
-- **Bug found:** `/api/vessel_positions_latest` returns 200 with empty body even when `vessel_positions` has rows. `/api/vessels` works fine. Logged for follow-up — not blocking, since vessel + position data is queryable through other paths.
+- **AIS ingester shipped to production.** Built on VPS, systemd unit + EnvironmentFile pattern, 4 ships/sec sustained ingest, hundreds of unique vessels in the first minutes. Maritime feed is now live alongside aircraft. `/api/vessels` returning real ship data (e.g. *FIRST DRAFT V*, *FOUNTAINHEAD*); `/api/vessel-positions` and `/api/vessel-positions/latest` (DISTINCT-ON-mmsi for one position per ship) both healthy.
+- **Doc correction:** runbook references to `/api/vessel_positions_latest` (underscore form) corrected to actual route paths `/api/vessel-positions/latest` (hyphen form). Code was always right; only the docs were stale.
 
 ### 2026-04-26
 - AIS ingester development complete: parser fixes (two AISStream doc-vs-wire bugs), live dry-run successful with hundreds of real ships.
