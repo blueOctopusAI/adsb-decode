@@ -56,8 +56,8 @@ Service quality for an API that downstream consumers (and live demos) depend on.
 | ID | Item | Status |
 |---|---|---|
 | T2.1 | **Auto-recovery healthcheck.** `adsb-decode-healthcheck.timer` modeled on the BluePages pattern (60 s interval, curl `/api/stats`, restart on non-200). Until installed, manual recovery is needed if `adsb-decode.service` wedges. Source in [`deploy/adsb-decode-healthcheck.{sh,service,timer}`](deploy/). | Shipped 2026-04-28 |
-| T2.2 | **Snapshot cadence.** Lightsail "automatic snapshots" enabled with weekly retention. The Apr 25 → Apr 28 gap during the recent 4 GB restore was tolerable (data ages out in 14 days), but routine snapshots make future restores deterministic. | Pending console action |
-| T2.3 | **Public-vs-gated dashboard decision.** The dashboard at `adsb.blueoctopustechnology.com` is fully public. For some downstream use cases, gating may matter; for others (live evaluator demos), public-by-default is the asset. Decide and document. | Pending decision |
+| T2.2 | **Snapshot cadence.** Manual snapshot taken 2026-04-28 after the cutover (known-good baseline). Automatic-snapshots feature deferred — current traffic doesn't warrant the cadence overhead. Revisit if downstream consumers (correlator, evaluator demos) start depending on uptime SLOs. | Manual baseline 2026-04-28; auto deferred |
+| T2.3 | **Public-vs-gated dashboard decision.** Deferred 2026-04-28. Current traffic is effectively zero, so gating doesn't matter at this stage. Revisit when (a) someone starts citing the dashboard in proposal materials, (b) traffic appears that we'd rather not have, or (c) ITAR conversation reaches a decision point. | Deferred — no current pressure |
 
 ### Tier 3 — Defer
 
