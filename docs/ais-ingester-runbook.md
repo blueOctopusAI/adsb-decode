@@ -107,36 +107,87 @@ If those return data, the production-side wiring works.
 
 ## Step 5 — Production deploy (when ready)
 
-The ingester is a single Rust binary. Deploy approach:
+The ingester is a single Rust binary. Deploy approach used on the live Lightsail VPS as of 2026-04-28:
 
-1. Copy `target/release/ais-ingester` to the VPS (cross-compile with `cargo build --release --target x86_64-unknown-linux-gnu --bin ais-ingester --features timescaledb` from a Linux box, or build on the VPS itself).
-2. Drop a systemd unit at `/etc/systemd/system/ais-ingester.service`:
+### 5a — Build the binary
 
-```ini
-[Unit]
-Description=AIS Ingester (AISStream.io → TimescaleDB)
-After=network-online.target postgresql.service
-Wants=network-online.target
+Easiest: build on the VPS itself (one-time Rust toolchain install, ~6-10 min build on a 4 GB tier):
 
-[Service]
-Type=simple
-User=adsb
-ExecStart=/opt/adsb-decode/ais-ingester
-Restart=always
-RestartSec=10
-Environment="AISSTREAM_API_KEY=YOUR_KEY"
-Environment="DATABASE_URL=postgresql://adsb:PASSWORD@localhost/adsb"
-Environment="AIS_BOUNDING_BOX=[[[24,-82],[45,-65]]]"
-Environment="AIS_LOG_INTERVAL_S=300"
+```bash
+# On the VPS
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+source $HOME/.cargo/env
 
-[Install]
-WantedBy=multi-user.target
+git clone --depth 1 https://github.com/blueOctopusAI/adsb-decode.git ~/adsb-decode-src
+cd ~/adsb-decode-src/rust
+cargo build --release -p adsb-server --bin ais-ingester --features adsb-server/timescaledb
 ```
 
-3. `sudo systemctl daemon-reload && sudo systemctl enable --now ais-ingester`
-4. Watch the log: `sudo journalctl -u ais-ingester -f`
+Alternative: cross-compile from Mac via `docker run --platform linux/amd64 rust:1.90 ...` — works if Docker Desktop is running. Native cross from macOS without Docker fails because the GCC linker for `x86_64-unknown-linux-gnu` isn't installed.
 
-Memory footprint is small (single connection, no large buffers) — should fit comfortably in our existing Lightsail headroom.
+### 5b — Install the binary
+
+```bash
+sudo install -m 755 -o adsb -g adsb \
+  ~/adsb-decode-src/rust/target/release/ais-ingester \
+  /opt/adsb-decode/ais-ingester
+```
+
+### 5c — Set up secrets (separate file, mode 600)
+
+The systemd unit pulls config from two `EnvironmentFile=` paths so the AISStream API key isn't mixed with the shared `adsb-decode` config (and isn't visible in the world-readable unit file).
+
+`DATABASE_URL` already lives in `/opt/adsb-decode/.env`. The new file is `/opt/adsb-decode/ais.env`:
+
+```bash
+# On the VPS, paste this with your real key in place of YOUR_KEY_HERE
+sudo tee /opt/adsb-decode/ais.env >/dev/null <<'EOF'
+AISSTREAM_API_KEY=YOUR_KEY_HERE
+AIS_BOUNDING_BOX=[[[24,-82],[45,-65]]]
+AIS_LOG_INTERVAL_S=300
+EOF
+sudo chown adsb:adsb /opt/adsb-decode/ais.env
+sudo chmod 600 /opt/adsb-decode/ais.env
+```
+
+The single-quoted heredoc (`<<'EOF'`) keeps the bracket characters in the bounding box literal.
+
+### 5d — Install + start the systemd unit
+
+The unit lives in `deploy/ais-ingester.service` in this repo:
+
+```bash
+sudo install -m 644 deploy/ais-ingester.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ais-ingester.service
+```
+
+### 5e — Verify
+
+```bash
+sudo journalctl -u ais-ingester -f
+```
+
+Expected output within ~10 seconds:
+
+```
+ais-ingester starting
+  bounding box: [[[24,-82],[45,-65]]]
+  reconnect: 5000 ms
+  log interval: 300 s
+  connected to database
+subscribed to AISStream
+```
+
+After the first log interval (default 300s), you'll see `[300s] pos+N stat+N | total pos=N stat=N dropped=0 reconnects=0`. On the US East Coast bounding box, expect ~4 ships/sec ingest, settling toward a few hundred unique vessels.
+
+Verify via the public API:
+
+```bash
+curl -s "https://adsb.blueoctopustechnology.com/api/vessels?limit=5" | jq '.[] | {mmsi, name, vessel_type}'
+```
+
+Memory footprint is small (single WebSocket, no large buffers) — comfortable on the 4 GB Lightsail tier alongside the existing services.
 
 ## Step 6 — Add the dashboard toggle (separate, after ingester is proven)
 

@@ -44,7 +44,7 @@ These directly enable use cases not possible today.
 
 | ID | Item | Status |
 |---|---|---|
-| T1.1 | **AIS ingester production deploy.** Ground-side maritime feed (AISStream WebSocket) writing into the same TimescaleDB. Adds ship positions to the existing aircraft positions in one query plane. Runbook: [`docs/ais-ingester-runbook.md`](docs/ais-ingester-runbook.md). | Ready, waiting on cutover soak |
+| T1.1 | **AIS ingester production deploy.** Ground-side maritime feed (AISStream WebSocket) writing into the same TimescaleDB. Adds ship positions to the existing aircraft positions in one query plane. Runbook: [`docs/ais-ingester-runbook.md`](docs/ais-ingester-runbook.md). | Shipped 2026-04-28 |
 | T1.2 | **Correlator API contract fix.** The downstream correlator was written against an assumed `{"positions": [...]}` envelope, but `/api/positions` and `/api/query` return bare arrays. Tests mocked the wrong shape; real round-trip caught it 2026-04-28. | Fix shipped 2026-04-28 |
 | T1.3 | **Time-window query for post-flight correlation.** `/api/positions/all?start=X&end=Y` already supports time bounds — that's the right endpoint for replay correlation, not the live `?minutes=N` lookback. Correlator client method added to use it. | Fix shipped 2026-04-28 |
 | T1.4 | **Cross-repo schema discipline doc.** Documents how `adsb-core` types propagate to consumers and what changes require coordination. [`docs/schema-discipline.md`](docs/schema-discipline.md). | Shipped 2026-04-28 |
@@ -88,6 +88,8 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 - Found correlator API contract mismatch via real round-trip; source + tests fixed; new `positions_in_window()` method added.
 - Schema discipline doc shipped.
 - Auto-recovery healthcheck unit shipped (deployed on the new VPS).
+- **AIS ingester shipped to production.** Built on VPS, systemd unit + EnvironmentFile pattern, 4 ships/sec sustained ingest, hundreds of unique vessels in the first minutes. Maritime feed is now live alongside aircraft. `/api/vessels` returning real ship data (e.g. *FIRST DRAFT V*, *FOUNTAINHEAD*).
+- **Bug found:** `/api/vessel_positions_latest` returns 200 with empty body even when `vessel_positions` has rows. `/api/vessels` works fine. Logged for follow-up — not blocking, since vessel + position data is queryable through other paths.
 
 ### 2026-04-26
 - AIS ingester development complete: parser fixes (two AISStream doc-vs-wire bugs), live dry-run successful with hundreds of real ships.

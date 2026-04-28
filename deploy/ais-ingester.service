@@ -1,0 +1,20 @@
+[Unit]
+Description=AIS Ingester (AISStream.io → TimescaleDB)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adsb
+WorkingDirectory=/opt/adsb-decode
+# DATABASE_URL comes from the shared .env file (same DB as adsb-decode).
+EnvironmentFile=/opt/adsb-decode/.env
+# AISSTREAM_API_KEY + AIS_BOUNDING_BOX + AIS_LOG_INTERVAL_S come from a
+# separate, restricted file so the API key isn't mixed with adsb-decode config.
+EnvironmentFile=/opt/adsb-decode/ais.env
+ExecStart=/opt/adsb-decode/ais-ingester
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
