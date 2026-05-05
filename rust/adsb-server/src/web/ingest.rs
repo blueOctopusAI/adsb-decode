@@ -455,6 +455,26 @@ pub async fn api_register(
         );
     }
 
+    // Validate lat/lon ranges. Bots and broken clients have submitted garbage
+    // (prod has rows with lat=2761703565); accept only finite values inside the
+    // real coordinate envelope.
+    if let Some(lat) = body.lat {
+        if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "lat must be between -90 and 90"})),
+            );
+        }
+    }
+    if let Some(lon) = body.lon {
+        if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "lon must be between -180 and 180"})),
+            );
+        }
+    }
+
     // Rate limit by IP — use X-Forwarded-For when behind reverse proxy,
     // but also enforce a global cap so header spoofing can't bypass limits.
     let ip = headers
@@ -906,6 +926,92 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_register_rejects_huge_garbage_coords() {
+        // Mimics the actual junk that landed in prod: lat=2761703565, lon=9884768428.
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"junk-rx","lat":2761703565.0,"lon":9884768428.0}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_register_rejects_lat_just_over() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"oob","lat":90.0001,"lon":0.0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_register_rejects_lon_just_under() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"oob2","lat":0.0,"lon":-180.5}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_register_accepts_boundary_coords() {
+        // 90/-180 are the inclusive boundary — north pole, antimeridian.
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"boundary-rx","lat":90.0,"lon":-180.0}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
 
     // -----------------------------------------------------------------------

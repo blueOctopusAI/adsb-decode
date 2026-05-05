@@ -783,6 +783,16 @@ impl Database {
     // -----------------------------------------------------------------------
 
     pub fn stats(&self) -> DbStats {
+        // MAX(timestamp) returns NULL when the table is empty — explicitly request
+        // Option<f64> so we surface that as None instead of swallowing it as 0.
+        let latest_ts: Option<f64> = self
+            .conn
+            .query_row("SELECT MAX(timestamp) FROM positions", [], |r| {
+                r.get::<_, Option<f64>>(0)
+            })
+            .unwrap_or(None);
+        let feed_age_seconds = latest_ts.map(|ts| (now() - ts).max(0.0));
+
         DbStats {
             aircraft: self.count_aircraft(),
             positions: self.count_positions(),
@@ -795,6 +805,7 @@ impl Database {
                 .conn
                 .query_row("SELECT COUNT(*) FROM captures", [], |r| r.get(0))
                 .unwrap_or(0),
+            feed_age_seconds,
         }
     }
 }
@@ -840,6 +851,10 @@ pub struct DbStats {
     pub events: i64,
     pub receivers: i64,
     pub captures: i64,
+    /// Seconds since the most recent position landed. None when positions table is empty.
+    /// Lets external monitors detect "API up but no data flowing" — the failure class
+    /// that took 27h to surface on May 4 2026 (USB transient on Pi → silent feeder).
+    pub feed_age_seconds: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1810,6 +1825,24 @@ mod tests {
         assert_eq!(stats.aircraft, 1);
         assert_eq!(stats.positions, 1);
         assert_eq!(stats.events, 0);
+        // Position landed at unix=1.0 (1970), so age is ~now seconds — large positive.
+        let age = stats.feed_age_seconds.expect("populated table → Some age");
+        assert!(
+            age > 1.0e9,
+            "expected age in billions of seconds, got {age}"
+        );
+    }
+
+    #[test]
+    fn test_stats_empty_feed_age_is_none() {
+        let db = test_db();
+        let stats = db.stats();
+        assert_eq!(stats.positions, 0);
+        assert!(
+            stats.feed_age_seconds.is_none(),
+            "empty positions table must report None, got {:?}",
+            stats.feed_age_seconds
+        );
     }
 
     #[test]

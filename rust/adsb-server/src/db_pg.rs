@@ -288,12 +288,23 @@ impl AdsbDatabase for TimescaleDb {
             .await
             .unwrap_or(0);
 
+        // MAX(time) returns NULL on empty positions; the EXTRACT therefore yields NULL
+        // and we want that surfaced as None instead of swallowed as 0.
+        let feed_age_seconds: Option<f64> = sqlx::query_scalar::<_, Option<f64>>(
+            "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(time)))::double precision FROM positions",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(None)
+        .map(|s: f64| s.max(0.0));
+
         DbStats {
             aircraft,
             positions,
             events,
             receivers,
             captures,
+            feed_age_seconds,
         }
     }
 

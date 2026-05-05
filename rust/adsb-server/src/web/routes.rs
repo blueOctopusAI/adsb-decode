@@ -880,6 +880,17 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["aircraft"], 1);
         assert_eq!(json["positions"], 1);
+        // feed_age_seconds is the freshness signal that lets external monitors
+        // distinguish "API up but feeder dead" from "everything green."
+        assert!(
+            json.get("feed_age_seconds").is_some(),
+            "/api/stats must expose feed_age_seconds"
+        );
+        assert!(
+            json["feed_age_seconds"].as_f64().is_some(),
+            "feed_age_seconds should be a number when positions exist, got {}",
+            json["feed_age_seconds"]
+        );
     }
 
     #[tokio::test]
@@ -902,7 +913,7 @@ mod tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["aircraft"].as_array().unwrap().len() >= 1);
+        assert!(!json["aircraft"].as_array().unwrap().is_empty());
         assert!(json["total"].as_u64().unwrap() >= 1);
     }
 
@@ -967,7 +978,7 @@ mod tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert!(json.as_array().unwrap().len() >= 1);
+        assert!(!json.as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
