@@ -103,21 +103,35 @@ async fn main() {
     // Spawn sender task
     let sender_handle = tokio::spawn(sender.run(rx));
 
-    // Wait for Ctrl+C
+    // Make the blocking capture-thread join awaitable so we can race it against Ctrl+C.
+    let capture_join = tokio::task::spawn_blocking(move || {
+        let _ = capture_handle.join();
+    });
+
     eprintln!("[main] receiver running, press Ctrl+C to stop");
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to listen for Ctrl+C");
-    eprintln!("\n[main] shutting down...");
 
-    // Drop happens when capture thread's tx is dropped, which triggers sender cleanup
-    // The capture thread will stop when rtl_adsb is killed or stdin closes
-    // Detach capture thread — rtl_adsb child process gets killed when thread drops
-    drop(capture_handle);
+    // If rtl_adsb exits (USB transient, dongle pull, kernel re-enumerate), the parent
+    // process used to keep running idle and systemd's Restart=always couldn't help.
+    // Crash-only: if the capture thread ends before Ctrl+C, exit nonzero so systemd
+    // respawns us and rtl_adsb starts fresh.
+    let capture_died = tokio::select! {
+        _ = tokio::signal::ctrl_c() => false,
+        _ = capture_join => true,
+    };
 
-    // Wait for sender to flush
+    if capture_died {
+        eprintln!("[main] capture ended unexpectedly — exiting for systemd to restart");
+    } else {
+        eprintln!("\n[main] shutting down...");
+    }
+
+    // Wait for sender to flush. On capture death the channel is already closing.
     let _ = tokio::time::timeout(Duration::from_secs(5), sender_handle).await;
 
     eprintln!("[main] {}", stats.summary());
+
+    if capture_died {
+        std::process::exit(1);
+    }
     eprintln!("[main] goodbye");
 }
