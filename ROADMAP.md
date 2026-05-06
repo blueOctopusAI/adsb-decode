@@ -87,6 +87,10 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 
 ## Recent
 
+### 2026-05-05 — v0.2.9 release
+- **v0.2.9 cut + deployed to prod.** Tag `v0.2.9` on commit `a472847` (post-`cargo fmt` on top of `e058341`). CI matrix passed on the second attempt — first attempt failed at fmt check on the new pg_integration / cli_dispatch / consumer_contract_tests blocks. GitHub release published with `adsb-server-x86_64-unknown-linux-gnu-timescaledb.tar.gz`. Binary swapped on Lightsail VPS via `deploy.sh` pattern; old binary backed up to `/opt/adsb-decode/adsb.v0.2.8.bak`. Service active.
+- **Live-prod smoke test confirms enrichment landed.** Sample of 5000 positions from `/api/positions/all`: 99.5% callsign coverage, 93.1% registration, 98.7% country, 0.42% flagged military (e.g. PAT860 = US Army Priority Air Transport, ICAO ADFD7B). The historical-replay JOIN is populating real signal — Python correlator's `is_military`-based class discrimination now works on `/api/positions/all` queries.
+
 ### 2026-05-05
 - **Consumer contract regression tests** landed (`web/routes.rs::consumer_contract_tests`). 10 tests pinning bare-array vs envelope shape and enrichment-populated invariants for every endpoint UtilTech consumers hit. Module doc names each consumer file so a future shape change names what to coordinate against.
 - **`PositionRow` enrichment fix.** Added `callsign`, `registration`, `country`, `is_military` fields populated via JOIN against `aircraft` + latest `sightings`. The historical-replay correlator's military-discrimination logic now actually works — was silently defaulting to false. SQLite uses `ROW_NUMBER` window function, Postgres uses `DISTINCT ON`. Both backends covered.
