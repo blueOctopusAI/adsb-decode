@@ -2141,7 +2141,10 @@ mod consumer_contract_tests {
              Got: {json}"
         );
         let arr = json.as_array().unwrap();
-        assert!(!arr.is_empty(), "/api/positions: contract_state seeded a position");
+        assert!(
+            !arr.is_empty(),
+            "/api/positions: contract_state seeded a position"
+        );
         assert_keys_present(
             &arr[0],
             &[
@@ -2181,7 +2184,10 @@ mod consumer_contract_tests {
             "/api/positions/all must return a bare JSON array. Got: {json}"
         );
         let arr = json.as_array().unwrap();
-        assert!(!arr.is_empty(), "/api/positions/all: contract_state seeded a position");
+        assert!(
+            !arr.is_empty(),
+            "/api/positions/all: contract_state seeded a position"
+        );
         assert_keys_present(
             &arr[0],
             &[
@@ -2250,7 +2256,10 @@ mod consumer_contract_tests {
             "/api/query must return a bare JSON array, not an envelope. Got: {json}"
         );
         let arr = json.as_array().unwrap();
-        assert!(!arr.is_empty(), "/api/query: contract_state seeded a position");
+        assert!(
+            !arr.is_empty(),
+            "/api/query: contract_state seeded a position"
+        );
         assert_keys_present(
             &arr[0],
             &[
@@ -2326,12 +2335,25 @@ mod consumer_contract_tests {
     async fn contract_api_vessels_is_bare_array() {
         let (state, _dir) = contract_state();
         let json = get_json(state, "/api/vessels").await;
-        assert!(json.is_array(), "/api/vessels must return a bare array. Got: {json}");
+        assert!(
+            json.is_array(),
+            "/api/vessels must return a bare array. Got: {json}"
+        );
         let arr = json.as_array().unwrap();
-        assert!(!arr.is_empty(), "/api/vessels: contract_state seeded a vessel");
+        assert!(
+            !arr.is_empty(),
+            "/api/vessels: contract_state seeded a vessel"
+        );
         assert_keys_present(
             &arr[0],
-            &["mmsi", "name", "vessel_type", "flag", "first_seen", "last_seen"],
+            &[
+                "mmsi",
+                "name",
+                "vessel_type",
+                "flag",
+                "first_seen",
+                "last_seen",
+            ],
             "/api/vessels item",
         );
     }
@@ -2352,7 +2374,10 @@ mod consumer_contract_tests {
             "/api/vessel-positions must return a bare array. Got: {json}"
         );
         let arr = json.as_array().unwrap();
-        assert!(!arr.is_empty(), "/api/vessel-positions: contract_state seeded a position");
+        assert!(
+            !arr.is_empty(),
+            "/api/vessel-positions: contract_state seeded a position"
+        );
         assert_keys_present(
             &arr[0],
             &[
@@ -2419,7 +2444,10 @@ mod consumer_contract_tests {
     async fn contract_api_stats_exposes_feed_age_seconds() {
         let (state, _dir) = contract_state();
         let json = get_json(state, "/api/stats").await;
-        assert!(json.is_object(), "/api/stats must be an object. Got: {json}");
+        assert!(
+            json.is_object(),
+            "/api/stats must be an object. Got: {json}"
+        );
         assert_keys_present(
             &json,
             &[
@@ -2501,8 +2529,14 @@ mod pages_tests {
         let (status, ct, body) = fetch(state, "/robots.txt").await;
         assert_eq!(status, StatusCode::OK);
         assert!(ct.contains("text/plain"), "robots.txt content-type {ct:?}");
-        assert!(body.contains("Sitemap:"), "robots.txt missing Sitemap directive");
-        assert!(body.contains("/sitemap.xml"), "robots.txt sitemap path missing");
+        assert!(
+            body.contains("Sitemap:"),
+            "robots.txt missing Sitemap directive"
+        );
+        assert!(
+            body.contains("/sitemap.xml"),
+            "robots.txt sitemap path missing"
+        );
     }
 
     /// /sitemap.xml — XML mime, contains every page handler we have.
@@ -2518,9 +2552,18 @@ mod pages_tests {
         // Every public page handler should be in the sitemap. Update both this
         // list and pages::sitemap_xml() when adding a new top-level page.
         let expected_paths = [
-            "/", "/about", "/how-it-works", "/features", "/setup",
-            "/table", "/events", "/query", "/replay", "/receivers",
-            "/stats", "/register",
+            "/",
+            "/about",
+            "/how-it-works",
+            "/features",
+            "/setup",
+            "/table",
+            "/events",
+            "/query",
+            "/replay",
+            "/receivers",
+            "/stats",
+            "/register",
         ];
         for path in expected_paths {
             let needle = if path == "/" {
@@ -2549,7 +2592,12 @@ mod pages_tests {
         assert!(body.contains("AIS"), "llms.txt should mention AIS");
         // Real API endpoints — keep this list in sync with the routing in mod.rs.
         // If an endpoint is removed and llms.txt isn't updated, agents get 404s.
-        for endpoint in ["/api/positions", "/api/aircraft", "/api/stats", "/api/vessels"] {
+        for endpoint in [
+            "/api/positions",
+            "/api/aircraft",
+            "/api/stats",
+            "/api/vessels",
+        ] {
             assert!(
                 body.contains(endpoint),
                 "llms.txt missing real endpoint {endpoint}. AI agents will call dead URLs."
@@ -2612,9 +2660,14 @@ mod pages_tests {
         );
         // The page ships at least one external aviation database link as the
         // RE-driven value-add. Pin presence of any one well-known service.
-        let has_external = ["adsbexchange", "planespotters", "flightaware", "flightradar"]
-            .iter()
-            .any(|svc| body.to_lowercase().contains(svc));
+        let has_external = [
+            "adsbexchange",
+            "planespotters",
+            "flightaware",
+            "flightradar",
+        ]
+        .iter()
+        .any(|svc| body.to_lowercase().contains(svc));
         assert!(
             has_external,
             "/aircraft/<icao>: lost all external aviation-database links"
@@ -2651,7 +2704,9 @@ mod pages_tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert!(
             json.is_array(),

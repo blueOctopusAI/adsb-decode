@@ -56,9 +56,8 @@ fn parse_policies(source: &str) -> (HashMap<String, IntervalDays>, HashMap<Strin
                     .unwrap_or_else(|| {
                         panic!("could not find INTERVAL in {kind} call: {trimmed:?}")
                     });
-                let parsed = IntervalDays::parse(interval).unwrap_or_else(|| {
-                    panic!("unparseable interval {interval:?} in {kind} call")
-                });
+                let parsed = IntervalDays::parse(interval)
+                    .unwrap_or_else(|| panic!("unparseable interval {interval:?} in {kind} call"));
                 target.insert(table, parsed);
             }
         }
@@ -116,8 +115,7 @@ fn every_hypertable_has_both_policies_or_explicit_exemption() {
     // comment explaining why.
     const EXEMPT: &[&str] = &[];
 
-    let source = std::fs::read_to_string(DB_PG_PATH)
-        .expect("could not read db_pg.rs");
+    let source = std::fs::read_to_string(DB_PG_PATH).expect("could not read db_pg.rs");
 
     // Find every create_hypertable call.
     let hypertables: Vec<String> = source
@@ -158,8 +156,7 @@ fn every_hypertable_has_both_policies_or_explicit_exemption() {
 fn parse_policies_extracts_known_tables() {
     // Smoke test the parser itself against the current schema so a parser regression
     // doesn't silently let the invariant tests pass with empty maps.
-    let source = std::fs::read_to_string(DB_PG_PATH)
-        .expect("could not read db_pg.rs");
+    let source = std::fs::read_to_string(DB_PG_PATH).expect("could not read db_pg.rs");
     let (compression, retention) = parse_policies(&source);
 
     for expected in ["positions", "events", "vessel_positions"] {

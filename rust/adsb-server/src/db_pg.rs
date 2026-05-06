@@ -1260,15 +1260,31 @@ mod pg_integration {
     #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
     async fn pg_position_roundtrip() {
         // Catches column rename / serde drift between PositionRow and the SELECT clause.
-        let Some(db) = connect_or_skip().await else { return };
+        let Some(db) = connect_or_skip().await else {
+            return;
+        };
 
         let ts = FAR_FUTURE_BASE + 100.0;
-        db.upsert_aircraft("DDA001", Some("US"), Some("N99001"), false, ts).await;
-        db.add_position("DDA001", 35.18, -83.33, Some(20000), Some(300.0), Some(90.0), None, None, ts)
+        db.upsert_aircraft("DDA001", Some("US"), Some("N99001"), false, ts)
             .await;
+        db.add_position(
+            "DDA001",
+            35.18,
+            -83.33,
+            Some(20000),
+            Some(300.0),
+            Some(90.0),
+            None,
+            None,
+            ts,
+        )
+        .await;
 
         let positions = db.get_positions("DDA001", 10).await;
-        assert!(!positions.is_empty(), "round-trip insert→query found nothing");
+        assert!(
+            !positions.is_empty(),
+            "round-trip insert→query found nothing"
+        );
         let p = &positions[0];
         assert_eq!(p.icao, "DDA001");
         assert!((p.lat - 35.18).abs() < 1e-6);
@@ -1282,13 +1298,27 @@ mod pg_integration {
         // The 2026-05-05 enrichment fix on the Postgres path uses DISTINCT ON,
         // which has no SQLite equivalent. SQLite-side tests can't catch a
         // typo in this Postgres-specific syntax. This test does.
-        let Some(db) = connect_or_skip().await else { return };
+        let Some(db) = connect_or_skip().await else {
+            return;
+        };
 
         let ts = FAR_FUTURE_BASE + 200.0;
-        db.upsert_aircraft("DDA002", Some("US"), Some("N99002"), true, ts).await;
-        db.upsert_sighting("DDA002", None, Some("PG_TEST"), None, Some(35000), ts).await;
-        db.add_position("DDA002", 36.0, -84.0, Some(35000), Some(450.0), Some(180.0), None, None, ts)
+        db.upsert_aircraft("DDA002", Some("US"), Some("N99002"), true, ts)
             .await;
+        db.upsert_sighting("DDA002", None, Some("PG_TEST"), None, Some(35000), ts)
+            .await;
+        db.add_position(
+            "DDA002",
+            36.0,
+            -84.0,
+            Some(35000),
+            Some(450.0),
+            Some(180.0),
+            None,
+            None,
+            ts,
+        )
+        .await;
 
         let positions = db
             .get_all_positions_ordered(10000, Some(ts - 1.0), Some(ts + 1.0))
@@ -1316,13 +1346,27 @@ mod pg_integration {
     #[tokio::test]
     #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
     async fn pg_query_positions_enrichment_populates() {
-        let Some(db) = connect_or_skip().await else { return };
+        let Some(db) = connect_or_skip().await else {
+            return;
+        };
 
         let ts = FAR_FUTURE_BASE + 300.0;
-        db.upsert_aircraft("DDA003", Some("UK"), Some("G99003"), false, ts).await;
-        db.upsert_sighting("DDA003", None, Some("BAW123"), None, Some(28000), ts).await;
-        db.add_position("DDA003", 37.0, -85.0, Some(28000), Some(420.0), Some(45.0), None, None, ts)
+        db.upsert_aircraft("DDA003", Some("UK"), Some("G99003"), false, ts)
             .await;
+        db.upsert_sighting("DDA003", None, Some("BAW123"), None, Some(28000), ts)
+            .await;
+        db.add_position(
+            "DDA003",
+            37.0,
+            -85.0,
+            Some(28000),
+            Some(420.0),
+            Some(45.0),
+            None,
+            None,
+            ts,
+        )
+        .await;
 
         let positions = db
             .query_positions(Some(20000), Some(40000), Some("DDA003"), false, 100)
@@ -1343,15 +1387,39 @@ mod pg_integration {
     async fn pg_query_positions_military_filter_works() {
         // sqlx parameter index drift on the Postgres side has bitten us before.
         // Pin the military-filter behavior.
-        let Some(db) = connect_or_skip().await else { return };
+        let Some(db) = connect_or_skip().await else {
+            return;
+        };
 
         let ts = FAR_FUTURE_BASE + 400.0;
-        db.upsert_aircraft("DDA004", Some("US"), Some("N99004"), false, ts).await;
-        db.upsert_aircraft("DDA005", Some("US"), Some("N99005"), true, ts).await;
-        db.add_position("DDA004", 38.0, -86.0, Some(30000), Some(400.0), Some(0.0), None, None, ts)
+        db.upsert_aircraft("DDA004", Some("US"), Some("N99004"), false, ts)
             .await;
-        db.add_position("DDA005", 38.1, -86.1, Some(30000), Some(400.0), Some(0.0), None, None, ts)
+        db.upsert_aircraft("DDA005", Some("US"), Some("N99005"), true, ts)
             .await;
+        db.add_position(
+            "DDA004",
+            38.0,
+            -86.0,
+            Some(30000),
+            Some(400.0),
+            Some(0.0),
+            None,
+            None,
+            ts,
+        )
+        .await;
+        db.add_position(
+            "DDA005",
+            38.1,
+            -86.1,
+            Some(30000),
+            Some(400.0),
+            Some(0.0),
+            None,
+            None,
+            ts,
+        )
+        .await;
 
         let mil_only = db.query_positions(None, None, None, true, 1000).await;
         let saw_mil = mil_only.iter().any(|p| p.icao == "DDA005");
@@ -1366,12 +1434,25 @@ mod pg_integration {
         // /api/stats healthcheck contract on the Postgres path. The
         // feed_age_seconds field is what catches "API up but feeder dead" —
         // the failure that took 27 h to surface on 2026-05-04.
-        let Some(db) = connect_or_skip().await else { return };
+        let Some(db) = connect_or_skip().await else {
+            return;
+        };
 
         let ts = FAR_FUTURE_BASE + 500.0;
-        db.upsert_aircraft("DDA006", Some("US"), Some("N99006"), false, ts).await;
-        db.add_position("DDA006", 39.0, -87.0, Some(10000), Some(150.0), Some(0.0), None, None, ts)
+        db.upsert_aircraft("DDA006", Some("US"), Some("N99006"), false, ts)
             .await;
+        db.add_position(
+            "DDA006",
+            39.0,
+            -87.0,
+            Some(10000),
+            Some(150.0),
+            Some(0.0),
+            None,
+            None,
+            ts,
+        )
+        .await;
 
         let stats = db.stats().await;
         assert!(stats.positions >= 1, "seeded position not visible in stats");
@@ -1386,15 +1467,31 @@ mod pg_integration {
     async fn pg_vessel_position_roundtrip() {
         // AIS path roundtrip. vessel_positions is the newest hypertable (Apr 28)
         // and least-tested.
-        let Some(db) = connect_or_skip().await else { return };
+        let Some(db) = connect_or_skip().await else {
+            return;
+        };
 
         let ts = FAR_FUTURE_BASE + 600.0;
-        db.upsert_vessel("999000001", Some("PG TEST SHIP"), Some("Cargo"), Some("US"), ts)
-            .await
-            .expect("upsert_vessel failed");
-        db.add_vessel_position("999000001", 32.0, -79.0, Some(15.0), Some(180.0), Some(175.0), ts)
-            .await
-            .expect("add_vessel_position failed");
+        db.upsert_vessel(
+            "999000001",
+            Some("PG TEST SHIP"),
+            Some("Cargo"),
+            Some("US"),
+            ts,
+        )
+        .await
+        .expect("upsert_vessel failed");
+        db.add_vessel_position(
+            "999000001",
+            32.0,
+            -79.0,
+            Some(15.0),
+            Some(180.0),
+            Some(175.0),
+            ts,
+        )
+        .await
+        .expect("add_vessel_position failed");
 
         let recent = db.get_recent_vessel_positions(100).await;
         let v = recent

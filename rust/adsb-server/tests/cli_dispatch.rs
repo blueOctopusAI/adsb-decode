@@ -27,7 +27,9 @@ fn cli_help_lists_all_subcommands() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let combined = format!("{stdout}\n{stderr}");
 
-    for sub in ["decode", "track", "stats", "history", "export", "serve", "setup"] {
+    for sub in [
+        "decode", "track", "stats", "history", "export", "serve", "setup",
+    ] {
         assert!(
             combined.contains(sub),
             "adsb --help missing subcommand {sub:?}. Output:\n{combined}"
@@ -42,7 +44,10 @@ fn cli_version_prints_something() {
     let out = bin().arg("--version").output().expect("spawn");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("adsb"), "version output should contain 'adsb': {stdout}");
+    assert!(
+        stdout.contains("adsb"),
+        "version output should contain 'adsb': {stdout}"
+    );
 }
 
 #[test]
@@ -74,11 +79,7 @@ fn cli_decode_processes_known_hex_frames() {
 8da53432582968cb27680cefa867\n";
     std::fs::write(&cap_path, frames).expect("write capture");
 
-    let out = bin()
-        .arg("decode")
-        .arg(&cap_path)
-        .output()
-        .expect("spawn");
+    let out = bin().arg("decode").arg(&cap_path).output().expect("spawn");
     assert!(
         out.status.success(),
         "adsb decode exit: {}. stderr:\n{}",
@@ -207,11 +208,7 @@ fn cli_stats_help_includes_db_path_arg() {
     // Per-subcommand help. If `--db-path` is renamed without updating
     // dependent scripts (cron jobs, deploy scripts), they break silently.
     // This test bakes in the arg name.
-    let out = bin()
-        .arg("stats")
-        .arg("--help")
-        .output()
-        .expect("spawn");
+    let out = bin().arg("stats").arg("--help").output().expect("spawn");
     assert!(out.status.success());
     let combined = format!(
         "{}\n{}",
