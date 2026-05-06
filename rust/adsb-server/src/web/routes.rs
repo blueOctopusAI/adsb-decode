@@ -1994,3 +1994,668 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Consumer contract regression tests
+//
+// These tests pin the JSON shape of every endpoint that downstream Blue Octopus
+// projects consume. Changing a shape here without coordinating with the listed
+// consumer is what shipped the 2026-04-28 envelope-vs-bare-array bug.
+//
+// Downstream consumers (UtilitarianTechnology repo):
+//   - orin/scripts/adsb_correlator.py        — ADSBClient: positions, query, aircraft, vessels
+//   - orin/scripts/ais_correlator.py         — same client, vessel methods only
+//   - ardupilot/adsb_bridge.py               — /api/positions for SITL injection
+//   - ardupilot/telemetry_logger.py          — /api/positions, /api/vessel-positions/latest, /api/vessels, /api/events
+//   - tools/demo_console.py                  — same as telemetry_logger
+//
+// Operations:
+//   - deploy/adsb-decode-healthcheck.sh      — /api/stats (feed_age_seconds)
+//
+// Touching a shape pinned below = breaks one of those consumers. Coordinate the
+// rollout (server change + consumer update + run consumers' tests) before merge.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod consumer_contract_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::RwLock;
+    use tower::ServiceExt;
+
+    use crate::db::{Database, SqliteDb};
+
+    /// Seed enough data that every consumer-facing field has a non-trivial value.
+    /// Distinct from the basic `test_state()` above: that one leaves military/registration
+    /// at defaults, which would let a serializer regression where those fields drop
+    /// silently slip past null-tolerant assertions.
+    fn contract_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db").to_str().unwrap().to_string();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        let mut db = Database::open(&db_path).unwrap();
+
+        // Aircraft + position with EVERY field populated so we can verify each
+        // serialized key reaches the wire with a real (non-null) value.
+        let icao = adsb_core::types::icao_from_hex("ADF123").unwrap();
+        db.upsert_aircraft(&icao, Some("United States"), Some("N12345"), true, now);
+        db.add_position(
+            &icao,
+            35.18,
+            -83.33,
+            Some(35000),
+            Some(450.0),
+            Some(270.0),
+            Some(-1500),
+            None,
+            now,
+        );
+        // Sighting so HistoryRow joins yield a callsign for the /api/positions DB-fallback path.
+        db.upsert_sighting(&icao, None, Some("AAL2127"), None, Some(35000), now);
+
+        // Vessel + position with full metadata for /api/vessels + /api/vessel-positions*.
+        db.upsert_vessel(
+            "367000099",
+            Some("CONTRACT TEST"),
+            Some("Cargo"),
+            Some("US"),
+            now,
+        );
+        db.add_vessel_position(
+            "367000099",
+            32.5,
+            -79.8,
+            Some(12.5),
+            Some(180.0),
+            Some(175.0),
+            now,
+        );
+        drop(db);
+
+        let state = Arc::new(AppState {
+            db: Arc::new(SqliteDb::new(db_path)),
+            tracker: None,
+            geofences: RwLock::new(Vec::new()),
+            geofence_next_id: RwLock::new(1),
+            auth_token: None,
+            photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            airspace_cache: std::sync::Mutex::new(None),
+            ollama_url: None,
+        });
+        (state, dir)
+    }
+
+    async fn get_json(state: Arc<AppState>, uri: &str) -> Value {
+        let app = crate::web::build_router(state, None);
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri} returned non-200");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap_or_else(|e| panic!("{uri}: bad JSON: {e}"))
+    }
+
+    /// Assert every named key is present (may be null — that's a valid value).
+    /// "Present" beats "non-null" as a contract because Option::None still keeps
+    /// the key in the JSON object via serde, and the consumer reads with .get().
+    fn assert_keys_present(item: &Value, keys: &[&str], context: &str) {
+        let obj = item
+            .as_object()
+            .unwrap_or_else(|| panic!("{context}: item is not an object: {item}"));
+        for key in keys {
+            assert!(
+                obj.contains_key(*key),
+                "{context}: missing key {key:?}. Got keys: {:?}",
+                obj.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // /api/positions  (consumer: adsb_correlator.ADSBClient.positions_within_minutes,
+    //                            adsb_bridge.py, telemetry_logger.py, demo_console.py)
+    //
+    // Contract: bare top-level JSON array. Each item carries the live-tracker
+    // enrichment fields (callsign/registration/country/is_military) — these come
+    // from the live-tracker path lines 213-226 and the DB-fallback path lines 249-262.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn contract_api_positions_is_bare_array() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/positions?minutes=1440").await;
+        assert!(
+            json.is_array(),
+            "/api/positions must return a bare JSON array, not an envelope. \
+             The 2026-04-28 correlator bug was caused by a consumer mocking \
+             {{positions: [...]}} when this endpoint actually returns [...]. \
+             Got: {json}"
+        );
+        let arr = json.as_array().unwrap();
+        assert!(!arr.is_empty(), "/api/positions: contract_state seeded a position");
+        assert_keys_present(
+            &arr[0],
+            &[
+                "icao",
+                "lat",
+                "lon",
+                "altitude_ft",
+                "speed_kts",
+                "heading_deg",
+                "vertical_rate_fpm",
+                "timestamp",
+                "callsign",
+                "registration",
+                "country",
+                "is_military",
+            ],
+            "/api/positions item",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // /api/positions/all  (consumer: adsb_correlator.ADSBClient.positions_in_window)
+    //
+    // Contract: bare array. Used for post-flight replay correlation against
+    // TimescaleDB. PositionRow now includes aircraft enrichment fields
+    // (callsign/registration/country/is_military) populated via JOIN — without
+    // them the correlator's military discrimination silently defaulted to false
+    // on historical replay queries. See db.rs:836 + db.rs:get_all_positions_ordered.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn contract_api_positions_all_is_bare_array() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/positions/all").await;
+        assert!(
+            json.is_array(),
+            "/api/positions/all must return a bare JSON array. Got: {json}"
+        );
+        let arr = json.as_array().unwrap();
+        assert!(!arr.is_empty(), "/api/positions/all: contract_state seeded a position");
+        assert_keys_present(
+            &arr[0],
+            &[
+                "icao",
+                "lat",
+                "lon",
+                "altitude_ft",
+                "speed_kts",
+                "heading_deg",
+                "vertical_rate_fpm",
+                "timestamp",
+                // Enrichment — these were added 2026-05-05 to fix the historical-replay
+                // military-discrimination silent-default bug. If a future schema change
+                // drops them, the correlator goes back to thinking nothing is military.
+                "callsign",
+                "registration",
+                "country",
+                "is_military",
+            ],
+            "/api/positions/all item",
+        );
+    }
+
+    /// The 2026-05-05 enrichment is load-bearing — assert the seeded military aircraft
+    /// actually surfaces as `is_military: true` and the registration/callsign reach the
+    /// wire. A regression to bare positions (dropping the JOIN) would set is_military:
+    /// null on this seeded military row, which is the correlator-breaking condition.
+    #[tokio::test]
+    async fn contract_api_positions_all_enrichment_is_populated() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/positions/all").await;
+        let arr = json.as_array().unwrap();
+        let row = arr.iter().find(|r| r["icao"] == "ADF123").expect(
+            "seeded military aircraft ADF123 missing from /api/positions/all — JOIN broken?",
+        );
+        assert_eq!(
+            row["is_military"], true,
+            "seeded ADF123 is_military=true but endpoint returned {}. \
+             Check the LEFT JOIN aircraft a ON p.icao = a.icao path.",
+            row["is_military"]
+        );
+        assert_eq!(
+            row["registration"], "N12345",
+            "registration enrichment dropped: {}",
+            row["registration"]
+        );
+        assert_eq!(
+            row["callsign"], "AAL2127",
+            "callsign enrichment dropped (latest sighting JOIN broken?): {}",
+            row["callsign"]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // /api/query  (consumer: adsb_correlator.ADSBClient.query)
+    //
+    // Contract: bare array of PositionRow. Same field shape as /api/positions/all.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn contract_api_query_is_bare_array() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/query?limit=10").await;
+        assert!(
+            json.is_array(),
+            "/api/query must return a bare JSON array, not an envelope. Got: {json}"
+        );
+        let arr = json.as_array().unwrap();
+        assert!(!arr.is_empty(), "/api/query: contract_state seeded a position");
+        assert_keys_present(
+            &arr[0],
+            &[
+                "icao",
+                "lat",
+                "lon",
+                "altitude_ft",
+                "speed_kts",
+                "heading_deg",
+                "timestamp",
+                "callsign",
+                "registration",
+                "country",
+                "is_military",
+            ],
+            "/api/query item",
+        );
+    }
+
+    /// Mirror of `contract_api_positions_all_enrichment_is_populated` for /api/query.
+    /// Same JOIN code path, separate query function — needs its own assertion.
+    #[tokio::test]
+    async fn contract_api_query_enrichment_is_populated() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/query?limit=10").await;
+        let row = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["icao"] == "ADF123")
+            .expect("seeded military aircraft missing from /api/query — JOIN broken?");
+        assert_eq!(row["is_military"], true);
+        assert_eq!(row["registration"], "N12345");
+        assert_eq!(row["callsign"], "AAL2127");
+    }
+
+    // -----------------------------------------------------------------------
+    // /api/aircraft/<icao>  (consumer: adsb_correlator.ADSBClient.aircraft)
+    //
+    // Contract: object with `aircraft` envelope. Note this is one of the few
+    // endpoints that DOES use an envelope — different from the bare-array
+    // family above. Don't normalize without coordinating with the consumer.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn contract_api_aircraft_detail_uses_envelope() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/aircraft/ADF123").await;
+        assert!(
+            json.is_object(),
+            "/api/aircraft/<icao> uses an envelope object (not bare). Got: {json}"
+        );
+        assert!(
+            json.get("aircraft").is_some(),
+            "/api/aircraft/<icao> must have an `aircraft` key"
+        );
+        let ac = &json["aircraft"];
+        assert_keys_present(
+            ac,
+            &["icao", "registration", "country", "is_military"],
+            "/api/aircraft/<icao> aircraft object",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // /api/vessels  (consumer: ais_correlator.ADSBClient.vessels,
+    //                          telemetry_logger.py, demo_console.py)
+    //
+    // Contract: bare array of vessel metadata.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn contract_api_vessels_is_bare_array() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/vessels").await;
+        assert!(json.is_array(), "/api/vessels must return a bare array. Got: {json}");
+        let arr = json.as_array().unwrap();
+        assert!(!arr.is_empty(), "/api/vessels: contract_state seeded a vessel");
+        assert_keys_present(
+            &arr[0],
+            &["mmsi", "name", "vessel_type", "flag", "first_seen", "last_seen"],
+            "/api/vessels item",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // /api/vessel-positions  (consumer: ais_correlator.ADSBClient.vessel_positions_within_minutes,
+    //                                   used by vessel_positions_in_window for replay correlation)
+    //
+    // Contract: bare array of vessel position rows.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn contract_api_vessel_positions_is_bare_array() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/vessel-positions?minutes=1440").await;
+        assert!(
+            json.is_array(),
+            "/api/vessel-positions must return a bare array. Got: {json}"
+        );
+        let arr = json.as_array().unwrap();
+        assert!(!arr.is_empty(), "/api/vessel-positions: contract_state seeded a position");
+        assert_keys_present(
+            &arr[0],
+            &[
+                "mmsi",
+                "lat",
+                "lon",
+                "speed_kts",
+                "course_deg",
+                "heading_deg",
+                "timestamp",
+            ],
+            "/api/vessel-positions item",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // /api/vessel-positions/latest  (consumer: ais_correlator.ADSBClient.vessel_positions_latest,
+    //                                          telemetry_logger.py, demo_console.py)
+    //
+    // Contract: bare array. Note the URL: hyphen, not underscore. The
+    // 2026-04-28 doc-vs-code mismatch had docs referencing
+    // /api/vessel_positions_latest (underscore), which doesn't exist.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn contract_api_vessel_positions_latest_is_bare_array() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/vessel-positions/latest").await;
+        assert!(
+            json.is_array(),
+            "/api/vessel-positions/latest must return a bare array. Got: {json}"
+        );
+        let arr = json.as_array().unwrap();
+        assert!(
+            !arr.is_empty(),
+            "/api/vessel-positions/latest: contract_state seeded a position"
+        );
+        assert_keys_present(
+            &arr[0],
+            &[
+                "mmsi",
+                "lat",
+                "lon",
+                "speed_kts",
+                "course_deg",
+                "heading_deg",
+                "timestamp",
+            ],
+            "/api/vessel-positions/latest item",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // /api/stats  (consumer: deploy/adsb-decode-healthcheck.sh — external timer
+    //              that restarts the service if /api/stats stops returning 200,
+    //              and an external monitor that reads feed_age_seconds to detect
+    //              "API up but feeder dead" — the failure that took 27h to surface
+    //              on May 4 2026)
+    //
+    // Contract: object (not array). Must expose feed_age_seconds.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn contract_api_stats_exposes_feed_age_seconds() {
+        let (state, _dir) = contract_state();
+        let json = get_json(state, "/api/stats").await;
+        assert!(json.is_object(), "/api/stats must be an object. Got: {json}");
+        assert_keys_present(
+            &json,
+            &[
+                "aircraft",
+                "positions",
+                "events",
+                "receivers",
+                "captures",
+                "feed_age_seconds",
+            ],
+            "/api/stats",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-page deep tests
+//
+// `test_page_routes` (in the main tests module) is a 7-page smoke test that
+// only asserts status==OK + brand string + nav. The tests below validate the
+// content-types, mime headers, and key DOM/markup features that downstream
+// consumers (browsers, search engines, AI scrapers) rely on. Each test names
+// the specific contract it's pinning so a future drop catches the right thing.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod pages_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::RwLock;
+    use tower::ServiceExt;
+
+    use crate::db::SqliteDb;
+
+    fn empty_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db").to_str().unwrap().to_string();
+        let state = Arc::new(AppState {
+            db: Arc::new(SqliteDb::new(db_path)),
+            tracker: None,
+            geofences: RwLock::new(Vec::new()),
+            geofence_next_id: RwLock::new(1),
+            auth_token: None,
+            photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            airspace_cache: std::sync::Mutex::new(None),
+            ollama_url: None,
+        });
+        (state, dir)
+    }
+
+    /// Helper: GET a URL and return (status, content-type, body-as-string).
+    async fn fetch(state: Arc<AppState>, uri: &str) -> (StatusCode, String, String) {
+        let app = crate::web::build_router(state, None);
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let ct = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8_lossy(&body).into_owned();
+        (status, ct, body_str)
+    }
+
+    /// /robots.txt — content-type text/plain, references the sitemap.
+    /// Crawlers won't find /sitemap.xml without this. Pinned because content-type
+    /// drift (text/html) makes Google ignore the file silently.
+    #[tokio::test]
+    async fn page_robots_txt_is_plaintext_with_sitemap_ref() {
+        let (state, _dir) = empty_state();
+        let (status, ct, body) = fetch(state, "/robots.txt").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ct.contains("text/plain"), "robots.txt content-type {ct:?}");
+        assert!(body.contains("Sitemap:"), "robots.txt missing Sitemap directive");
+        assert!(body.contains("/sitemap.xml"), "robots.txt sitemap path missing");
+    }
+
+    /// /sitemap.xml — XML mime, contains every page handler we have.
+    /// A new page added without updating sitemap_xml() is invisible to crawlers.
+    /// This test enumerates the known pages so adding a new one fires the test.
+    #[tokio::test]
+    async fn page_sitemap_xml_lists_every_indexable_page() {
+        let (state, _dir) = empty_state();
+        let (status, ct, body) = fetch(state, "/sitemap.xml").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ct.contains("xml"), "sitemap.xml content-type {ct:?}");
+
+        // Every public page handler should be in the sitemap. Update both this
+        // list and pages::sitemap_xml() when adding a new top-level page.
+        let expected_paths = [
+            "/", "/about", "/how-it-works", "/features", "/setup",
+            "/table", "/events", "/query", "/replay", "/receivers",
+            "/stats", "/register",
+        ];
+        for path in expected_paths {
+            let needle = if path == "/" {
+                "<loc>https://adsb.blueoctopustechnology.com/</loc>".to_string()
+            } else {
+                format!("<loc>https://adsb.blueoctopustechnology.com{path}</loc>")
+            };
+            assert!(
+                body.contains(&needle),
+                "sitemap.xml missing entry for {path}. Body: {body}"
+            );
+        }
+    }
+
+    /// /llms.txt — AI-discovery convention. Pinned because it's the doc that
+    /// LLMs scrape to learn about the project, and we list real API endpoint
+    /// paths in there. If those drift, AI agents call dead endpoints.
+    #[tokio::test]
+    async fn page_llms_txt_lists_real_api_endpoints() {
+        let (state, _dir) = empty_state();
+        let (status, ct, body) = fetch(state, "/llms.txt").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ct.contains("text/plain"), "llms.txt content-type {ct:?}");
+        // Project framing
+        assert!(body.contains("ADS-B"), "llms.txt should mention ADS-B");
+        assert!(body.contains("AIS"), "llms.txt should mention AIS");
+        // Real API endpoints — keep this list in sync with the routing in mod.rs.
+        // If an endpoint is removed and llms.txt isn't updated, agents get 404s.
+        for endpoint in ["/api/positions", "/api/aircraft", "/api/stats", "/api/vessels"] {
+            assert!(
+                body.contains(endpoint),
+                "llms.txt missing real endpoint {endpoint}. AI agents will call dead URLs."
+            );
+        }
+    }
+
+    /// /register — Pi receiver registration form.
+    /// Recent (2026-05-05) — server-side coord validation was added in commit bfad1ac.
+    /// The form needs lat/lon inputs for the validation path to be reachable.
+    #[tokio::test]
+    async fn page_register_has_required_form_fields() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/register").await;
+        assert_eq!(status, StatusCode::OK);
+        // The form needs name + lat + lon to feed POST /api/register.
+        // Markup-pattern checks (not exact string) — tolerates HTML reformatting.
+        let lower = body.to_lowercase();
+        assert!(
+            lower.contains("name=\"name\"") || lower.contains("id=\"name\""),
+            "/register form missing name input"
+        );
+        assert!(
+            lower.contains("name=\"lat\"") || lower.contains("id=\"lat\""),
+            "/register form missing lat input"
+        );
+        assert!(
+            lower.contains("name=\"lon\"") || lower.contains("id=\"lon\""),
+            "/register form missing lon input"
+        );
+    }
+
+    /// /stats — system stats page. Should pull from /api/stats. Pinned because
+    /// `feed_age_seconds` is the field external monitors read; if the page ever
+    /// embeds a JSON shape that doesn't match, the dashboard goes silent.
+    #[tokio::test]
+    async fn page_stats_references_stats_api() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/stats").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("/api/stats"),
+            "/stats page must fetch /api/stats — JS embedding broken?"
+        );
+    }
+
+    /// /aircraft/<icao> — detail page. Has split-screen layout with the trail
+    /// map on the left and external intel cards (hexdb.io, Planespotters, etc.)
+    /// on the right. Pinned so a layout refactor doesn't silently drop the
+    /// external links the value-add of this page depends on.
+    #[tokio::test]
+    async fn page_aircraft_detail_has_external_intel_links() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/aircraft/A4CA5F").await;
+        assert_eq!(status, StatusCode::OK);
+        // Split-screen marker — exists today as detail-split class.
+        assert!(
+            body.contains("detail-split"),
+            "/aircraft/<icao>: detail-split layout marker dropped"
+        );
+        // The page ships at least one external aviation database link as the
+        // RE-driven value-add. Pin presence of any one well-known service.
+        let has_external = ["adsbexchange", "planespotters", "flightaware", "flightradar"]
+            .iter()
+            .any(|svc| body.to_lowercase().contains(svc));
+        assert!(
+            has_external,
+            "/aircraft/<icao>: lost all external aviation-database links"
+        );
+    }
+
+    /// /og-image.png — Open Graph share image. Served as SVG with image/svg+xml
+    /// content-type. Pinned because Twitter/Facebook crawlers ignore wrong mime.
+    #[tokio::test]
+    async fn page_og_image_has_image_content_type() {
+        let (state, _dir) = empty_state();
+        let (status, ct, _body) = fetch(state, "/og-image.png").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            ct.starts_with("image/"),
+            "/og-image.png content-type must start with image/. Got {ct:?}"
+        );
+    }
+
+    /// `/api/airports` is consumed by the map page JS to draw airport overlays.
+    /// Bare-array contract (not envelope) — pinned to prevent the same shape
+    /// regression that bit /api/positions on 2026-04-28.
+    #[tokio::test]
+    async fn page_airports_endpoint_returns_bare_array() {
+        let (state, _dir) = empty_state();
+        let app = crate::web::build_router(state, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/airports")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json.is_array(),
+            "/api/airports must be a bare array (map JS expects this). Got: {json}"
+        );
+    }
+}

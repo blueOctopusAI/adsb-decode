@@ -4,11 +4,16 @@
 //! the TimescaleDB extension installed.
 //!
 //! Key differences from SQLite:
-//! - `positions` and `events` are TimescaleDB hypertables
-//! - Automatic compression on chunks older than 7 days
-//! - Retention policy drops raw positions older than 90 days
+//! - `positions`, `events`, and `vessel_positions` are TimescaleDB hypertables
+//! - Compression policies (positions/vessel_positions: 7d, events: 1d)
+//! - Retention policies (positions/vessel_positions: 14d, events: 7d)
 //! - Continuous aggregates provide downsampled views (30s, 5m)
 //! - Connection pooling via sqlx::PgPool
+//!
+//! Invariant: for every hypertable, compression interval MUST be strictly less
+//! than retention interval, or chunks are dropped before they can compress.
+//! This was the 2026-04-14 events incident (29 GB hypertable). Enforced by
+//! `tests/timescale_invariants.rs`.
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -153,7 +158,12 @@ ALTER TABLE events SET (
 SELECT add_compression_policy('events', INTERVAL '1 day', if_not_exists => TRUE);
 SELECT add_retention_policy('events', INTERVAL '7 days', if_not_exists => TRUE);
 
--- Vessel positions: compress after 7 days, retain for 90 days
+-- Vessel positions: compress after 7 days, retain for 14 days.
+-- Same compression-before-retention ordering as positions/events (lesson from
+-- the 2026-04-14 events incident — compress interval must be strictly less
+-- than retention interval, or retention drops chunks before compression runs).
+-- Steady-state at ~4 ships/sec ingest: ~250 MB on disk (uncompressed 0-7d
+-- window + compressed 7-14d window), well under the 38 GB Lightsail budget.
 ALTER TABLE vessel_positions SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'mmsi',
@@ -616,11 +626,19 @@ impl AdsbDatabase for TimescaleDb {
         }
 
         let where_clause = conditions.join(" AND ");
+        // Aircraft + latest-sighting enrichment for /api/query consumers.
+        // DISTINCT ON is the Postgres idiom for "one row per ICAO, latest by last_seen".
         let sql = format!(
             "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg,
-                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time)::double precision as timestamp
+                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
+                    s_latest.callsign, a.registration, a.country, a.is_military
              FROM positions p
              LEFT JOIN aircraft a ON p.icao = a.icao
+             LEFT JOIN (
+                 SELECT DISTINCT ON (icao) icao, callsign
+                 FROM sightings
+                 ORDER BY icao, last_seen DESC
+             ) s_latest ON p.icao = s_latest.icao
              WHERE {where_clause}
              ORDER BY p.time DESC LIMIT ${idx}"
         );
@@ -655,13 +673,22 @@ impl AdsbDatabase for TimescaleDb {
         let start_ts = start.map(epoch_to_pg);
         let end_ts = end.map(epoch_to_pg);
 
+        // Aircraft + latest-sighting enrichment for /api/positions/all — the
+        // post-flight replay correlation endpoint UtilTech's correlator hits.
         let rows = sqlx::query(
-            "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                    vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
-             FROM positions
-             WHERE ($2::TIMESTAMPTZ IS NULL OR time >= $2)
-               AND ($3::TIMESTAMPTZ IS NULL OR time <= $3)
-             ORDER BY time ASC LIMIT $1",
+            "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg,
+                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
+                    s_latest.callsign, a.registration, a.country, a.is_military
+             FROM positions p
+             LEFT JOIN aircraft a ON p.icao = a.icao
+             LEFT JOIN (
+                 SELECT DISTINCT ON (icao) icao, callsign
+                 FROM sightings
+                 ORDER BY icao, last_seen DESC
+             ) s_latest ON p.icao = s_latest.icao
+             WHERE ($2::TIMESTAMPTZ IS NULL OR p.time >= $2)
+               AND ($3::TIMESTAMPTZ IS NULL OR p.time <= $3)
+             ORDER BY p.time ASC LIMIT $1",
         )
         .bind(limit)
         .bind(start_ts)
@@ -739,11 +766,11 @@ impl AdsbDatabase for TimescaleDb {
         let mut idx = 1;
 
         if hours.is_some() {
-            conditions.push(format!("time >= NOW() - ${}::INTERVAL", idx));
+            conditions.push(format!("p.time >= NOW() - ${}::INTERVAL", idx));
             idx += 1;
         }
         if icao.is_some() {
-            conditions.push(format!("icao = ${}", idx));
+            conditions.push(format!("p.icao = ${}", idx));
             idx += 1;
         }
 
@@ -753,11 +780,21 @@ impl AdsbDatabase for TimescaleDb {
             conditions.join(" AND ")
         };
 
+        // CSV/JSON export with full enrichment so external consumers don't need
+        // a second round-trip per aircraft.
         let sql = format!(
-            "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                    vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
-             FROM positions WHERE {where_clause}
-             ORDER BY time ASC LIMIT ${idx}"
+            "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg,
+                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
+                    s_latest.callsign, a.registration, a.country, a.is_military
+             FROM positions p
+             LEFT JOIN aircraft a ON p.icao = a.icao
+             LEFT JOIN (
+                 SELECT DISTINCT ON (icao) icao, callsign
+                 FROM sightings
+                 ORDER BY icao, last_seen DESC
+             ) s_latest ON p.icao = s_latest.icao
+             WHERE {where_clause}
+             ORDER BY p.time ASC LIMIT ${idx}"
         );
 
         let mut query = sqlx::query(&sql);
@@ -1059,6 +1096,9 @@ impl AdsbDatabase for TimescaleDb {
 // ---------------------------------------------------------------------------
 
 fn row_to_position(r: &sqlx::postgres::PgRow) -> PositionRow {
+    // Enrichment fields are optional — try_get returns Err on missing columns,
+    // which is fine for the unenriched producers (`get_recent_positions`,
+    // `get_trails`, `get_positions`) that don't SELECT them.
     PositionRow {
         icao: r.get("icao"),
         lat: r.get("lat"),
@@ -1068,6 +1108,10 @@ fn row_to_position(r: &sqlx::postgres::PgRow) -> PositionRow {
         heading_deg: r.get("heading_deg"),
         vertical_rate_fpm: r.get("vertical_rate_fpm"),
         timestamp: row_f64(r, "timestamp"),
+        callsign: r.try_get("callsign").ok().flatten(),
+        registration: r.try_get("registration").ok().flatten(),
+        country: r.try_get("country").ok().flatten(),
+        is_military: r.try_get("is_military").ok(),
     }
 }
 
@@ -1153,5 +1197,212 @@ impl TimescaleDb {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Postgres + TimescaleDB integration tests
+//
+// db_pg.rs is the production backend. Without these tests, the only signal we
+// had on Postgres-specific SQL correctness was "the live VPS hasn't broken
+// yet" — which already failed us once on the 2026-04-28 envelope-vs-bare-array
+// contract bug and again on the historical-replay enrichment gap discovered
+// 2026-05-05.
+//
+// These tests are #[ignore]'d because they need a live Postgres + TimescaleDB
+// instance, and per `feedback_no-docker-on-mac.md` we don't pull testcontainers
+// into the local Mac dev loop. Opt-in:
+//
+//   export DATABASE_URL="postgres://adsb:CHANGEME@localhost:5432/adsb_test"
+//   cargo test -p adsb-server --features timescaledb -- --ignored
+//
+// Each test uses a unique ICAO in the Algeria block (DDA000-DDAFFF) and a
+// far-future timestamp (year 2099) so parallel runs and stale data can't
+// interfere with each other.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod pg_integration {
+    use super::*;
+    use crate::db::AdsbDatabase;
+    use std::sync::Arc;
+
+    /// 2099-01-01 UTC — well outside any real ADS-B traffic, so retention won't
+    /// drop it and time-window queries from concurrent tests can't see ours.
+    const FAR_FUTURE_BASE: f64 = 4_070_908_800.0;
+
+    async fn connect_or_skip() -> Option<Arc<TimescaleDb>> {
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(u) => u,
+            Err(_) => {
+                eprintln!("DATABASE_URL not set, skipping Postgres integration test");
+                return None;
+            }
+        };
+        match TimescaleDb::connect(&url).await {
+            Ok(db) => Some(Arc::new(db)),
+            Err(e) => {
+                eprintln!("Could not connect to Postgres at DATABASE_URL: {e}. Skipping.");
+                None
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
+    async fn pg_connect_runs_schema_migrations() {
+        // If the SQL constants regress (invalid hypertable, broken policy SQL),
+        // this fires before any other test gets a chance to run.
+        let _db = connect_or_skip().await.expect("DATABASE_URL not set");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
+    async fn pg_position_roundtrip() {
+        // Catches column rename / serde drift between PositionRow and the SELECT clause.
+        let Some(db) = connect_or_skip().await else { return };
+
+        let ts = FAR_FUTURE_BASE + 100.0;
+        db.upsert_aircraft("DDA001", Some("US"), Some("N99001"), false, ts).await;
+        db.add_position("DDA001", 35.18, -83.33, Some(20000), Some(300.0), Some(90.0), None, None, ts)
+            .await;
+
+        let positions = db.get_positions("DDA001", 10).await;
+        assert!(!positions.is_empty(), "round-trip insert→query found nothing");
+        let p = &positions[0];
+        assert_eq!(p.icao, "DDA001");
+        assert!((p.lat - 35.18).abs() < 1e-6);
+        assert!((p.lon - (-83.33)).abs() < 1e-6);
+        assert_eq!(p.altitude_ft, Some(20000));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
+    async fn pg_get_all_positions_ordered_enrichment_populates() {
+        // The 2026-05-05 enrichment fix on the Postgres path uses DISTINCT ON,
+        // which has no SQLite equivalent. SQLite-side tests can't catch a
+        // typo in this Postgres-specific syntax. This test does.
+        let Some(db) = connect_or_skip().await else { return };
+
+        let ts = FAR_FUTURE_BASE + 200.0;
+        db.upsert_aircraft("DDA002", Some("US"), Some("N99002"), true, ts).await;
+        db.upsert_sighting("DDA002", None, Some("PG_TEST"), None, Some(35000), ts).await;
+        db.add_position("DDA002", 36.0, -84.0, Some(35000), Some(450.0), Some(180.0), None, None, ts)
+            .await;
+
+        let positions = db
+            .get_all_positions_ordered(10000, Some(ts - 1.0), Some(ts + 1.0))
+            .await;
+
+        let row = positions
+            .iter()
+            .find(|p| p.icao == "DDA002")
+            .expect("seeded position not in /api/positions/all result — JOIN broken");
+
+        assert_eq!(
+            row.is_military,
+            Some(true),
+            "Postgres get_all_positions_ordered did not surface is_military. \
+             Check the LEFT JOIN aircraft a ON p.icao = a.icao SQL."
+        );
+        assert_eq!(row.registration.as_deref(), Some("N99002"));
+        assert_eq!(
+            row.callsign.as_deref(),
+            Some("PG_TEST"),
+            "Postgres DISTINCT ON sightings JOIN dropped the callsign"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
+    async fn pg_query_positions_enrichment_populates() {
+        let Some(db) = connect_or_skip().await else { return };
+
+        let ts = FAR_FUTURE_BASE + 300.0;
+        db.upsert_aircraft("DDA003", Some("UK"), Some("G99003"), false, ts).await;
+        db.upsert_sighting("DDA003", None, Some("BAW123"), None, Some(28000), ts).await;
+        db.add_position("DDA003", 37.0, -85.0, Some(28000), Some(420.0), Some(45.0), None, None, ts)
+            .await;
+
+        let positions = db
+            .query_positions(Some(20000), Some(40000), Some("DDA003"), false, 100)
+            .await;
+
+        let row = positions
+            .iter()
+            .find(|p| p.icao == "DDA003")
+            .expect("seeded position not in /api/query result");
+
+        assert_eq!(row.registration.as_deref(), Some("G99003"));
+        assert_eq!(row.country.as_deref(), Some("UK"));
+        assert_eq!(row.callsign.as_deref(), Some("BAW123"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
+    async fn pg_query_positions_military_filter_works() {
+        // sqlx parameter index drift on the Postgres side has bitten us before.
+        // Pin the military-filter behavior.
+        let Some(db) = connect_or_skip().await else { return };
+
+        let ts = FAR_FUTURE_BASE + 400.0;
+        db.upsert_aircraft("DDA004", Some("US"), Some("N99004"), false, ts).await;
+        db.upsert_aircraft("DDA005", Some("US"), Some("N99005"), true, ts).await;
+        db.add_position("DDA004", 38.0, -86.0, Some(30000), Some(400.0), Some(0.0), None, None, ts)
+            .await;
+        db.add_position("DDA005", 38.1, -86.1, Some(30000), Some(400.0), Some(0.0), None, None, ts)
+            .await;
+
+        let mil_only = db.query_positions(None, None, None, true, 1000).await;
+        let saw_mil = mil_only.iter().any(|p| p.icao == "DDA005");
+        let saw_civ = mil_only.iter().any(|p| p.icao == "DDA004");
+        assert!(saw_mil, "military filter dropped a known military aircraft");
+        assert!(!saw_civ, "military filter let a civilian aircraft through");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
+    async fn pg_stats_exposes_feed_age_seconds() {
+        // /api/stats healthcheck contract on the Postgres path. The
+        // feed_age_seconds field is what catches "API up but feeder dead" —
+        // the failure that took 27 h to surface on 2026-05-04.
+        let Some(db) = connect_or_skip().await else { return };
+
+        let ts = FAR_FUTURE_BASE + 500.0;
+        db.upsert_aircraft("DDA006", Some("US"), Some("N99006"), false, ts).await;
+        db.add_position("DDA006", 39.0, -87.0, Some(10000), Some(150.0), Some(0.0), None, None, ts)
+            .await;
+
+        let stats = db.stats().await;
+        assert!(stats.positions >= 1, "seeded position not visible in stats");
+        assert!(
+            stats.feed_age_seconds.is_some(),
+            "stats.feed_age_seconds must be populated when positions exist"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL pointing at TimescaleDB"]
+    async fn pg_vessel_position_roundtrip() {
+        // AIS path roundtrip. vessel_positions is the newest hypertable (Apr 28)
+        // and least-tested.
+        let Some(db) = connect_or_skip().await else { return };
+
+        let ts = FAR_FUTURE_BASE + 600.0;
+        db.upsert_vessel("999000001", Some("PG TEST SHIP"), Some("Cargo"), Some("US"), ts)
+            .await
+            .expect("upsert_vessel failed");
+        db.add_vessel_position("999000001", 32.0, -79.0, Some(15.0), Some(180.0), Some(175.0), ts)
+            .await
+            .expect("add_vessel_position failed");
+
+        let recent = db.get_recent_vessel_positions(100).await;
+        let v = recent
+            .iter()
+            .find(|p| p.mmsi == "999000001")
+            .expect("seeded vessel position not in get_recent_vessel_positions");
+        assert!((v.lat - 32.0).abs() < 1e-6);
+        assert_eq!(v.speed_kts, Some(15.0));
+        assert_eq!(v.heading_deg, Some(175.0));
     }
 }

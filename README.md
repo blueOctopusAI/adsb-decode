@@ -323,7 +323,7 @@ rust/
 
 ## Python Reference Implementation
 
-The Python implementation (`src/`) is the original reference decoder — 22 modules, 394 tests, ~7,300 lines. It was used to prove the protocol math before the Rust rewrite. Both decode identically and are cross-validated in CI.
+The Python implementation (`src/`) is the original reference decoder — 22 modules — used to prove the protocol math before the Rust rewrite. Both decode identically and are cross-validated in CI.
 
 ```bash
 pip install -e ".[dev]"

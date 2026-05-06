@@ -7,8 +7,8 @@ This file provides guidance to Claude Code when working with code in this reposi
 An ADS-B (Automatic Dependent Surveillance-Broadcast) radio protocol decoder that processes raw 1090 MHz radio signals into identified aircraft on a map. Built from scratch — no dump1090 dependency, no borrowed decoders. Every byte of the protocol is decoded and documented.
 
 Two implementations exist side by side:
-- **Rust** (primary, active development) — 3-crate workspace under `rust/`, 223 tests, ~12,000 lines
-- **Python** (reference implementation) — 22 modules under `src/`, 394 tests, ~7,300 lines
+- **Rust** (primary, active development) — 4-crate workspace under `rust/` (`adsb-core`, `adsb-feeder`, `adsb-receiver`, `adsb-server`)
+- **Python** (reference implementation) — 22 modules under `src/`
 
 The Rust implementation is feature-complete and is the active codebase. The Python implementation serves as the reference oracle — both were cross-validated against a 296-frame capture file with 100% field match.
 
@@ -43,26 +43,36 @@ rust/
 │       ├── config.rs         # YAML config load/save
 │       └── airports.csv      # OurAirports US database (embedded at compile time)
 │
-├── adsb-feeder/              # Binary: edge device (Pi + RTL-SDR)
+├── adsb-feeder/              # Binary: offline IQ-file demodulation tool
 │   └── src/
-│       ├── main.rs           # Capture → decode → batch POST to server
+│       ├── main.rs           # Capture → decode (file-based)
 │       └── capture.rs        # FrameReader, IQReader, demodulate_stream, LiveCapture (native-sdr)
+│
+├── adsb-receiver/            # Binary: networked Pi-side daemon
+│   └── src/
+│       ├── main.rs           # CLI (clap + env vars), startup, Ctrl+C shutdown
+│       ├── capture.rs        # rtl_adsb subprocess management; crashes on subprocess exit so systemd respawns
+│       ├── sender.rs         # HTTP client, batch POST, heartbeat
+│       └── stats.rs          # Atomic counters (frames, uptime)
 │
 ├── adsb-server/              # Binary: web server + CLI + database
 │   ├── src/
 │   │   ├── main.rs           # CLI: decode, track (--live --port), stats, history, export, serve, setup + hexdb enrichment cache
-│   │   ├── db.rs             # SQLite (6 tables, WAL, retention, downsample, phantom pruning)
-│   │   ├── db_pg.rs          # TimescaleDB (feature-gated, not currently in use)
+│   │   ├── db.rs             # SQLite backend (default — local dev, tests)
+│   │   ├── db_pg.rs          # TimescaleDB backend (production — behind `timescaledb` feature)
+│   │   ├── ais.rs            # AIS message parsing (AISStream WebSocket)
+│   │   ├── bin/
+│   │   │   └── ais-ingester.rs  # Maritime feed ingester (requires `timescaledb` feature)
 │   │   ├── notification.rs   # Webhook notifications (fire-and-forget POST JSON)
 │   │   └── web/
 │   │       ├── mod.rs        # Axum app builder, AppState, CORS, bearer token auth
-│   │       ├── routes.rs     # REST API endpoints + hexdb.io lookup proxy
+│   │       ├── routes.rs     # REST API endpoints + hexdb.io lookup proxy + consumer-contract tests
 │   │       ├── pages.rs      # HTML page handlers
 │   │       └── ingest.rs     # Multi-receiver ingest + heartbeat + DB persistence
-│   └── templates/            # 8 HTML pages with Leaflet.js maps
+│   └── templates/            # HTML pages with Leaflet.js maps
 ```
 
-**Dependency graph:** `adsb-core` (pure, no async) ← `adsb-feeder` + `adsb-server`
+**Dependency graph:** `adsb-core` (pure, no async) ← `adsb-feeder` + `adsb-receiver` + `adsb-server`
 
 ## Python Project Structure (reference)
 
@@ -99,9 +109,16 @@ src/
 ```bash
 cd rust
 cargo build --release            # Build all crates
-cargo test --workspace           # Run all 199 tests
+cargo test --workspace           # Run the full test suite
 cargo test -p adsb-core          # Test core library only
 cargo clippy --workspace         # Lint
+
+# Postgres integration tests (opt-in, requires DATABASE_URL pointing at TimescaleDB):
+export DATABASE_URL="postgres://adsb:CHANGEME@localhost:5432/adsb_test"
+cargo test -p adsb-server --features timescaledb -- --ignored
+
+# Build production binary (uses TimescaleDB backend):
+cargo build --release --features timescaledb
 
 # CLI
 cargo run --bin adsb -- decode data/live_capture.txt
@@ -120,7 +137,7 @@ cargo run --bin adsb -- export --db-path data/adsb.db --format json
 
 ```bash
 pip install -e ".[dev]"          # Install in dev mode
-pytest                           # Run all 394 tests
+pytest                           # Run the full test suite
 
 adsb setup                       # Check RTL-SDR hardware
 adsb decode data/capture.bin     # Decode a capture file
@@ -136,12 +153,18 @@ adsb track --live --port 8080    # Live tracking with web dashboard
 - **captures** — metadata per capture session (source, duration, frame counts, receiver_id)
 - **events** — detected anomalies (emergency squawk, military, circling, unusual altitude)
 
-SQLite with WAL mode, foreign keys enabled, indexed queries.
+**Two backends, same schema:**
+- **Production:** PostgreSQL 16 + TimescaleDB 2 (`db_pg.rs`, behind `timescaledb` feature). Hypertables on `positions`, `events`, `vessel_positions` with compression + retention policies. This is what runs on the Lightsail VPS.
+- **Local dev / tests:** SQLite with WAL mode, foreign keys enabled, indexed queries (`db.rs`). The default backend when the binary is built without `--features timescaledb`. Web-side reads go through the `AdsbDatabase` trait so route handlers don't care which backend is wired in.
 
-Key SQL patterns:
+Build flag selects the backend at compile time. Production binaries on the VPS are built with `cargo build --release --features timescaledb`; the `ais-ingester` binary requires that feature unconditionally.
+
+Key SQL patterns (apply to both backends):
 - `is_military = MAX(is_military, excluded.is_military)` — military flag is sticky, never reverts
 - `country = COALESCE(excluded.country, country)` — preserves existing country on NULL re-upsert
-- `downsample_positions(older_than_hours, keep_interval_sec)` — bucket-based thinning
+- `downsample_positions(older_than_hours, keep_interval_sec)` — bucket-based thinning (SQLite); TimescaleDB uses retention policies instead
+
+Current production retention: positions 14 d, events 7 d (1 d compression), vessel_positions 14 d.
 
 ## Current State
 
@@ -167,11 +190,10 @@ Key SQL patterns:
 - CLI: decode, track, stats, history, export, serve, setup
 - CRC error correction: 1-2 bit errors via syndrome table lookup
 - `/api/lookup/:icao` route — proxies hexdb.io for aircraft registration, type, owner data (used by detail page and event enrichment)
-- 223 Rust tests + 394 Python tests
+- Rust + Python test suites (run `cargo test --workspace` and `pytest` for current counts)
 - Sample config: `config.example.yaml`
 
 ### What's implemented but not active:
-- **TimescaleDB backend** (`db_pg.rs`) — fully implemented with hypertables, compression, retention, continuous aggregates. Requires a PostgreSQL instance to use. Currently using SQLite.
 - **Native RTL-SDR USB** (`LiveCapture` in capture.rs) — direct dongle access via `rtlsdr_mt`. Requires `native-sdr` feature and `librtlsdr` on system. Build with `cargo build --features native-sdr`.
 - **Cross-compilation CI** — GitHub Actions configured for Pi 3/4/5 ARM targets. No release binaries published yet.
 

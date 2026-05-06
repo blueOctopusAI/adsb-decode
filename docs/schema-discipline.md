@@ -2,7 +2,9 @@
 
 The `adsb-core` workspace crate is consumed as a git dependency by sister projects (notably the `UtilitarianTechnology` repo's `rust/adsb-poc/` and `rust/adsb-adapter/` crates). Changes to public types in `adsb-core` propagate to those consumers without an explicit version bump. This doc spells out what counts as breaking and how to coordinate.
 
-*As of 2026-04-28.*
+The HTTP API contracts are pinned by `rust/adsb-server/src/web/routes.rs::consumer_contract_tests` — a dedicated test module that asserts JSON shape (bare array vs envelope) and enrichment-populated invariants for every endpoint UtilTech consumers hit. **Run those tests before pushing API changes.** If you see the contract test fail, you're holding a coordination obligation.
+
+*As of 2026-05-05.*
 
 ---
 
@@ -88,6 +90,7 @@ If any answer is yes — coordinate with downstream consumers before merging.
 
 | Date | What broke | Caught by | Fix |
 |---|---|---|---|
-| 2026-04-28 | Correlator (`adsb_correlator.py`) assumed `/api/positions` returned `{"positions": [...]}`; actual shape is a bare array. Tests mocked the wrong shape. | Real round-trip during VPS cutover verification | Fixed correlator + tests; documented here. |
+| 2026-04-28 | Correlator (`adsb_correlator.py`) assumed `/api/positions` returned `{"positions": [...]}`; actual shape is a bare array. Tests mocked the wrong shape. | Real round-trip during VPS cutover verification | Fixed correlator + tests; documented here. Now pinned by `consumer_contract_tests::contract_api_positions_is_bare_array`. |
+| 2026-05-05 | `/api/positions/all` and `/api/query` did not include `is_military` / `registration` / `country` / `callsign` — the correlator's `ADSBCandidate` reads those with `.get(..., default)`, so historical-replay queries silently treated every aircraft as civilian. Discovered while writing the new contract regression tests. | Author-time review during contract test scaffolding | Enriched `PositionRow` with these fields; both SQLite and Postgres SQL queries updated to JOIN aircraft + latest sighting. Pinned by `consumer_contract_tests::contract_api_positions_all_enrichment_is_populated` and `_query_enrichment_is_populated`. |
 
 When a new breakage is caught, log it in this table — the goal is a small, growing record of the kinds of mismatches we've already learned about.

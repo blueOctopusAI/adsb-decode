@@ -384,6 +384,10 @@ impl Database {
                 heading_deg: r.get(5)?,
                 vertical_rate_fpm: r.get(6)?,
                 timestamp: r.get(7)?,
+                callsign: None,
+                registration: None,
+                country: None,
+                is_military: None,
             })
         })
         .unwrap()
@@ -842,6 +846,23 @@ pub struct PositionRow {
     pub heading_deg: Option<f64>,
     pub vertical_rate_fpm: Option<i32>,
     pub timestamp: f64,
+    /// Aircraft enrichment fields. Populated by producers that JOIN aircraft + sightings
+    /// (`get_all_positions_ordered`, `query_positions`, `export_positions`). Producers
+    /// that don't need them — `get_recent_positions` (live tracker takes a different
+    /// route-level enrichment path), `get_trails` (only emits position fields),
+    /// `get_positions` (CLI history) — leave these as None.
+    ///
+    /// Why on the row at all: `/api/positions/all` and `/api/query` serialize PositionRow
+    /// directly to JSON. Without these fields the UtilTech correlator's `is_military`
+    /// + `registration` reads silently default to false/None on historical replay queries.
+    #[serde(default)]
+    pub callsign: Option<String>,
+    #[serde(default)]
+    pub registration: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub is_military: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -967,6 +988,11 @@ impl Database {
                 heading_deg: r.get(5)?,
                 vertical_rate_fpm: r.get(6)?,
                 timestamp: r.get(7)?,
+                // Live tracker path enriches these at the route level (`/api/positions`).
+                callsign: None,
+                registration: None,
+                country: None,
+                is_military: None,
             })
         })
         .unwrap()
@@ -1050,6 +1076,11 @@ impl Database {
                 heading_deg: r.get(5)?,
                 vertical_rate_fpm: r.get(6)?,
                 timestamp: r.get(7)?,
+                // /api/trails route only emits lat/lon/altitude/timestamp.
+                callsign: None,
+                registration: None,
+                country: None,
+                is_military: None,
             })
         })
         .unwrap()
@@ -1137,10 +1168,21 @@ impl Database {
         }
 
         let where_clause = conditions.join(" AND ");
+        // Aircraft enrichment via JOINs on `aircraft` (registration/country/military)
+        // and the latest sighting per ICAO (callsign). Sightings can be multi-row per
+        // aircraft over multiple capture sessions; the inner ROW_NUMBER subquery
+        // deduplicates to the most recent.
         let sql = format!(
-            "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg, p.vertical_rate_fpm, p.timestamp
+            "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg, p.vertical_rate_fpm, p.timestamp,
+                    s_latest.callsign, a.registration, a.country, a.is_military
              FROM positions p
              LEFT JOIN aircraft a ON p.icao = a.icao
+             LEFT JOIN (
+                 SELECT icao, callsign FROM (
+                     SELECT icao, callsign, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY last_seen DESC) AS rn
+                     FROM sightings
+                 ) WHERE rn = 1
+             ) s_latest ON p.icao = s_latest.icao
              WHERE {where_clause}
              ORDER BY p.timestamp DESC LIMIT ?{}",
             bind_values.len() + 1
@@ -1162,6 +1204,10 @@ impl Database {
                 heading_deg: r.get(5)?,
                 vertical_rate_fpm: r.get(6)?,
                 timestamp: r.get(7)?,
+                callsign: r.get(8)?,
+                registration: r.get(9)?,
+                country: r.get(10)?,
+                is_military: r.get::<_, Option<i32>>(11)?.map(|v| v != 0),
             })
         })
         .unwrap()
@@ -1176,14 +1222,25 @@ impl Database {
         start: Option<f64>,
         end: Option<f64>,
     ) -> Vec<PositionRow> {
+        // Aircraft enrichment via JOIN — `/api/positions/all` is the post-flight
+        // replay correlation endpoint, and the UtilTech correlator's military
+        // discrimination + registration display read from these fields.
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
-                 FROM positions
-                 WHERE (?1 IS NULL OR timestamp >= ?1)
-                   AND (?2 IS NULL OR timestamp <= ?2)
-                 ORDER BY timestamp ASC LIMIT ?3",
+                "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg, p.vertical_rate_fpm, p.timestamp,
+                        s_latest.callsign, a.registration, a.country, a.is_military
+                 FROM positions p
+                 LEFT JOIN aircraft a ON p.icao = a.icao
+                 LEFT JOIN (
+                     SELECT icao, callsign FROM (
+                         SELECT icao, callsign, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY last_seen DESC) AS rn
+                         FROM sightings
+                     ) WHERE rn = 1
+                 ) s_latest ON p.icao = s_latest.icao
+                 WHERE (?1 IS NULL OR p.timestamp >= ?1)
+                   AND (?2 IS NULL OR p.timestamp <= ?2)
+                 ORDER BY p.timestamp ASC LIMIT ?3",
             )
             .unwrap();
 
@@ -1197,6 +1254,10 @@ impl Database {
                 heading_deg: r.get(5)?,
                 vertical_rate_fpm: r.get(6)?,
                 timestamp: r.get(7)?,
+                callsign: r.get(8)?,
+                registration: r.get(9)?,
+                country: r.get(10)?,
+                is_military: r.get::<_, Option<i32>>(11)?.map(|v| v != 0),
             })
         })
         .unwrap()
@@ -1250,11 +1311,11 @@ impl Database {
 
         if let Some(h) = hours {
             let cutoff = now() - (h * 3600.0);
-            conditions.push(format!("timestamp >= ?{}", bind_values.len() + 1));
+            conditions.push(format!("p.timestamp >= ?{}", bind_values.len() + 1));
             bind_values.push(Box::new(cutoff));
         }
         if let Some(ic) = icao {
-            conditions.push(format!("icao = ?{}", bind_values.len() + 1));
+            conditions.push(format!("p.icao = ?{}", bind_values.len() + 1));
             bind_values.push(Box::new(ic.to_string()));
         }
 
@@ -1264,10 +1325,21 @@ impl Database {
             conditions.join(" AND ")
         };
 
+        // CSV/JSON exports include enrichment so external consumers don't need
+        // a second round-trip to get registration / military / callsign.
         let sql = format!(
-            "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
-             FROM positions WHERE {where_clause}
-             ORDER BY timestamp ASC LIMIT ?{}",
+            "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg, p.vertical_rate_fpm, p.timestamp,
+                    s_latest.callsign, a.registration, a.country, a.is_military
+             FROM positions p
+             LEFT JOIN aircraft a ON p.icao = a.icao
+             LEFT JOIN (
+                 SELECT icao, callsign FROM (
+                     SELECT icao, callsign, ROW_NUMBER() OVER (PARTITION BY icao ORDER BY last_seen DESC) AS rn
+                     FROM sightings
+                 ) WHERE rn = 1
+             ) s_latest ON p.icao = s_latest.icao
+             WHERE {where_clause}
+             ORDER BY p.timestamp ASC LIMIT ?{}",
             bind_values.len() + 1
         );
 
@@ -1287,6 +1359,10 @@ impl Database {
                 heading_deg: r.get(5)?,
                 vertical_rate_fpm: r.get(6)?,
                 timestamp: r.get(7)?,
+                callsign: r.get(8)?,
+                registration: r.get(9)?,
+                country: r.get(10)?,
+                is_military: r.get::<_, Option<i32>>(11)?.map(|v| v != 0),
             })
         })
         .unwrap()

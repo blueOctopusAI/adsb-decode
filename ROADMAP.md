@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-04-28.*
+*As of 2026-05-05.*
 
 ---
 
@@ -58,6 +58,10 @@ Service quality for an API that downstream consumers (and live demos) depend on.
 | T2.1 | **Auto-recovery healthcheck.** `adsb-decode-healthcheck.timer` modeled on the BluePages pattern (60 s interval, curl `/api/stats`, restart on non-200). Until installed, manual recovery is needed if `adsb-decode.service` wedges. Source in [`deploy/adsb-decode-healthcheck.{sh,service,timer}`](deploy/). | Shipped 2026-04-28 |
 | T2.2 | **Snapshot cadence.** Manual snapshot taken 2026-04-28 after the cutover (known-good baseline). Automatic-snapshots feature deferred — current traffic doesn't warrant the cadence overhead. Revisit if downstream consumers (correlator, evaluator demos) start depending on uptime SLOs. | Manual baseline 2026-04-28; auto deferred |
 | T2.3 | **Public-vs-gated dashboard decision.** Deferred 2026-04-28. Current traffic is effectively zero, so gating doesn't matter at this stage. Revisit when (a) someone starts citing the dashboard in proposal materials, (b) traffic appears that we'd rather not have, or (c) ITAR conversation reaches a decision point. | Deferred — no current pressure |
+| T2.4 | **Consumer contract regression tests.** A `consumer_contract_tests` module in `rust/adsb-server/src/web/routes.rs` pins the JSON shape (bare array vs envelope, key set, enrichment values populated) for every endpoint a UtilTech consumer hits. Module-level doc names each consumer file. Catches the 2026-04-28 envelope-vs-bare-array failure class statically. | Shipped 2026-05-05 |
+| T2.5 | **TimescaleDB invariant tests.** `tests/timescale_invariants.rs` parses the SQL constants in `db_pg.rs` and asserts compression interval < retention interval for every hypertable. The 2026-04-14 disk-pressure incident (compression 30d / retention 7d) cannot recur silently. | Shipped 2026-05-05 |
+| T2.6 | **Postgres integration tests.** Seven `#[ignore]`'d tests in `db_pg.rs::pg_integration` exercise the production backend's SQL paths that SQLite tests can't reach — DISTINCT ON enrichment, military filter, vessel position roundtrip. Opt-in via `DATABASE_URL` + `--features timescaledb -- --ignored`. | Shipped 2026-05-05 |
+| T2.7 | **CLI dispatch tests.** `tests/cli_dispatch.rs` covers `adsb decode/stats/history/export` end-to-end via `env!("CARGO_BIN_EXE_adsb")`. Pins the user-facing arg surface (e.g. `--db-path`) that deploy scripts and cron jobs rely on. | Shipped 2026-05-05 |
 
 ### Tier 3 — Defer
 
@@ -82,6 +86,18 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 ---
 
 ## Recent
+
+### 2026-05-05
+- **Consumer contract regression tests** landed (`web/routes.rs::consumer_contract_tests`). 10 tests pinning bare-array vs envelope shape and enrichment-populated invariants for every endpoint UtilTech consumers hit. Module doc names each consumer file so a future shape change names what to coordinate against.
+- **`PositionRow` enrichment fix.** Added `callsign`, `registration`, `country`, `is_military` fields populated via JOIN against `aircraft` + latest `sightings`. The historical-replay correlator's military-discrimination logic now actually works — was silently defaulting to false. SQLite uses `ROW_NUMBER` window function, Postgres uses `DISTINCT ON`. Both backends covered.
+- **TimescaleDB invariant tests** (`tests/timescale_invariants.rs`). Parses SQL constants and asserts compression < retention for every hypertable. Encodes the 2026-04-14 lesson as a regression test.
+- **Postgres integration tests** for `db_pg.rs` (7 ignored tests, opt-in via `DATABASE_URL` + `--features timescaledb`). Covers schema migration, position roundtrip, enrichment JOINs, military filter, stats, vessel positions.
+- **CLI dispatch tests** (`tests/cli_dispatch.rs`). 9 tests covering decode/stats/history/export/help/version + error paths.
+- **Per-page deep tests** (`web/routes.rs::pages_tests`). 8 tests pinning robots.txt content-type, sitemap completeness, llms.txt API endpoint references, register form fields, og-image mime, /aircraft detail external links, /api/airports bare-array shape.
+- **Pi `adsb-receiver` crash-on-capture-exit.** A USB transient on May 4 11:19 EDT killed the `rtl_adsb` subprocess silently for 27 h before user noticed empty map. Now `exit(1)` on subprocess death → systemd `Restart=always` respawns within 10 s. Verified by SIGKILL test.
+- **Server-side: register coord validation + `feed_age_seconds` on `/api/stats`.** External monitors can detect "API up but feeder dead" without operator intervention.
+- **Doc cleanup.** CLAUDE.md DB-backend section now reflects Postgres+TimescaleDB production / SQLite local; added `adsb-receiver` crate to project structure (was claiming 3 crates, actually 4); dropped stale hardcoded test counts. db_pg.rs module doc updated with current retention numbers.
+- Total test count: 317 → 347 default + 7 opt-in Postgres tests.
 
 ### 2026-04-28
 - Production VPS restored to 4 GB tier (was 1 GB, memory-pressured). Static IP swapped, services healthy, cert valid through Jun 2.

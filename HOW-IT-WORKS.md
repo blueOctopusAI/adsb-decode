@@ -279,6 +279,16 @@ The Rust implementation defines an `AdsbDatabase` async trait with 13 methods, e
 
 **Retention + compression interaction (learned the hard way on 2026-04-14):** the retention cutoff MUST be greater than the compression delay. If retention drops chunks before compression kicks in, the table holds only uncompressed data and grows unbounded. Events are retained 7 days and compressed at 1 day — leaving a 6-day window for compression to reduce disk usage before retention drops the chunk.
 
+This invariant is now enforced by `rust/adsb-server/tests/timescale_invariants.rs` — a static test that parses the SQL constants in `db_pg.rs` and fails if any hypertable's compression interval becomes ≥ retention interval. The test runs unconditionally in `cargo test` (no `--features timescaledb` needed), so a feature-flag toggle can't bypass the guardrail.
+
+### Position enrichment
+
+`PositionRow` exposes per-position aircraft enrichment fields — `callsign` (latest sighting), `registration`, `country`, `is_military` — populated via JOIN against `aircraft` and the latest `sightings` row per ICAO. These fields are critical for the post-flight correlation use case: the UtilTech correlator's military-discrimination logic reads `is_military` from `/api/positions/all` results, and historical replay queries need `registration` for human-readable identification.
+
+Producers split into two groups:
+- **Enriched (JOIN to aircraft + sightings):** `query_positions`, `get_all_positions_ordered`, `export_positions`. The bare-array endpoints `/api/query`, `/api/positions/all`, and CLI `export` ride on these.
+- **Unenriched (positions table only):** `get_recent_positions` (live `/api/positions` adds enrichment at the route level via separate queries — different code path), `get_trails` (the route only emits lat/lon/altitude/timestamp anyway), `get_positions` (CLI `history`).
+
 ---
 
 ## Stage 7: Intelligence
@@ -526,3 +536,30 @@ These are concepts that have been discussed but do not exist in code yet:
 - **Fleet tracking** — Track specific aircraft by ICAO address or callsign pattern over time. Build profiles of individual aircraft: where they go, how often, typical routes. The database stores per-aircraft history; the fleet analysis layer doesn't exist yet.
 
 - **Collaborative network** — Multiple adsb-decode users sharing data to build broader coverage. The multi-receiver architecture is built for one operator with multiple dongles. Extending it to multiple operators would require authentication, data sharing agreements, and a hosted central server.
+
+---
+
+## Testing & Consumer Contracts
+
+This project ships as a public REST API and as a git-dep library (`adsb-core`) consumed by the UtilTech repo's correlator scripts and on-vehicle Rust crates. Schema drift between this repo and those consumers has bitten before — once on the bare-array vs envelope shape (2026-04-28), once on the historical-replay enrichment gap (2026-05-05). Both are now pinned by tests:
+
+**Consumer contract tests** (`rust/adsb-server/src/web/routes.rs::consumer_contract_tests`)
+A dedicated test module that asserts the JSON shape of every endpoint a downstream Blue Octopus project consumes. The module-level doc lists each consumer file (`adsb_correlator.py`, `ais_correlator.py`, `adsb_bridge.py`, `telemetry_logger.py`, `demo_console.py`) so a future shape change names what to coordinate against. Two tiers per endpoint:
+- *Shape contract* — the response is a bare array (or, for `/api/aircraft/<icao>` and `/api/stats`, an envelope object) with the expected key set.
+- *Enrichment populated* — for `/api/positions/all` and `/api/query`, the seeded military aircraft round-trips with `is_military: true`, `registration: "N12345"`, `callsign: "AAL2127"` actually present on the wire. A regression that drops the JOIN would silently set these to null without breaking shape.
+
+**TimescaleDB invariants** (`rust/adsb-server/tests/timescale_invariants.rs`)
+Three text-parsing tests over the SQL string constants in `db_pg.rs`:
+- For every hypertable, compression interval is strictly less than retention interval (the 2026-04-14 lesson — without it, chunks are dropped before they can compress).
+- Every hypertable has both compression and retention policies, or sits in an explicit `EXEMPT` list.
+- Parser self-check ensures the regex actually finds the expected `positions` / `events` / `vessel_positions` policies (so a parser regression can't silently let the others pass with empty maps).
+
+**Postgres integration tests** (`rust/adsb-server/src/db_pg.rs::pg_integration`)
+Seven `#[ignore]`'d tests that connect to a real Postgres+TimescaleDB instance via `DATABASE_URL` and exercise the production code paths that SQLite tests can't reach: schema migration on connect, position roundtrip, enrichment JOINs (the Postgres `DISTINCT ON` syntax is distinct from the SQLite `ROW_NUMBER` form — both need their own test), military filter with sqlx parameter binding, `feed_age_seconds` computation, vessel position roundtrip. Run with:
+```
+export DATABASE_URL="postgres://adsb:CHANGEME@localhost:5432/adsb_test"
+cargo test -p adsb-server --features timescaledb -- --ignored
+```
+
+**CLI dispatch tests** (`rust/adsb-server/tests/cli_dispatch.rs`)
+Nine integration tests using `env!("CARGO_BIN_EXE_adsb")` (no extra dev-deps) covering `--help`, `--version`, decode/stats/history/export, error paths, and per-subcommand flag documentation (`--db-path` is referenced by deploy scripts and cron jobs).
