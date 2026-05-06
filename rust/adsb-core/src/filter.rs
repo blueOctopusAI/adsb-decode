@@ -674,6 +674,127 @@ mod tests {
         assert!(events.iter().any(|e| e.event_type == EVENT_PROXIMITY));
     }
 
+    /// Regression test for the 2026-05-05 prod proximity-storm incident.
+    ///
+    /// Background: A35E49 (DAL900) emitted 2898 proximity events in 1 hour
+    /// against the same 5 nearby aircraft on prod — ~0.8 events/sec from one
+    /// aircraft, dwarfing all other event types and growing the events table
+    /// to 9.3 GB. The single-tick `test_proximity_alert` above passed; the
+    /// bug was only visible when the same aircraft pair was checked across
+    /// multiple ticks.
+    ///
+    /// Pinned behavior: a pair (A, B) that stays in proximity continuously
+    /// must fire EXACTLY ONCE across N ticks of `check_proximity`. The dedup
+    /// is what makes proximity events actionable — without it, every position
+    /// update fires the same pair forever.
+    ///
+    /// What the bug was on prod: the serve-path filter loop was including
+    /// stale aircraft in the proximity candidate set, then calling
+    /// `fe.clear(stale_icao)` every tick, removing the pair entry from the
+    /// dedup set. Next tick re-fired the pair against the stale-but-still-
+    /// present aircraft. The fix landed in `web/mod.rs` (use
+    /// `collect_active_aircraft` + only clear dedup on actually-pruned ICAOs);
+    /// this test pins the underlying invariant in adsb-core.
+    #[test]
+    fn test_proximity_dedup_holds_across_repeated_check_calls() {
+        let mut engine = FilterEngine::new();
+
+        let mut a = make_ac([0x01, 0x02, 0x03]);
+        a.lat = Some(35.0);
+        a.lon = Some(-82.0);
+        a.altitude_ft = Some(10000);
+        a.last_seen = 1.0;
+
+        let mut b = make_ac([0x04, 0x05, 0x06]);
+        b.lat = Some(35.01);
+        b.lon = Some(-82.01);
+        b.altitude_ft = Some(10200);
+        b.last_seen = 1.0;
+
+        // First tick — pair should fire.
+        let events_1 = engine.check_proximity(&[&a, &b]);
+        assert_eq!(
+            events_1
+                .iter()
+                .filter(|e| e.event_type == EVENT_PROXIMITY)
+                .count(),
+            1,
+            "tick 1 must fire the pair once"
+        );
+
+        // Second tick — same pair, still in proximity. MUST NOT re-fire.
+        // Without the dedup-holds invariant, we'd see another event here,
+        // which is exactly the prod 2026-05-05 failure.
+        let events_2 = engine.check_proximity(&[&a, &b]);
+        assert_eq!(
+            events_2
+                .iter()
+                .filter(|e| e.event_type == EVENT_PROXIMITY)
+                .count(),
+            0,
+            "tick 2: dedup must suppress the same pair (got {} events)",
+            events_2.len()
+        );
+
+        // Tick 3-10 — same pair should never re-fire as long as both stay
+        // in the dedup set.
+        for tick in 3..=10 {
+            let events = engine.check_proximity(&[&a, &b]);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.event_type == EVENT_PROXIMITY)
+                    .count(),
+                0,
+                "tick {tick}: dedup leaked — pair re-fired (this is the prod bug)"
+            );
+        }
+    }
+
+    /// Pin the rule that re-emergence after a clear should re-fire the pair.
+    ///
+    /// The dedup is intentionally held in memory only. When an aircraft goes
+    /// stale and is pruned from the tracker, the calling code is expected to
+    /// `clear()` the pair — so that if it returns later (signal dropout +
+    /// re-entry), the pair fires again as a new alert.
+    ///
+    /// This is the OTHER side of the fix: dedup must hold across ticks
+    /// (above), AND clearing must restore re-firability for legitimate
+    /// re-emergence. Both invariants together make proximity events
+    /// actionable.
+    #[test]
+    fn test_proximity_re_fires_after_clear_for_returning_aircraft() {
+        let mut engine = FilterEngine::new();
+
+        let mut a = make_ac([0x01, 0x02, 0x03]);
+        a.lat = Some(35.0);
+        a.lon = Some(-82.0);
+        a.altitude_ft = Some(10000);
+        a.last_seen = 1.0;
+
+        let mut b = make_ac([0x04, 0x05, 0x06]);
+        b.lat = Some(35.01);
+        b.lon = Some(-82.01);
+        b.altitude_ft = Some(10200);
+        b.last_seen = 1.0;
+
+        // Pair fires.
+        assert_eq!(engine.check_proximity(&[&a, &b]).len(), 1);
+        // Dedup holds.
+        assert_eq!(engine.check_proximity(&[&a, &b]).len(), 0);
+
+        // B goes away (stale, pruned by tracker, clear called).
+        engine.clear(&b.icao);
+
+        // B returns — pair MUST fire again. This represents a real new
+        // proximity event after a gap, not a phantom re-fire.
+        assert_eq!(
+            engine.check_proximity(&[&a, &b]).len(),
+            1,
+            "pair should re-fire after clear(B) — represents legitimate re-entry"
+        );
+    }
+
     #[test]
     fn test_clear_emitted() {
         let mut engine = FilterEngine::new();

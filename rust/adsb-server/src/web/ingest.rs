@@ -51,16 +51,54 @@ struct ReceiverStatus {
     online: bool,
 }
 
-/// Collect all aircraft from all feeder trackers for filter processing.
-pub fn collect_all_aircraft() -> Vec<adsb_core::tracker::AircraftState> {
+/// Collect only **non-stale** aircraft from all feeder trackers.
+///
+/// Without this filter, aircraft that haven't transmitted in >60 s linger
+/// in the feeder trackers and get re-included in proximity-pair checks every
+/// 10-second filter tick. Combined with the dedup-clear-on-stale logic, that
+/// caused 0.8 events/sec/aircraft on prod (A35E49 = 2898 events/hour with the
+/// same 5 nearby aircraft, 2026-05-05 incident) — the same pair re-fires on
+/// every tick because dedup gets cleared but the stale aircraft is still
+/// "near" the live one in collect_all_aircraft.
+pub fn collect_active_aircraft(now_ts: f64) -> Vec<adsb_core::tracker::AircraftState> {
     let feeders = FEEDER_TRACKERS.read().unwrap();
     let mut all = Vec::new();
     for feeder in feeders.values() {
         for ac in feeder.tracker.aircraft.values() {
-            all.push(ac.clone());
+            if !ac.is_stale(now_ts) {
+                all.push(ac.clone());
+            }
         }
     }
     all
+}
+
+/// Prune stale aircraft from every feeder tracker. Returns the pruned ICAOs.
+///
+/// Without this, stale aircraft (>60 s no transmission) accumulate forever
+/// in the feeder trackers — both a memory leak and the source of the
+/// phantom-pair-refiring bug. Caller is expected to clear FilterEngine dedup
+/// state for each returned ICAO so that if the aircraft reappears later, its
+/// pair events can re-fire (e.g. a long signal dropout followed by re-entry).
+pub fn prune_stale_from_feeders(now_ts: f64) -> Vec<adsb_core::types::Icao> {
+    let mut feeders = FEEDER_TRACKERS.write().unwrap();
+    let mut pruned = Vec::new();
+    for feeder in feeders.values_mut() {
+        // Identify stale ICAOs first, then prune. Tracker.prune_stale returns
+        // a count, not the keys, so we collect before calling it.
+        let stale: Vec<_> = feeder
+            .tracker
+            .aircraft
+            .iter()
+            .filter(|(_, ac)| ac.is_stale(now_ts))
+            .map(|(k, _)| *k)
+            .collect();
+        for icao in &stale {
+            feeder.tracker.aircraft.remove(icao);
+        }
+        pruned.extend(stale);
+    }
+    pruned
 }
 
 // ---------------------------------------------------------------------------

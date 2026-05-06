@@ -190,7 +190,20 @@ pub async fn serve(
         loop {
             interval.tick().await;
 
-            let aircraft = ingest::collect_all_aircraft();
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+
+            // Use only ACTIVE aircraft for proximity checks. Including stale
+            // aircraft (which the historical `collect_all_aircraft` returned)
+            // caused the 2026-05-05 prod incident: phantom aircraft lingered in
+            // feeder trackers indefinitely (no prune_stale was ever called),
+            // and combined with the dedup-clear-on-stale logic below, made
+            // every nearby live aircraft re-fire the same proximity pair every
+            // 10s. A35E49 hit 2898 events/hour against the same 5 nearby
+            // aircraft on prod before this was caught.
+            let aircraft = ingest::collect_active_aircraft(now_ts);
             if aircraft.is_empty() {
                 continue;
             }
@@ -219,23 +232,29 @@ pub async fn serve(
                     events.extend(fe.check(ac));
                 }
 
-                // Proximity check
+                // Proximity check — only over active aircraft (filtered above).
                 let ac_refs: Vec<_> = aircraft.iter().collect();
                 events.extend(fe.check_proximity(&ac_refs));
 
-                // Prune filter state for stale aircraft
-                let now_ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs_f64();
-                for ac in &aircraft {
-                    if ac.is_stale(now_ts) {
-                        fe.clear(&ac.icao);
-                    }
-                }
-
                 events
             }; // MutexGuard dropped here
+
+            // Prune stale aircraft from feeder trackers + clear their dedup
+            // state. Must happen AFTER the proximity check (no events lost)
+            // and AFTER the FilterEngine lock is released (no deadlock).
+            //
+            // The clear-then-prune order matters semantically: dropping the
+            // dedup entries for a pruned aircraft means that if it reappears
+            // later (long signal dropout, then re-entry), its proximity pairs
+            // can re-fire. Otherwise we'd silently suppress alerts on
+            // returning aircraft.
+            let pruned_icaos = ingest::prune_stale_from_feeders(now_ts);
+            if !pruned_icaos.is_empty() {
+                let mut fe = filter_engine.lock().unwrap();
+                for icao in &pruned_icaos {
+                    fe.clear(icao);
+                }
+            }
 
             // Write events to database (async, no lock held)
             for evt in &all_events {
