@@ -117,6 +117,11 @@ cargo clippy --workspace         # Lint
 export DATABASE_URL="postgres://adsb:CHANGEME@localhost:5432/adsb_test"
 cargo test -p adsb-server --features timescaledb -- --ignored
 
+# Cut a release (bumps Cargo.toml version + tags + pushes; CI builds artifacts):
+bash scripts/release.sh 0.2.11        # use bare version, no leading 'v'
+# Then deploy:
+ADSB_VPS_HOST=ubuntu@<vps-ip> bash deploy/deploy.sh
+
 # Build production binary (uses TimescaleDB backend):
 cargo build --release --features timescaledb
 
