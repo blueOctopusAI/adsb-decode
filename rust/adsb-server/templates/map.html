@@ -1530,23 +1530,13 @@ async function initCesiumViewer() {
     // Disable Ion to avoid token errors
     Cesium.Ion.defaultAccessToken = '';
 
-    const style = document.getElementById('map-style').value;
-    let imagery;
-    if (style === 'satellite') {
-        imagery = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
-            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
-        );
-    } else {
-        const ct = cesiumTiles[style] || cesiumTiles['dark'];
-        imagery = new Cesium.UrlTemplateImageryProvider({
-            url: ct.url,
-            subdomains: ct.subs,
-            maximumLevel: ct.max,
-        });
-    }
-
+    // Cesium 1.107+ removed the `imageryProvider` constructor option. Passing
+    // it to `new Viewer({...})` does not attach the layer — the viewer renders
+    // black until something else calls imageryLayers.addImageryProvider().
+    // Build the viewer with no initial imagery, then route through
+    // setCesiumMapStyle() (the same path the style dropdown uses) so first
+    // activation matches subsequent style toggles.
     cesiumViewer = new Cesium.Viewer('cesium-container', {
-        imageryProvider: imagery,
         baseLayerPicker: false,
         geocoder: false,
         homeButton: false,
@@ -1562,9 +1552,9 @@ async function initCesiumViewer() {
     });
 
     cesiumViewer.scene.globe.showGroundAtmosphere = false;
-    const isDark = (mapThemes[style] || mapThemes['dark']).bg === 'dark';
-    cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString(isDark ? '#0a0a0a' : '#d0d8e0');
-    cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString(isDark ? '#0a0a0a' : '#d0d8e0');
+
+    const style = document.getElementById('map-style').value;
+    await setCesiumMapStyle(style);
 }
 
 let cesiumLiveInterval = null;
@@ -1589,17 +1579,13 @@ async function activate3D() {
     cesiumViewer.timeline.container.style.display = 'none';
     cesiumViewer.animation.container.style.display = 'none';
 
-    // Fly to current map center at an oblique angle.
-    // Lower altitude (40km vs 150km) + steeper pitch (-50° vs -25°) frames the
-    // airspace in the foreground instead of putting most of the screen in dark
-    // space above the horizon. Smaller lat offset (0.4° vs 2.0°) since the
-    // steeper pitch doesn't need as much forward look-distance.
+    // Fly to current map center at an oblique angle
     const c = map.getCenter();
     cesiumViewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(c.lng, c.lat - 0.4, 40000),
+        destination: Cesium.Cartesian3.fromDegrees(c.lng, c.lat - 2.0, 150000),
         orientation: {
             heading: Cesium.Math.toRadians(0),
-            pitch: Cesium.Math.toRadians(-50),
+            pitch: Cesium.Math.toRadians(-25),
             roll: 0,
         },
         duration: 0,
