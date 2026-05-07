@@ -165,6 +165,22 @@ The 13-bit Altitude Code uses either:
 - **25-ft mode**: M-bit = 0, Q-bit = 1 → altitude = (code × 25) - 1000
 - **100-ft mode**: M-bit = 0, Q-bit = 0 → Gillham gray code (interleaved bit extraction → octal digit construction → dual gray code transformation → altitude in 100-ft increments)
 
+### BDS Registers (DF20, DF21 — Enhanced Mode S)
+
+**Module:** Rust `comm_b.rs`
+
+DF20 and DF21 are *long* surveillance replies (112 bits). After the standard altitude or squawk, the next 56 bits — the **MB field** — carry data from one of the aircraft's BDS (Binary Data Store) registers. These registers are responses to selective interrogation by ground radar; we receive them passively when the aircraft transmits the reply over the air.
+
+Three commonly-readable registers, each unlocking data ADS-B alone never carries:
+
+- **BDS 4,0 — Selected Vertical Intention.** MCP/FCU selected altitude (the autopilot setting), FMS selected altitude, barometric pressure setting. Reveals what the pilot is *targeting*, not just where they are now.
+- **BDS 5,0 — Track and Turn Report.** Roll angle, true track angle, ground speed, track angle rate, **true airspeed**. Roll signals a turn before the heading changes. TAS is the actual airspeed in clean air.
+- **BDS 6,0 — Heading and Speed Report.** Magnetic heading, indicated airspeed, Mach number, barometric vertical rate, inertial vertical rate. Magnetic heading is what the pilot reads on the gauge (ADS-B gives ground-track angle).
+
+**The hard part: no register tag.** The MB field is 56 raw bits with no identifier saying which register the data came from. We decode under each candidate register's bit layout and score by plausibility — status bits set, values within physical bounds (e.g., roll ≤ 60°, Mach ≤ 1.0, baro 800-1200 mb). The winning register must beat the runner-up by ≥ 4 plausibility points or the frame is dropped. Better to drop than mislabel.
+
+Each register's payload rides on the existing `AltitudeMsg` / `SquawkMsg` types as `comm_b: Option<CommBRegister>`, JSON-serialized only when populated.
+
 ---
 
 ## Stage 4a: CPR Decoding

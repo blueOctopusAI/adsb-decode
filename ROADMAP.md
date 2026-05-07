@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-05-07.*
+*As of 2026-05-07 (afternoon).*
 
 ---
 
@@ -73,6 +73,16 @@ Not blocking anything; revisit when one of the above concerns escalates.
 | T3.2 | On-drone AIS receiver | Current AIS path is ground-side via WebSocket; an actual flying AIS receiver is a hardware path, not a server-side change. |
 | T3.3 | API CORS / API-key story | All consumers today are first-party. Revisit if third-party clients appear. |
 
+### Tier 1.5 — Foundations for ML, real-time, and protocol depth
+
+Engineering-shaped pieces that turn one-off polish into compounding capability.
+
+| ID | Item | Status |
+|---|---|---|
+| T1.5.1 | **BDS 4,0 / 5,0 / 6,0 decoding for DF20/DF21 long Comm-B** (Enhanced Mode S). Recovers data ADS-B never carries: autopilot setting (selected altitude, FMS, baro), true airspeed + roll angle + ground speed (track and turn report), magnetic heading + IAS + Mach + barometric/inertial vertical rate (heading and speed report). Plausibility-based register identification — winning register must beat runner-up by ≥4 points or frame is dropped. New module `adsb-core::comm_b` (12 unit tests). | Shipped 2026-05-07 |
+| T1.5.2 | **Per-position anomaly score + DB column.** Foundation for ML; today the scorer is hand-tuned thresholds (extreme speed, extreme vertical rate, position teleport, altitude jump, stuck position, nonmonotonic timestamps) but the persistence shape is what later ML work will replace, not the column. New module `adsb-core::anomaly`. Schema gets `anomaly_score REAL` on positions; idempotent migration in both SQLite and TimescaleDB backends. Tracker computes the score per position update and includes it on the TrackEvent. 11 anomaly unit tests + 3 DB migration/roundtrip tests. | Shipped 2026-05-07 |
+| T1.5.3 | **WebSocket position stream (`/ws/positions`).** Replaces the per-tab 30 HTTP requests/min poll with one persistent socket that pushes the same JSON snapshot every 2 seconds. Polling becomes fallback-only — fires when WS isn't available (proxy strips upgrade, network blocks, etc.) or while reconnecting with backoff. Trail-duration slider triggers WS reconnect so live pushes match the user-selected window. | Shipped 2026-05-07 |
+
 ### Tier 3.5 — UX / dashboard polish
 
 Visible improvements that make the public site feel like a real product, not a demo.
@@ -97,6 +107,12 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 ---
 
 ## Recent
+
+### 2026-05-07 (afternoon) — Foundations: BDS / anomaly score / WebSocket
+- **BDS decoding (T1.5.1).** DF20/DF21 long Comm-B replies were silently dropping their 56-bit MB field on every aircraft we heard. New `adsb-core::comm_b` module decodes BDS 4,0 (Selected Vertical Intention), BDS 5,0 (Track and Turn Report), BDS 6,0 (Heading and Speed Report). Identifies registers via plausibility scoring — each register's decoded values must pass physical sanity bounds and the winning register must beat the runner-up by ≥4 points. Ambiguous frames return None; conservative default. Register data now rides on the existing `AltitudeMsg` / `SquawkMsg` types as `comm_b: Option<CommBRegister>`, JSON-serialized only when populated. 12 new tests; net `adsb-core` 155 → 167 tests.
+- **Anomaly score (T1.5.2).** Schema gets `anomaly_score REAL` on positions in both SQLite and TimescaleDB; new `migrate_add_column_if_missing` helper checks `pragma_table_info` and runs `ALTER TABLE ADD COLUMN` only when the column is missing. PG uses `IF NOT EXISTS`. Existing prod DBs upgrade transparently. Tracker computes the score on every position update via the new `adsb-core::anomaly` module — six rules at first light (extreme speed, extreme vertical rate, position teleport, altitude jump, stuck position, nonmonotonic timestamps). Each rule pushes a stable text flag so consumers can see *why* without re-deriving. PositionRow gains the field with skip-serializing-when-None. 11 anomaly tests + 3 DB tests (roundtrip via raw SQL, migration idempotent, migration adds column to legacy schema).
+- **WebSocket position stream (T1.5.3).** New `/ws/positions` endpoint pushes the same JSON shape `/api/positions` returned. `collect_positions_snapshot` extracted from `api_positions` so both paths build the identical payload. The dashboard's 2-second polling becomes fallback-only — fires when WS isn't available, with exponential reconnect backoff capped at 30s. Trail-duration slider triggers WS reconnect so live pushes match the user's window. axum 0.7 `ws` feature enabled.
+- **Tests:** 178 adsb-core + 144 adsb-server + 9 cli + 3 timescale tests pass; clippy clean both with and without the timescaledb feature.
 
 ### 2026-05-07 — UX session: setup script + weather + 4D replay
 - **One-command receiver setup is one command for real.** Previously `curl | sudo bash` ran but still left the user editing /etc/adsb-receiver.env and running `systemctl enable --now`. Now `ADSB_API_KEY=xxx curl ... | sudo -E bash` finishes the install in one shell line. Added `--dry-run` (touches nothing, announces every action) and `--help` (reads usage out of the script header). New bash test suite (`tests/setup/test_receiver_setup.sh`) with 31 smoke tests covers arg parsing, env-var injection, file-path overrides, auto-start gating, root-check rejection. Wired into CI as a separate `setup-scripts` job.
