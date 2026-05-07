@@ -583,6 +583,10 @@ fn update_tracker(tracker: &Arc<RwLock<Tracker>>, aircraft: &[SimAircraft], now:
             first_seen: now,
             last_seen: now,
             message_count: 0,
+            last_bds40: None,
+            last_bds50: None,
+            last_bds60: None,
+            last_comm_b_seen: 0.0,
             heading_history: Vec::new(),
             position_history: Vec::new(),
         });

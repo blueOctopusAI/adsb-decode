@@ -158,6 +158,12 @@ pub async fn api_aircraft(
 }
 
 /// GET /api/aircraft/:icao — single aircraft detail + positions + events.
+///
+/// When a live tracker is attached, also includes the most-recent BDS register
+/// payloads (`comm_b.bds40`, `comm_b.bds50`, `comm_b.bds60`) we've seen for
+/// this aircraft on DF20/DF21 long Comm-B replies. These are volatile (refresh
+/// when ground radar selectively interrogates) and only present in memory —
+/// not persisted to the DB.
 pub async fn api_aircraft_detail(
     State(state): State<Arc<AppState>>,
     Path(icao): Path<String>,
@@ -178,12 +184,31 @@ pub async fn api_aircraft_detail(
     let positions = state.db.get_positions(&icao_upper, 100).await;
     let events = state.db.get_events(None, Some(&icao_upper), 50).await;
 
-    Json(json!({
+    let comm_b = state.tracker.as_ref().and_then(|t| {
+        let tracker = t.read().ok()?;
+        let icao_bytes = adsb_core::types::icao_from_hex(&icao_upper)?;
+        let ac = tracker.aircraft.get(&icao_bytes)?;
+        if ac.last_bds40.is_none() && ac.last_bds50.is_none() && ac.last_bds60.is_none() {
+            return None;
+        }
+        Some(json!({
+            "last_seen": ac.last_comm_b_seen,
+            "bds40": ac.last_bds40,
+            "bds50": ac.last_bds50,
+            "bds60": ac.last_bds60,
+        }))
+    });
+
+    let mut response = json!({
         "aircraft": aircraft,
         "positions": positions,
         "events": events,
-    }))
-    .into_response()
+    });
+    if let Some(cb) = comm_b {
+        response["comm_b"] = cb;
+    }
+
+    Json(response).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -2788,6 +2813,31 @@ mod pages_tests {
             body.contains("api.rainviewer.com"),
             "weather toggle present but RainViewer manifest URL missing"
         );
+    }
+
+    /// /aircraft/<icao> detail page renders BDS data when the API supplies it.
+    /// Pin the JS hook (`data.comm_b`) and a representative label from each of
+    /// the three registers so the surfacing layer can't silently regress.
+    #[tokio::test]
+    async fn page_detail_surfaces_comm_b_when_present() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/aircraft/A4CA5F").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("data.comm_b"),
+            "detail page must read comm_b from the API response"
+        );
+        for label in [
+            "Selected Alt (MCP)", // BDS 4,0
+            "True Airspeed",      // BDS 5,0
+            "Magnetic Heading",   // BDS 6,0
+            "Mach",               // BDS 6,0
+        ] {
+            assert!(
+                body.contains(label),
+                "detail page missing BDS label {label}"
+            );
+        }
     }
 
     /// Map page wires the WS pusher with a polling fallback. Pin both the

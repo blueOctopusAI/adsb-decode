@@ -98,6 +98,16 @@ pub struct AircraftState {
     pub last_seen: f64,
     pub message_count: u64,
 
+    // Enhanced Mode S (BDS register) data, recovered from DF20/DF21 long
+    // Comm-B replies. ADS-B itself doesn't carry these. Each register's most
+    // recent payload is cached separately so they don't overwrite each other
+    // (a single aircraft typically alternates between BDS 4,0 / 5,0 / 6,0 in
+    // response to ground interrogation).
+    pub last_bds40: Option<crate::types::Bds40>,
+    pub last_bds50: Option<crate::types::Bds50>,
+    pub last_bds60: Option<crate::types::Bds60>,
+    pub last_comm_b_seen: f64,
+
     // History buffers for pattern detection
     pub heading_history: Vec<(f64, f64)>, // (timestamp, heading_deg)
     pub position_history: Vec<(f64, f64, f64, Option<i32>)>, // (ts, lat, lon, alt)
@@ -127,6 +137,10 @@ impl AircraftState {
             first_seen: timestamp,
             last_seen: timestamp,
             message_count: 0,
+            last_bds40: None,
+            last_bds50: None,
+            last_bds60: None,
+            last_comm_b_seen: 0.0,
             heading_history: Vec::new(),
             position_history: Vec::new(),
         }
@@ -335,9 +349,15 @@ impl Tracker {
                 if let Some(alt) = m.altitude_ft {
                     ac.altitude_ft = Some(alt);
                 }
+                if let Some(register) = &m.comm_b {
+                    absorb_comm_b(ac, register, timestamp);
+                }
             }
             DecodedMsg::Squawk(m) => {
                 ac.squawk = Some(m.squawk.clone());
+                if let Some(register) = &m.comm_b {
+                    absorb_comm_b(ac, register, timestamp);
+                }
             }
         }
 
@@ -379,6 +399,24 @@ impl Tracker {
             self.aircraft.remove(&k);
         }
         count
+    }
+}
+
+/// Cache the most recent BDS register payload onto the aircraft state.
+/// Each register slot is independent — a fresh BDS 5,0 doesn't clobber the
+/// last BDS 4,0 we saw, since aircraft typically respond to a rotating set
+/// of selective interrogations.
+pub(crate) fn absorb_comm_b(
+    ac: &mut AircraftState,
+    register: &crate::types::CommBRegister,
+    timestamp: f64,
+) {
+    use crate::types::CommBRegister;
+    ac.last_comm_b_seen = timestamp;
+    match register {
+        CommBRegister::Bds40(d) => ac.last_bds40 = Some(d.clone()),
+        CommBRegister::Bds50(d) => ac.last_bds50 = Some(d.clone()),
+        CommBRegister::Bds60(d) => ac.last_bds60 = Some(d.clone()),
     }
 }
 
@@ -683,5 +721,38 @@ mod tests {
         let icao = [0x48, 0x40, 0xD6];
         // Netherlands address is not military
         assert!(!tracker.aircraft[&icao].is_military);
+    }
+
+    /// BDS register data caches into the per-aircraft state. Each register
+    /// slot is independent — a fresh BDS 5,0 must NOT clobber the last
+    /// BDS 4,0 we saw from the same aircraft, since aircraft cycle through
+    /// registers in response to selective interrogation.
+    #[test]
+    fn test_comm_b_absorbed_into_aircraft_state() {
+        use crate::types::{Bds40, Bds50, CommBRegister};
+        let icao: Icao = [0xA0, 0x00, 0x01];
+        let mut state = AircraftState::new(icao, 1.0);
+
+        let bds50 = Bds50 {
+            roll_deg: Some(5.0),
+            true_track_deg: Some(180.0),
+            ground_speed_kts: Some(450),
+            track_rate_dps: Some(0.5),
+            true_airspeed_kts: Some(465),
+        };
+        super::absorb_comm_b(&mut state, &CommBRegister::Bds50(bds50.clone()), 100.0);
+        assert_eq!(state.last_bds50, Some(bds50.clone()));
+        assert_eq!(state.last_bds40, None);
+        assert_eq!(state.last_comm_b_seen, 100.0);
+
+        let bds40 = Bds40 {
+            mcp_altitude_ft: Some(36000),
+            fms_altitude_ft: None,
+            baro_setting_mb: Some(1013.2),
+        };
+        super::absorb_comm_b(&mut state, &CommBRegister::Bds40(bds40.clone()), 110.0);
+        assert_eq!(state.last_bds40, Some(bds40));
+        assert_eq!(state.last_bds50, Some(bds50)); // unchanged
+        assert_eq!(state.last_comm_b_seen, 110.0);
     }
 }

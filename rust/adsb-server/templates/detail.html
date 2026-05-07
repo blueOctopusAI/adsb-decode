@@ -207,6 +207,35 @@ fetch(`/api/aircraft/${icao}`)
             items.push(['Last Speed', (last.speed_kts ? Math.round(last.speed_kts) : '\u2014') + ' kts']);
             items.push(['Last Heading', (last.heading_deg ? Math.round(last.heading_deg) + '\u00B0' : '\u2014')]);
         }
+        // Enhanced Mode S — autopilot setting, true airspeed, magnetic
+        // heading etc. recovered from DF20/DF21 long Comm-B replies. Only
+        // present when the live tracker is attached AND the aircraft has
+        // recently been selectively interrogated by ground radar.
+        if (data.comm_b) {
+            const cb = data.comm_b;
+            const ageMin = cb.last_seen ? Math.round((Date.now() / 1000 - cb.last_seen) / 60) : null;
+            if (ageMin != null) items.push(['EHS Last Seen', ageMin + 'm ago']);
+            if (cb.bds40) {
+                if (cb.bds40.mcp_altitude_ft != null) items.push(['Selected Alt (MCP)', cb.bds40.mcp_altitude_ft.toLocaleString() + ' ft']);
+                if (cb.bds40.fms_altitude_ft != null) items.push(['Selected Alt (FMS)', cb.bds40.fms_altitude_ft.toLocaleString() + ' ft']);
+                if (cb.bds40.baro_setting_mb != null) items.push(['Baro Setting', cb.bds40.baro_setting_mb.toFixed(1) + ' mb']);
+            }
+            if (cb.bds50) {
+                if (cb.bds50.true_airspeed_kts != null) items.push(['True Airspeed', cb.bds50.true_airspeed_kts + ' kts']);
+                if (cb.bds50.ground_speed_kts != null) items.push(['Ground Speed (BDS)', cb.bds50.ground_speed_kts + ' kts']);
+                if (cb.bds50.true_track_deg != null) items.push(['True Track', cb.bds50.true_track_deg.toFixed(1) + '°']);
+                if (cb.bds50.roll_deg != null) items.push(['Roll Angle', cb.bds50.roll_deg.toFixed(1) + '°']);
+                if (cb.bds50.track_rate_dps != null) items.push(['Track Rate', cb.bds50.track_rate_dps.toFixed(2) + '°/s']);
+            }
+            if (cb.bds60) {
+                if (cb.bds60.magnetic_heading_deg != null) items.push(['Magnetic Heading', cb.bds60.magnetic_heading_deg.toFixed(1) + '°']);
+                if (cb.bds60.indicated_airspeed_kts != null) items.push(['Indicated Airspeed', cb.bds60.indicated_airspeed_kts + ' kts']);
+                if (cb.bds60.mach != null) items.push(['Mach', cb.bds60.mach.toFixed(3)]);
+                if (cb.bds60.baro_vertical_rate_fpm != null) items.push(['Baro VR', cb.bds60.baro_vertical_rate_fpm.toLocaleString() + ' fpm']);
+                if (cb.bds60.inertial_vertical_rate_fpm != null) items.push(['Inertial VR', cb.bds60.inertial_vertical_rate_fpm.toLocaleString() + ' fpm']);
+            }
+        }
+
         grid.innerHTML = items.map(([label, value]) =>
             `<div class="info-item"><div class="label">${label}</div><div class="value">${value}</div></div>`
         ).join('');
