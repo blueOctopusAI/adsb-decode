@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS positions (
     altitude_ft INTEGER,
     speed_kts DOUBLE PRECISION,
     heading_deg DOUBLE PRECISION,
-    vertical_rate_fpm INTEGER
+    vertical_rate_fpm INTEGER,
+    anomaly_score DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS captures (
@@ -240,6 +241,14 @@ impl TimescaleDb {
 
         // Create base schema
         sqlx::raw_sql(TIMESCALE_SCHEMA).execute(&pool).await?;
+
+        // Idempotent migrations for columns added after the initial schema.
+        // PG's IF NOT EXISTS makes these safe on repeat runs.
+        sqlx::raw_sql(
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS anomaly_score DOUBLE PRECISION;",
+        )
+        .execute(&pool)
+        .await?;
 
         // Set up TimescaleDB hypertables and policies (may fail if extension not loaded)
         if let Err(e) = sqlx::raw_sql(TIMESCALE_SETUP).execute(&pool).await {
@@ -938,14 +947,15 @@ impl AdsbDatabase for TimescaleDb {
         speed_kts: Option<f64>,
         heading_deg: Option<f64>,
         vertical_rate_fpm: Option<i32>,
+        anomaly_score: Option<f64>,
         receiver_id: Option<i64>,
         timestamp: f64,
     ) {
         let ts = epoch_to_pg(timestamp);
         let _ = sqlx::query(
             "INSERT INTO positions (time, icao, receiver_id, lat, lon, altitude_ft,
-                                    speed_kts, heading_deg, vertical_rate_fpm)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                                    speed_kts, heading_deg, vertical_rate_fpm, anomaly_score)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(ts)
         .bind(icao)
@@ -956,6 +966,7 @@ impl AdsbDatabase for TimescaleDb {
         .bind(speed_kts)
         .bind(heading_deg)
         .bind(vertical_rate_fpm)
+        .bind(anomaly_score)
         .execute(&self.pool)
         .await;
     }
@@ -1112,6 +1123,7 @@ fn row_to_position(r: &sqlx::postgres::PgRow) -> PositionRow {
         registration: r.try_get("registration").ok().flatten(),
         country: r.try_get("country").ok().flatten(),
         is_military: r.try_get("is_military").ok(),
+        anomaly_score: r.try_get("anomaly_score").ok().flatten(),
     }
 }
 

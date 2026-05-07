@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS positions (
     speed_kts REAL,
     heading_deg REAL,
     vertical_rate_fpm INTEGER,
+    anomaly_score REAL,
     timestamp REAL NOT NULL
 );
 
@@ -148,11 +149,34 @@ impl Database {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA)?;
 
+        // Idempotent column-addition migrations for older DBs.
+        // SQLite's ALTER TABLE has no IF NOT EXISTS, so we check pragma first.
+        Self::migrate_add_column_if_missing(&conn, "positions", "anomaly_score", "REAL")?;
+
         Ok(Database {
             conn,
             autocommit: true,
             pending: 0,
         })
+    }
+
+    /// Add a column to a table if it doesn't already exist. Idempotent.
+    fn migrate_add_column_if_missing(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        sql_type: &str,
+    ) -> SqlResult<()> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let existing: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if existing.iter().any(|c| c == column) {
+            return Ok(());
+        }
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {sql_type};"))?;
+        Ok(())
     }
 
     /// Open in-memory database (for testing).
@@ -232,6 +256,7 @@ impl Database {
                     speed_kts,
                     heading_deg,
                     vertical_rate_fpm,
+                    anomaly_score,
                     receiver_id,
                     timestamp,
                 } => {
@@ -243,6 +268,7 @@ impl Database {
                         *speed_kts,
                         *heading_deg,
                         *vertical_rate_fpm,
+                        *anomaly_score,
                         *receiver_id,
                         *timestamp,
                     );
@@ -353,14 +379,15 @@ impl Database {
         speed_kts: Option<f64>,
         heading_deg: Option<f64>,
         vertical_rate_fpm: Option<i32>,
+        anomaly_score: Option<f64>,
         receiver_id: Option<i64>,
         timestamp: f64,
     ) {
         let icao_str = icao_to_string(icao);
         let _ = self.conn.execute(
-            "INSERT INTO positions (icao, receiver_id, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![icao_str, receiver_id, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp],
+            "INSERT INTO positions (icao, receiver_id, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, anomaly_score, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![icao_str, receiver_id, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, anomaly_score, timestamp],
         );
         self.maybe_commit();
     }
@@ -388,6 +415,7 @@ impl Database {
                 registration: None,
                 country: None,
                 is_military: None,
+                anomaly_score: None,
             })
         })
         .unwrap()
@@ -836,7 +864,7 @@ pub struct HeatmapCell {
     pub avg_alt: Option<i32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct PositionRow {
     pub icao: String,
     pub lat: f64,
@@ -846,6 +874,10 @@ pub struct PositionRow {
     pub heading_deg: Option<f64>,
     pub vertical_rate_fpm: Option<i32>,
     pub timestamp: f64,
+    /// Per-position anomaly score. None = unscored (or pre-scoring data).
+    /// 0.0 = normal. Higher = more anomalous. See `adsb_core::anomaly`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anomaly_score: Option<f64>,
     /// Aircraft enrichment fields. Populated by producers that JOIN aircraft + sightings
     /// (`get_all_positions_ordered`, `query_positions`, `export_positions`). Producers
     /// that don't need them — `get_recent_positions` (live tracker takes a different
@@ -993,6 +1025,7 @@ impl Database {
                 registration: None,
                 country: None,
                 is_military: None,
+                anomaly_score: None,
             })
         })
         .unwrap()
@@ -1081,6 +1114,7 @@ impl Database {
                 registration: None,
                 country: None,
                 is_military: None,
+                anomaly_score: None,
             })
         })
         .unwrap()
@@ -1208,6 +1242,7 @@ impl Database {
                 registration: r.get(9)?,
                 country: r.get(10)?,
                 is_military: r.get::<_, Option<i32>>(11)?.map(|v| v != 0),
+                anomaly_score: r.get::<_, Option<f64>>(12).ok().flatten(),
             })
         })
         .unwrap()
@@ -1258,6 +1293,7 @@ impl Database {
                 registration: r.get(9)?,
                 country: r.get(10)?,
                 is_military: r.get::<_, Option<i32>>(11)?.map(|v| v != 0),
+                anomaly_score: r.get::<_, Option<f64>>(12).ok().flatten(),
             })
         })
         .unwrap()
@@ -1363,6 +1399,7 @@ impl Database {
                 registration: r.get(9)?,
                 country: r.get(10)?,
                 is_military: r.get::<_, Option<i32>>(11)?.map(|v| v != 0),
+                anomaly_score: r.get::<_, Option<f64>>(12).ok().flatten(),
             })
         })
         .unwrap()
@@ -1473,6 +1510,7 @@ pub trait AdsbDatabase: Send + Sync {
         speed_kts: Option<f64>,
         heading_deg: Option<f64>,
         vertical_rate_fpm: Option<i32>,
+        anomaly_score: Option<f64>,
         receiver_id: Option<i64>,
         timestamp: f64,
     );
@@ -1658,6 +1696,7 @@ impl AdsbDatabase for SqliteDb {
         speed_kts: Option<f64>,
         heading_deg: Option<f64>,
         vertical_rate_fpm: Option<i32>,
+        anomaly_score: Option<f64>,
         receiver_id: Option<i64>,
         timestamp: f64,
     ) {
@@ -1673,6 +1712,7 @@ impl AdsbDatabase for SqliteDb {
             speed_kts,
             heading_deg,
             vertical_rate_fpm,
+            anomaly_score,
             receiver_id,
             timestamp,
         );
@@ -1780,7 +1820,7 @@ mod tests {
         let mut db = test_db();
         let icao = icao_from_hex("40621D").unwrap();
         db.upsert_aircraft(&icao, Some("UK"), None, false, 1.0);
-        db.add_position(&icao, 52.25, 3.92, Some(38000), None, None, None, None, 1.0);
+        db.add_position(&icao, 52.25, 3.92, Some(38000), None, None, None, None, None, 1.0);
 
         assert_eq!(db.count_positions(), 1);
         let positions = db.get_positions("40621D", 10);
@@ -1789,14 +1829,97 @@ mod tests {
         assert_eq!(positions[0].altitude_ft, Some(38000));
     }
 
+    /// anomaly_score persists across the INSERT/SELECT roundtrip. Reads the
+    /// column via raw SQL (the typed PositionRow getters don't SELECT it yet)
+    /// so a future regression in the INSERT path can't pass the test silently.
+    #[test]
+    fn test_anomaly_score_persists_in_positions_row() {
+        let mut db = test_db();
+        let icao = icao_from_hex("40621D").unwrap();
+        db.upsert_aircraft(&icao, Some("UK"), None, false, 1.0);
+        db.add_position(&icao, 52.25, 3.92, Some(38000), None, None, None, Some(2.5), None, 1.0);
+        db.flush();
+        let stored: Option<f64> = db
+            .conn
+            .query_row(
+                "SELECT anomaly_score FROM positions WHERE icao = ?1",
+                params!["40621D"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, Some(2.5));
+    }
+
+    /// Migration is idempotent: running open() on an existing path that
+    /// already had the schema applied (including the column) doesn't error.
+    #[test]
+    fn test_migration_idempotent_on_clean_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mig.db");
+        let path_str = path.to_str().unwrap();
+        // First open creates schema with the column.
+        Database::open(path_str).unwrap();
+        // Second open re-runs migration — must be a no-op.
+        Database::open(path_str).unwrap();
+    }
+
+    /// Migration adds the column when an older positions table is missing it.
+    /// Exercises `migrate_add_column_if_missing` directly on a hand-built
+    /// pre-anomaly_score schema so the test isn't entangled with the rest of
+    /// the production schema (receivers + indexes etc).
+    #[test]
+    fn test_migration_adds_column_to_legacy_positions_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                icao TEXT NOT NULL,
+                lat REAL NOT NULL,
+                lon REAL NOT NULL,
+                timestamp REAL NOT NULL
+            );",
+        )
+        .unwrap();
+
+        // Pre-condition: column absent.
+        let mut stmt = conn.prepare("PRAGMA table_info(positions)").unwrap();
+        let cols_before: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(!cols_before.iter().any(|c| c == "anomaly_score"));
+        drop(stmt);
+
+        // Run the migration helper.
+        Database::migrate_add_column_if_missing(&conn, "positions", "anomaly_score", "REAL")
+            .unwrap();
+
+        // Post-condition: column present.
+        let mut stmt = conn.prepare("PRAGMA table_info(positions)").unwrap();
+        let cols_after: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            cols_after.iter().any(|c| c == "anomaly_score"),
+            "migration failed to add column. Columns: {cols_after:?}"
+        );
+
+        // And calling it again is a no-op, not an error.
+        Database::migrate_add_column_if_missing(&conn, "positions", "anomaly_score", "REAL")
+            .unwrap();
+    }
+
     #[test]
     fn test_multiple_positions() {
         let mut db = test_db();
         let icao = icao_from_hex("40621D").unwrap();
         db.upsert_aircraft(&icao, Some("UK"), None, false, 1.0);
-        db.add_position(&icao, 52.25, 3.92, Some(38000), None, None, None, None, 1.0);
-        db.add_position(&icao, 52.26, 3.93, Some(38100), None, None, None, None, 2.0);
-        db.add_position(&icao, 52.27, 3.94, Some(38200), None, None, None, None, 3.0);
+        db.add_position(&icao, 52.25, 3.92, Some(38000), None, None, None, None, None, 1.0);
+        db.add_position(&icao, 52.26, 3.93, Some(38100), None, None, None, None, None, 2.0);
+        db.add_position(&icao, 52.27, 3.94, Some(38200), None, None, None, None, None, 3.0);
 
         assert_eq!(db.count_positions(), 3);
         let positions = db.get_positions("40621D", 2);
@@ -1895,7 +2018,7 @@ mod tests {
         let mut db = test_db();
         let icao = icao_from_hex("4840D6").unwrap();
         db.upsert_aircraft(&icao, None, None, false, 1.0);
-        db.add_position(&icao, 52.0, 3.0, None, None, None, None, None, 1.0);
+        db.add_position(&icao, 52.0, 3.0, None, None, None, None, None, None, 1.0);
 
         let stats = db.stats();
         assert_eq!(stats.aircraft, 1);
@@ -1955,6 +2078,7 @@ mod tests {
                 speed_kts: Some(450.0),
                 heading_deg: Some(90.0),
                 vertical_rate_fpm: None,
+                anomaly_score: None,
                 receiver_id: None,
                 timestamp: 1.0,
             },
@@ -2064,6 +2188,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 base_ts + (i as f64),
             );
         }
@@ -2095,6 +2220,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 base_ts + (i as f64),
             );
         }
@@ -2113,9 +2239,9 @@ mod tests {
         db.upsert_aircraft(&icao, None, None, false, 1.0);
 
         // Old position
-        db.add_position(&icao, 52.0, 3.0, None, None, None, None, None, 1000.0);
+        db.add_position(&icao, 52.0, 3.0, None, None, None, None, None, None, 1000.0);
         // Recent position
-        db.add_position(&icao, 52.1, 3.1, None, None, None, None, None, now());
+        db.add_position(&icao, 52.1, 3.1, None, None, None, None, None, None, now());
 
         assert_eq!(db.count_positions(), 2);
 
@@ -2174,7 +2300,7 @@ mod tests {
         // Aircraft with positions (should survive)
         let real = icao_from_hex("4840D6").unwrap();
         db.upsert_aircraft(&real, None, None, false, 0.0);
-        db.add_position(&real, 52.0, 3.0, None, None, None, None, None, 0.0);
+        db.add_position(&real, 52.0, 3.0, None, None, None, None, None, None, 0.0);
 
         // Aircraft without positions, old (should be pruned)
         let phantom = icao_from_hex("AAAAAA").unwrap();

@@ -831,6 +831,7 @@ mod tests {
             Some(90.0),
             None,
             None,
+            None,
             1.0,
         );
         db.add_event(
@@ -2053,6 +2054,7 @@ mod consumer_contract_tests {
             Some(450.0),
             Some(270.0),
             Some(-1500),
+            None,
             None,
             now,
         );

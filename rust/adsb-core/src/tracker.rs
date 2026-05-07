@@ -52,6 +52,9 @@ pub enum TrackEvent {
         altitude_ft: Option<i32>,
         speed_kts: Option<f64>,
         heading_deg: Option<f64>,
+        /// Anomaly score from `anomaly::score_position`. None on first
+        /// sighting if no aircraft state existed; 0.0 means "looks normal."
+        anomaly_score: Option<f64>,
         vertical_rate_fpm: Option<i32>,
         receiver_id: Option<i64>,
         timestamp: f64,
@@ -254,6 +257,11 @@ impl Tracker {
 
                 // Attempt position decode
                 if let Some((lat, lon)) = try_cpr_decode(ac, self.ref_lat, self.ref_lon) {
+                    // Capture the previous position-history entry (if any) before
+                    // we push the current one so the anomaly scorer sees the real
+                    // delta, not the just-pushed self-pair.
+                    let previous_for_score = ac.position_history.last().copied();
+
                     ac.lat = Some(lat);
                     ac.lon = Some(lon);
                     self.position_decodes += 1;
@@ -269,6 +277,28 @@ impl Tracker {
                     // Downsample: only emit position event if enough time passed
                     let last = self.last_stored.get(&icao).copied();
                     if last.is_none() || timestamp - last.unwrap() >= self.min_position_interval {
+                        let current_ctx = crate::anomaly::PositionContext {
+                            timestamp,
+                            lat,
+                            lon,
+                            altitude_ft: ac.altitude_ft,
+                            speed_kts: ac.speed_kts,
+                            vertical_rate_fpm: ac.vertical_rate_fpm,
+                        };
+                        let previous_ctx = previous_for_score.map(|(t, la, lo, alt)| {
+                            crate::anomaly::PositionContext {
+                                timestamp: t,
+                                lat: la,
+                                lon: lo,
+                                altitude_ft: alt,
+                                speed_kts: None,
+                                vertical_rate_fpm: None,
+                            }
+                        });
+                        let scored = crate::anomaly::score_position(
+                            &current_ctx,
+                            previous_ctx.as_ref(),
+                        );
                         events.push(TrackEvent::PositionUpdate {
                             icao,
                             lat,
@@ -277,6 +307,7 @@ impl Tracker {
                             speed_kts: ac.speed_kts,
                             heading_deg: ac.heading_deg,
                             vertical_rate_fpm: ac.vertical_rate_fpm,
+                            anomaly_score: Some(scored.score),
                             receiver_id: self.receiver_id,
                             timestamp,
                         });

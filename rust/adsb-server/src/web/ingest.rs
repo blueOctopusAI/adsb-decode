@@ -334,6 +334,7 @@ pub async fn api_ingest_frames(
                 speed_kts,
                 heading_deg,
                 vertical_rate_fpm,
+                anomaly_score,
                 receiver_id,
                 timestamp,
             } => {
@@ -350,6 +351,7 @@ pub async fn api_ingest_frames(
                         *speed_kts,
                         *heading_deg,
                         *vertical_rate_fpm,
+                        *anomaly_score,
                         rid,
                         *timestamp,
                     )

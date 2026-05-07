@@ -356,6 +356,7 @@ pub async fn start_demo(
                     Some(flight.heading_deg),
                     None,
                     None,
+                    None,
                     t,
                 );
             }
@@ -499,6 +500,7 @@ pub async fn start_demo(
                     Some(ac.altitude_ft),
                     Some(ac.speed_kts),
                     Some(ac.heading_deg),
+                    None,
                     None,
                     None,
                     now,
