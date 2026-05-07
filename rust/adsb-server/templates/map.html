@@ -1589,13 +1589,17 @@ async function activate3D() {
     cesiumViewer.timeline.container.style.display = 'none';
     cesiumViewer.animation.container.style.display = 'none';
 
-    // Fly to current map center at an oblique angle
+    // Fly to current map center at an oblique angle.
+    // Lower altitude (40km vs 150km) + steeper pitch (-50° vs -25°) frames the
+    // airspace in the foreground instead of putting most of the screen in dark
+    // space above the horizon. Smaller lat offset (0.4° vs 2.0°) since the
+    // steeper pitch doesn't need as much forward look-distance.
     const c = map.getCenter();
     cesiumViewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(c.lng, c.lat - 2.0, 150000),
+        destination: Cesium.Cartesian3.fromDegrees(c.lng, c.lat - 0.4, 40000),
         orientation: {
             heading: Cesium.Math.toRadians(0),
-            pitch: Cesium.Math.toRadians(-25),
+            pitch: Cesium.Math.toRadians(-50),
             roll: 0,
         },
         duration: 0,
