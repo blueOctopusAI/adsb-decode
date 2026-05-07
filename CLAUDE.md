@@ -34,9 +34,11 @@ rust/
 │       ├── crc.rs            # CRC-24 LUT (compile-time const fn), syndrome tables, try_fix
 │       ├── frame.rs          # ModeFrame, parse_frame, IcaoCache
 │       ├── decode.rs         # Identification, position, velocity, altitude, squawk, Gillham
+│       ├── comm_b.rs         # Mode S Comm-B BDS register decoding (BDS 4,0/5,0/6,0) for DF20/DF21
 │       ├── cpr.rs            # CPR global/local decode, NL table
 │       ├── demod.rs          # IQ→magnitude LUT, preamble, PPM bit recovery
-│       ├── tracker.rs        # AircraftState, CPR pairing, stale pruning, TrackEvent enum
+│       ├── tracker.rs        # AircraftState, CPR pairing, stale pruning, TrackEvent enum (incl. anomaly_score)
+│       ├── anomaly.rs        # Per-position anomaly scorer (rules-based; ML target column)
 │       ├── filter.rs         # FilterEngine with 8 detectors + dedup
 │       ├── enrich.rs         # Aircraft classification, airline lookup, 3,642 airports (include_str!)
 │       ├── icao.rs           # Country lookup, military blocks, N-number conversion
@@ -195,6 +197,9 @@ Current production retention: positions 14 d, events 7 d (1 d compression), vess
 - CLI: decode, track, stats, history, export, serve, setup
 - CRC error correction: 1-2 bit errors via syndrome table lookup
 - `/api/lookup/:icao` route — proxies hexdb.io for aircraft registration, type, owner data (used by detail page and event enrichment)
+- **Enhanced Mode S (BDS) decoding** (2026-05-07) — `adsb-core::comm_b` decodes BDS 4,0 (autopilot setting), BDS 5,0 (true airspeed + roll + ground speed + track), BDS 6,0 (magnetic heading + IAS + Mach + vertical rate) from DF20/DF21 long Comm-B replies. Plausibility-scored register identification — winning register must beat runner-up by ≥4 points or frame is dropped. Rides on `AltitudeMsg`/`SquawkMsg` as `comm_b: Option<CommBRegister>`.
+- **Per-position anomaly score** (2026-05-07) — `adsb-core::anomaly` scores each position via 6 rules (extreme speed, extreme vertical rate, position teleport, altitude jump, stuck position, nonmonotonic timestamps). Persists to `anomaly_score` column on `positions` (both SQLite and TimescaleDB; idempotent migration). Foundation for ML pattern detection on the historical corpus.
+- **WebSocket position stream** (2026-05-07) — `/ws/positions?minutes=N` pushes the same JSON shape as `/api/positions` every 2s on one persistent socket. Dashboard switched from per-tab polling to WS; polling becomes fallback when WS isn't available (proxy strips upgrade, network blocks). axum 0.7 `ws` feature enabled.
 - Rust + Python test suites (run `cargo test --workspace` and `pytest` for current counts)
 - Sample config: `config.example.yaml`
 
