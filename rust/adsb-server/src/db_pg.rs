@@ -200,6 +200,32 @@ SELECT add_continuous_aggregate_policy('positions_30s',
 );
 "#;
 
+/// Continuous aggregate for hourly position counts. Used by `/api/stats` to
+/// get the "positions in last 24h" number without scanning every chunk in
+/// the hypertable. The MAR 14 outage class twice — `COUNT(*) FROM positions
+/// WHERE time > NOW() - 24h` was the slowest query on the system.
+///
+/// `materialized_only = false` enables real-time aggregates so the most
+/// recent hour (which the policy hasn't materialized yet) still counts via
+/// a union between the matview and the base hypertable.
+const CAGG_POSITION_COUNT_HOURLY: &str = r#"
+CREATE MATERIALIZED VIEW IF NOT EXISTS position_count_hourly
+WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
+SELECT
+    time_bucket('1 hour', time) AS hour,
+    COUNT(*) AS cnt
+FROM positions
+GROUP BY hour
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy('position_count_hourly',
+    start_offset => INTERVAL '7 days',
+    end_offset => INTERVAL '5 minutes',
+    schedule_interval => INTERVAL '15 minutes',
+    if_not_exists => TRUE
+);
+"#;
+
 /// Continuous aggregate for 5-minute downsampled positions (historical).
 const CAGG_5M: &str = r#"
 CREATE MATERIALIZED VIEW IF NOT EXISTS positions_5m
@@ -259,6 +285,9 @@ impl TimescaleDb {
         // Set up continuous aggregates (may fail without TimescaleDB)
         let _ = sqlx::raw_sql(CAGG_30S).execute(&pool).await;
         let _ = sqlx::raw_sql(CAGG_5M).execute(&pool).await;
+        let _ = sqlx::raw_sql(CAGG_POSITION_COUNT_HOURLY)
+            .execute(&pool)
+            .await;
 
         Ok(TimescaleDb { pool })
     }
@@ -288,12 +317,28 @@ impl AdsbDatabase for TimescaleDb {
             .fetch_one(&self.pool)
             .await
             .unwrap_or(0);
-        let positions: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM positions WHERE time > NOW() - INTERVAL '24 hours'",
+        // 24-hour position count via the hourly continuous aggregate. Each
+        // bucket is precomputed; SUM-of-24-rows beats COUNT-of-millions.
+        // Real-time aggregates (materialized_only = false on the CAGG) cover
+        // the most-recent partial hour by unioning with the base hypertable.
+        // Falls back to direct COUNT when the CAGG isn't installed (e.g.
+        // plain Postgres without TimescaleDB).
+        let positions: i64 = match sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT COALESCE(SUM(cnt), 0)::BIGINT
+             FROM position_count_hourly
+             WHERE hour > NOW() - INTERVAL '24 hours'",
         )
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(0);
+        {
+            Ok(Some(n)) => n,
+            _ => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM positions WHERE time > NOW() - INTERVAL '24 hours'",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0),
+        };
         let events: i64 = sqlx::query_scalar("SELECT COALESCE(approximate_row_count('events'), 0)")
             .fetch_one(&self.pool)
             .await
