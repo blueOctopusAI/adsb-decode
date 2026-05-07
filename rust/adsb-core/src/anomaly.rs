@@ -70,7 +70,10 @@ fn haversine_nm(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 }
 
 /// Score a position. Higher = more anomalous. See module doc for semantics.
-pub fn score_position(current: &PositionContext, previous: Option<&PositionContext>) -> AnomalyScore {
+pub fn score_position(
+    current: &PositionContext,
+    previous: Option<&PositionContext>,
+) -> AnomalyScore {
     let mut out = AnomalyScore::default();
 
     if let Some(speed) = current.speed_kts {
@@ -188,7 +191,11 @@ mod tests {
         let prev = ctx(1000.0, 35.0, -82.0);
         let curr = ctx(1001.0, 36.5, -82.0); // ~90 nm north
         let s = score_position(&curr, Some(&prev));
-        assert!(s.flags.contains(&"position_teleport"), "flags={:?}", s.flags);
+        assert!(
+            s.flags.contains(&"position_teleport"),
+            "flags={:?}",
+            s.flags
+        );
         assert!(s.score >= 2.0);
     }
 
@@ -234,7 +241,10 @@ mod tests {
             ..ctx(1060.0, 35.0, -82.0)
         };
         let s = score_position(&curr, Some(&prev));
-        assert!(s.is_normal(), "stationary aircraft should not score, got {s:?}");
+        assert!(
+            s.is_normal(),
+            "stationary aircraft should not score, got {s:?}"
+        );
     }
 
     #[test]

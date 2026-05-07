@@ -295,10 +295,8 @@ impl Tracker {
                                 vertical_rate_fpm: None,
                             }
                         });
-                        let scored = crate::anomaly::score_position(
-                            &current_ctx,
-                            previous_ctx.as_ref(),
-                        );
+                        let scored =
+                            crate::anomaly::score_position(&current_ctx, previous_ctx.as_ref());
                         events.push(TrackEvent::PositionUpdate {
                             icao,
                             lat,

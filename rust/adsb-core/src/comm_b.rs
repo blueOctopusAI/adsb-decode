@@ -182,7 +182,11 @@ fn score_bds40(d: &Bds40) -> i32 {
         score += if (0..=65520).contains(&alt) { 2 } else { -10 };
     }
     if let Some(p) = d.baro_setting_mb {
-        score += if (800.0..=1200.0).contains(&p) { 2 } else { -10 };
+        score += if (800.0..=1200.0).contains(&p) {
+            2
+        } else {
+            -10
+        };
     }
     score
 }
@@ -346,13 +350,11 @@ mod tests {
         //         1 (status gs) + 10 (gs) + 1 (status rate) + 10 (rate) +
         //         1 (status tas) + 10 (tas) = 56
         // GS status = 1, 10 bits = 200 → 400 kt; 200 = 0011001000
-        let block = mb(
-            "0 0000000000 \
+        let block = mb("0 0000000000 \
              0 00000000000 \
              1 0011001000 \
              0 0000000000 \
-             0 0000000000",
-        );
+             0 0000000000");
         let d = decode_bds50(&block);
         assert_eq!(d.ground_speed_kts, Some(400));
         assert_eq!(d.true_airspeed_kts, None);
@@ -362,13 +364,11 @@ mod tests {
     fn bds50_decodes_negative_roll() {
         // Roll status = 1; raw 10-bit two's-complement = 1100000001 = unsigned 769.
         // signed(769, 10) = -255 → -255 * 45/256 = -44.82°
-        let block = mb(
-            "1 1100000001 \
+        let block = mb("1 1100000001 \
              0 00000000000 \
              0 0000000000 \
              0 0000000000 \
-             0 0000000000",
-        );
+             0 0000000000");
         let d = decode_bds50(&block);
         let r = d.roll_deg.unwrap();
         assert!(r < 0.0 && (r + 44.82).abs() < 0.1, "got {r}");
@@ -416,13 +416,11 @@ mod tests {
         // gs=300 kt (status=1, 10 bits = 150 = 0010010110)
         // track rate=0 (status=1, sign=0, 10 bits = 0)
         // tas=400 kt (status=1, 10 bits = 200 = 0011001000)
-        let block = mb(
-            "1 0001110010 \
+        let block = mb("1 0001110010 \
              1 01000000000 \
              1 0010010110 \
              1 0000000000 \
-             1 0011001000",
-        );
+             1 0011001000");
         let r = identify_comm_b(&block, &[0xAA, 0xBB, 0xCC]).unwrap();
         match r {
             CommBRegister::Bds50(d) => {

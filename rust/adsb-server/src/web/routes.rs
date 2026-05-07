@@ -2804,10 +2804,7 @@ mod pages_tests {
             "startPositionsPollingFallback",
             "/ws/positions",
         ] {
-            assert!(
-                body.contains(needle),
-                "map.html missing WS hook {needle}"
-            );
+            assert!(body.contains(needle), "map.html missing WS hook {needle}");
         }
     }
 
@@ -2898,7 +2895,8 @@ mod pages_tests {
         // Cesium URL should appear inside the lazy-loader, not as a top-level
         // <script src=> tag — that's what makes the load lazy. Pin the lazy
         // shape by asserting NO <script src=...cesium...> element.
-        let cesium_top_level_script = body.contains("<script src=\"https://cdn.jsdelivr.net/npm/cesium")
+        let cesium_top_level_script = body
+            .contains("<script src=\"https://cdn.jsdelivr.net/npm/cesium")
             || body.contains("<script src=\"https://unpkg.com/cesium");
         assert!(
             !cesium_top_level_script,

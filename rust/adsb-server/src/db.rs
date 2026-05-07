@@ -175,7 +175,9 @@ impl Database {
         if existing.iter().any(|c| c == column) {
             return Ok(());
         }
-        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {sql_type};"))?;
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {sql_type};"
+        ))?;
         Ok(())
     }
 
@@ -1820,7 +1822,18 @@ mod tests {
         let mut db = test_db();
         let icao = icao_from_hex("40621D").unwrap();
         db.upsert_aircraft(&icao, Some("UK"), None, false, 1.0);
-        db.add_position(&icao, 52.25, 3.92, Some(38000), None, None, None, None, None, 1.0);
+        db.add_position(
+            &icao,
+            52.25,
+            3.92,
+            Some(38000),
+            None,
+            None,
+            None,
+            None,
+            None,
+            1.0,
+        );
 
         assert_eq!(db.count_positions(), 1);
         let positions = db.get_positions("40621D", 10);
@@ -1837,7 +1850,18 @@ mod tests {
         let mut db = test_db();
         let icao = icao_from_hex("40621D").unwrap();
         db.upsert_aircraft(&icao, Some("UK"), None, false, 1.0);
-        db.add_position(&icao, 52.25, 3.92, Some(38000), None, None, None, Some(2.5), None, 1.0);
+        db.add_position(
+            &icao,
+            52.25,
+            3.92,
+            Some(38000),
+            None,
+            None,
+            None,
+            Some(2.5),
+            None,
+            1.0,
+        );
         db.flush();
         let stored: Option<f64> = db
             .conn
@@ -1917,9 +1941,42 @@ mod tests {
         let mut db = test_db();
         let icao = icao_from_hex("40621D").unwrap();
         db.upsert_aircraft(&icao, Some("UK"), None, false, 1.0);
-        db.add_position(&icao, 52.25, 3.92, Some(38000), None, None, None, None, None, 1.0);
-        db.add_position(&icao, 52.26, 3.93, Some(38100), None, None, None, None, None, 2.0);
-        db.add_position(&icao, 52.27, 3.94, Some(38200), None, None, None, None, None, 3.0);
+        db.add_position(
+            &icao,
+            52.25,
+            3.92,
+            Some(38000),
+            None,
+            None,
+            None,
+            None,
+            None,
+            1.0,
+        );
+        db.add_position(
+            &icao,
+            52.26,
+            3.93,
+            Some(38100),
+            None,
+            None,
+            None,
+            None,
+            None,
+            2.0,
+        );
+        db.add_position(
+            &icao,
+            52.27,
+            3.94,
+            Some(38200),
+            None,
+            None,
+            None,
+            None,
+            None,
+            3.0,
+        );
 
         assert_eq!(db.count_positions(), 3);
         let positions = db.get_positions("40621D", 2);
