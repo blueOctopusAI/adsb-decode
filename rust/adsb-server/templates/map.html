@@ -234,6 +234,7 @@
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="range-toggle"> Range</label>
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="airspace-toggle"> Airspace</label>
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="vessel-toggle"> Vessels</label>
+                <label style="cursor:pointer;font-size:11px;" title="Live precipitation radar via RainViewer"><input type="checkbox" id="weather-toggle"> Weather</label>
             </div>
             <div style="margin-top:6px;display:flex;align-items:center;">
                 <span style="font-size:10px;color:#888;text-transform:uppercase;">Map:</span>
@@ -1087,6 +1088,7 @@ function saveState() {
         rangeRings: document.getElementById('range-toggle').checked,
         airspace: document.getElementById('airspace-toggle').checked,
         vessels: document.getElementById('vessel-toggle').checked,
+        weather: document.getElementById('weather-toggle').checked,
         zoom: map.getZoom(),
         center: [map.getCenter().lat, map.getCenter().lng],
     };
@@ -1155,6 +1157,10 @@ function restoreState() {
             vesselsEnabled = true;
             vesselLayer.addTo(map);
             fetchVessels();
+        }
+        if (s.weather) {
+            document.getElementById('weather-toggle').checked = true;
+            enableWeather();
         }
         if (s.center && s.zoom) { map.setView(s.center, s.zoom); mapCentered = true; }
         if (s.aptLarge || s.aptMedium || s.aptSmall) {
@@ -1602,6 +1608,7 @@ async function activate3D() {
     if (rangeEnabled) { clearCesiumRangeRings(); fetchAndDrawRangeRings(); }
     if (airspaceEnabled && airspaceData) renderAirspace3D(airspaceData);
     if (vesselsEnabled && vesselData) renderVessels3D(vesselData);
+    if (weatherEnabled && weatherFrameUrl) applyWeatherTileUrl(weatherFrameUrl);
 }
 
 function updateCesium3D() {
@@ -1847,6 +1854,8 @@ function deactivate3D() {
     if (rangeEnabled) { rangeLayer.clearLayers(); rangeLayer.addTo(map); fetchAndDrawRangeRings(); }
     if (airspaceEnabled) { clearCesiumAirspace(); airspaceLayer.clearLayers(); airspaceLayer.addTo(map); if (airspaceData) renderAirspace(airspaceData); }
     if (vesselsEnabled) { clearCesiumVessels(); vesselLayer.clearLayers(); vesselLayer.addTo(map); if (vesselData) renderVessels(vesselData); }
+    if (weatherCesiumLayer && cesiumViewer) { cesiumViewer.imageryLayers.remove(weatherCesiumLayer, false); weatherCesiumLayer = null; }
+    if (weatherEnabled && weatherLeafletLayer && !map.hasLayer(weatherLeafletLayer)) weatherLeafletLayer.addTo(map);
     document.getElementById('cesium-container').style.display = 'none';
     document.getElementById('map').style.display = 'block';
     document.getElementById('alt-legend').style.display = '';
@@ -2367,6 +2376,86 @@ function hexToRgb(hex) {
 
 // Refresh vessel positions periodically (every 10 seconds)
 setInterval(fetchVessels, 10000);
+
+// --- Weather radar overlay (RainViewer) ---
+// RainViewer is a free, key-less public radar tile service. Manifest gives
+// the latest frame; tiles render on Leaflet (2D) and Cesium (3D) the same way.
+let weatherEnabled = false;
+let weatherLeafletLayer = null;
+let weatherCesiumLayer = null;
+let weatherFrameUrl = null;
+let weatherRefreshTimer = null;
+const RAINVIEWER_MANIFEST = 'https://api.rainviewer.com/public/weather-maps.json';
+const RAINVIEWER_REFRESH_MS = 5 * 60 * 1000;
+
+// Build the tile-URL template for the latest radar frame.
+// Returns a string like "https://tilecache.rainviewer.com/v2/radar/{ts}/256/{z}/{x}/{y}/4/1_1.png"
+// or null if the manifest doesn't have a usable past frame.
+function buildWeatherTileUrl(manifest) {
+    if (!manifest || !manifest.host || !manifest.radar || !Array.isArray(manifest.radar.past)) return null;
+    const past = manifest.radar.past;
+    if (past.length === 0) return null;
+    const latest = past[past.length - 1];
+    if (!latest || !latest.path) return null;
+    return `${manifest.host}${latest.path}/256/{z}/{x}/{y}/4/1_1.png`;
+}
+
+function fetchWeatherManifest() {
+    return fetch(RAINVIEWER_MANIFEST, { cache: 'no-store' })
+        .then(r => r.json())
+        .then(manifest => buildWeatherTileUrl(manifest));
+}
+
+function applyWeatherTileUrl(tileUrl) {
+    if (!tileUrl) return;
+    weatherFrameUrl = tileUrl;
+    if (weatherLeafletLayer) { map.removeLayer(weatherLeafletLayer); weatherLeafletLayer = null; }
+    weatherLeafletLayer = L.tileLayer(tileUrl, {
+        opacity: 0.6,
+        attribution: '&copy; <a href="https://rainviewer.com">RainViewer</a>',
+        maxZoom: 18,
+        tileSize: 256,
+    });
+    if (!is3DMode) weatherLeafletLayer.addTo(map);
+
+    if (cesiumViewer) {
+        if (weatherCesiumLayer) { cesiumViewer.imageryLayers.remove(weatherCesiumLayer, false); weatherCesiumLayer = null; }
+        const provider = new Cesium.UrlTemplateImageryProvider({
+            url: tileUrl,
+            credit: 'RainViewer',
+            tileWidth: 256,
+            tileHeight: 256,
+        });
+        weatherCesiumLayer = cesiumViewer.imageryLayers.addImageryProvider(provider);
+        weatherCesiumLayer.alpha = 0.6;
+    }
+}
+
+function enableWeather() {
+    weatherEnabled = true;
+    fetchWeatherManifest().then(applyWeatherTileUrl).catch(err => console.error('Weather fetch failed:', err));
+    if (!weatherRefreshTimer) {
+        weatherRefreshTimer = setInterval(() => {
+            if (weatherEnabled) {
+                fetchWeatherManifest().then(applyWeatherTileUrl).catch(err => console.error('Weather refresh failed:', err));
+            }
+        }, RAINVIEWER_REFRESH_MS);
+    }
+}
+
+function disableWeather() {
+    weatherEnabled = false;
+    if (weatherLeafletLayer) { map.removeLayer(weatherLeafletLayer); weatherLeafletLayer = null; }
+    if (weatherCesiumLayer && cesiumViewer) { cesiumViewer.imageryLayers.remove(weatherCesiumLayer, false); weatherCesiumLayer = null; }
+    if (weatherRefreshTimer) { clearInterval(weatherRefreshTimer); weatherRefreshTimer = null; }
+    weatherFrameUrl = null;
+}
+
+document.getElementById('weather-toggle').addEventListener('change', function() {
+    if (this.checked) enableWeather();
+    else disableWeather();
+    saveState();
+});
 
 // --- Panel toggle ---
 document.getElementById('panel-header').addEventListener('click', function() {

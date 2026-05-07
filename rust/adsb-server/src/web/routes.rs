@@ -2687,6 +2687,48 @@ mod pages_tests {
         );
     }
 
+    /// Home page (`/`) — the map. Pinned because the embedded JS that drives
+    /// every overlay (heatmap, vessels, weather, etc.) lives in this template.
+    /// A `<script>` tag mismatch in the template silently breaks the whole map;
+    /// substring checks in isolation aren't enough to catch that.
+    #[tokio::test]
+    async fn page_map_renders_with_balanced_script_tags() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/").await;
+        assert_eq!(status, StatusCode::OK);
+        let opens = body.matches("<script").count();
+        let closes = body.matches("</script>").count();
+        assert_eq!(
+            opens, closes,
+            "map.html script tags unbalanced: {opens} opens vs {closes} closes"
+        );
+    }
+
+    /// Weather radar toggle (B235). Pinned because RainViewer is the only
+    /// integration point with a non-Anthropic external service the dashboard
+    /// has, and the JS hook names are the contract between the toggle and
+    /// the implementation.
+    #[tokio::test]
+    async fn page_map_has_weather_toggle_and_handlers() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("id=\"weather-toggle\""),
+            "weather toggle checkbox missing"
+        );
+        for needle in ["enableWeather", "disableWeather", "buildWeatherTileUrl"] {
+            assert!(
+                body.contains(needle),
+                "weather JS function {needle} missing from map.html"
+            );
+        }
+        assert!(
+            body.contains("api.rainviewer.com"),
+            "weather toggle present but RainViewer manifest URL missing"
+        );
+    }
+
     /// `/api/airports` is consumed by the map page JS to draw airport overlays.
     /// Bare-array contract (not envelope) — pinned to prevent the same shape
     /// regression that bit /api/positions on 2026-04-28.
