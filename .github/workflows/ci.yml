@@ -70,6 +70,14 @@ jobs:
         working-directory: rust
         run: cargo fmt --all -- --check
 
+  setup-scripts:
+    name: Setup script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run receiver-setup.sh tests
+        run: bash tests/setup/test_receiver_setup.sh
+
   build-release:
     name: Build (${{ matrix.target }})
     needs: [test]

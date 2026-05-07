@@ -97,13 +97,19 @@ Then open `http://127.0.0.1:8080` in your browser.
 
 ### Set up a remote receiver (Pi)
 
-Deploy a dedicated receiver that feeds data to a central server. One command does everything — installs drivers, downloads the binary, configures systemd:
+Deploy a dedicated receiver that feeds data to a central server. One command does everything — installs drivers, downloads the binary, configures systemd, and (with an API key) starts the service:
 
 ```bash
+# Fully automated: get a key from https://adsb.blueoctopustechnology.com/register
+ADSB_API_KEY=your-key ADSB_NAME=my-pi \
+  curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh \
+  | sudo -E bash
+
+# Without a key: writes /etc/adsb-receiver.env as a template; edit it, then `systemctl enable --now adsb-receiver`
 curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo bash
 ```
 
-Or set it up manually — see the [Receiver Setup](#multi-receiver-network) section and [`deploy/receiver-setup.sh`](deploy/receiver-setup.sh) for details.
+Optional env vars: `ADSB_SERVER`, `ADSB_LAT`/`ADSB_LON`, `ADSB_DEVICE`/`ADSB_GAIN`/`ADSB_PPM`, `ADSB_AUTOSTART=1`. Run with `--dry-run` to preview without touching the system; `--help` for full usage.
 
 ## The Three Binaries
 

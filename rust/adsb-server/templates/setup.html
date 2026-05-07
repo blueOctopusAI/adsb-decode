@@ -33,9 +33,10 @@
 
 <div class="one-cmd">
     <h3>One-Command Setup</h3>
-    <p>Installs drivers, downloads the binary, configures systemd, starts the service:</p>
-    <pre><code>curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo bash</code></pre>
-    <p>Or follow the manual steps below.</p>
+    <p>Installs drivers, downloads the binary, configures systemd. With an API key from <a href="/register">/register</a>, the service auto-starts:</p>
+    <pre><code>ADSB_API_KEY=your-key ADSB_NAME=my-pi \
+  curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo -E bash</code></pre>
+    <p>No API key yet? Run it without env vars and edit <code>/etc/adsb-receiver.env</code> after, or follow the manual steps below.</p>
 </div>
 
 <h2>What You Need</h2>
