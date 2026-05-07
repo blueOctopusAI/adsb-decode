@@ -612,8 +612,14 @@ function updateTrails() {
 
 // --- Main update loop (positions only — lightweight) ---
 function updateMap() {
+    fetch(`/api/positions?minutes=${trailMinutes}`).then(r => r.json()).then(applyPositions)
+        .catch(err => console.error('Position fetch failed:', err));
+}
+
+function applyPositions(posData) {
     const trailData = cachedTrails;
-    fetch(`/api/positions?minutes=${trailMinutes}`).then(r => r.json()).then(posData => {
+    if (!Array.isArray(posData)) return;
+    {
         document.getElementById('ac-count').textContent = posData.length;
         document.getElementById('so-aircraft').textContent = posData.length;
         const tbody = document.querySelector('#ac-table tbody');
@@ -747,7 +753,7 @@ function updateMap() {
                 }
             }
         });
-    }).catch(err => console.error('Update failed:', err));
+    }
 }
 
 // --- Airport layer ---
@@ -1065,6 +1071,8 @@ trailDurSlider.addEventListener('input', function() {
     trailDurLabel.textContent = trailDurLabels[idx];
     saveState();
     updateTrails(); // Immediate trail refresh on slider change
+    // Reconnect WebSocket with the new minutes so live pushes match the slider window.
+    if (typeof reconnectPositionsWebSocket === 'function') reconnectPositionsWebSocket();
 });
 
 // --- Persist state in localStorage ---
@@ -2465,16 +2473,83 @@ document.getElementById('panel-header').addEventListener('click', function() {
     toggle.innerHTML = body.classList.contains('collapsed') ? '&#9650;' : '&#9660;';
 });
 
+// --- WebSocket position stream ---
+// Single persistent connection replaces the 2-second /api/positions poll.
+// Server pushes the same JSON shape on the same cadence, but a tab keeps one
+// connection instead of opening 30 HTTP requests/min. Polling is the fallback
+// when WebSocket isn't available (proxy strips upgrade, network blocks, etc.).
+let positionsWs = null;
+let positionsPollHandle = null;
+let positionsWsBackoffMs = 2000;
+
+function startPositionsPollingFallback() {
+    if (positionsPollHandle) return;
+    positionsPollHandle = setInterval(updateMap, 2000);
+}
+
+function stopPositionsPollingFallback() {
+    if (!positionsPollHandle) return;
+    clearInterval(positionsPollHandle);
+    positionsPollHandle = null;
+}
+
+function connectPositionsWebSocket() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${proto}//${location.host}/ws/positions?minutes=${trailMinutes}`;
+    let ws;
+    try {
+        ws = new WebSocket(url);
+    } catch (e) {
+        console.warn('WebSocket init failed; using polling.', e);
+        startPositionsPollingFallback();
+        return;
+    }
+    positionsWs = ws;
+
+    ws.onopen = () => {
+        positionsWsBackoffMs = 2000;
+        stopPositionsPollingFallback();
+    };
+    ws.onmessage = (ev) => {
+        try {
+            const data = JSON.parse(ev.data);
+            applyPositions(data);
+        } catch (e) {
+            console.error('WebSocket parse error', e);
+        }
+    };
+    ws.onerror = () => {
+        // Browsers fire error before close. Don't double-restart polling here;
+        // onclose will handle it.
+    };
+    ws.onclose = () => {
+        if (positionsWs === ws) positionsWs = null;
+        startPositionsPollingFallback();
+        const backoff = positionsWsBackoffMs;
+        positionsWsBackoffMs = Math.min(positionsWsBackoffMs * 1.5, 30000);
+        setTimeout(connectPositionsWebSocket, backoff);
+    };
+}
+
+function reconnectPositionsWebSocket() {
+    if (positionsWs && positionsWs.readyState === WebSocket.OPEN) {
+        positionsWs.close();
+        // onclose will trigger reconnect with the new trailMinutes.
+    } else {
+        connectPositionsWebSocket();
+    }
+}
+
 // --- Initialize ---
 restoreState();
 centerOnReceiver();
 updateMap();
 updateTrails();
 updateStats();
-setInterval(updateMap, 2000);      // Position markers: every 2s (was 500ms)
-setInterval(updateTrails, 10000);  // Trail data: every 10s (was 500ms via updateMap)
+connectPositionsWebSocket();
+setInterval(updateTrails, 10000);  // Trail data: every 10s
 setInterval(updateStats, 10000);
-setInterval(updateHeatmap, 30000); // Heatmap: every 30s (was 15s)
+setInterval(updateHeatmap, 30000); // Heatmap: every 30s
 setInterval(pollEvents, 5000);
 setInterval(fetchEventMarkers, 10000);
 pollEvents();

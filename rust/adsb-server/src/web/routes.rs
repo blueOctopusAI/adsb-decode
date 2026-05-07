@@ -196,8 +196,16 @@ pub async fn api_positions(
     Query(params): Query<PositionParams>,
 ) -> impl IntoResponse {
     let minutes = clamp(params.minutes.unwrap_or(5.0), 1.0, 525600.0);
+    let positions = collect_positions_snapshot(&state, minutes).await;
+    Json(json!(positions))
+}
 
-    // Dual-path: live tracker for sub-second latency
+/// Shared snapshot builder for both the polling endpoint and the WebSocket
+/// pusher. Returns the same JSON shape `/api/positions` has always returned.
+///
+/// Live tracker path (sub-second latency) is used when one is attached;
+/// otherwise falls back to DB + enrichment join.
+pub async fn collect_positions_snapshot(state: &AppState, minutes: f64) -> Vec<Value> {
     if let Some(tracker) = &state.tracker {
         let tracker = tracker.read().unwrap();
         let now = std::time::SystemTime::now()
@@ -206,7 +214,7 @@ pub async fn api_positions(
             .as_secs_f64();
         let cutoff = now - (minutes * 60.0);
         let active = tracker.get_active(now);
-        let positions: Vec<Value> = active
+        return active
             .iter()
             .filter(|ac| ac.has_position() && ac.last_seen >= cutoff)
             .map(|ac| {
@@ -226,22 +234,16 @@ pub async fn api_positions(
                 })
             })
             .collect();
-        return Json(json!(positions));
     }
 
     let positions = state.db.get_recent_positions(minutes, 50000).await;
-
-    // Enrich positions with aircraft + sighting data (callsign, registration, etc.)
-    // so the map has the same fields as the live tracker path.
     let aircraft = state.db.get_all_aircraft().await;
     let history = state.db.get_aircraft_history(minutes / 60.0 + 1.0).await;
-
     let ac_map: std::collections::HashMap<&str, &AircraftRow> =
         aircraft.iter().map(|a| (a.icao.as_str(), a)).collect();
     let hist_map: std::collections::HashMap<&str, &HistoryRow> =
         history.iter().map(|h| (h.icao.as_str(), h)).collect();
-
-    let enriched: Vec<Value> = positions
+    positions
         .iter()
         .map(|p| {
             let ac = ac_map.get(p.icao.as_str());
@@ -261,9 +263,66 @@ pub async fn api_positions(
                 "is_military": ac.map(|a| a.is_military).unwrap_or(false),
             })
         })
-        .collect();
+        .collect()
+}
 
-    Json(json!(enriched))
+/// GET /ws/positions — WebSocket position stream.
+///
+/// Replaces the 2-second `/api/positions` polling with a single persistent
+/// connection. Server pushes a full snapshot (same JSON shape as the polling
+/// endpoint) every 2 seconds. Clients receive without HTTP overhead per
+/// frame; per-tab connections are 1 instead of 30/min.
+///
+/// On socket-write failure (client disconnected, network gone), the loop
+/// exits cleanly. axum drops the upgraded connection.
+pub async fn ws_positions(
+    ws: axum::extract::WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PositionParams>,
+) -> impl IntoResponse {
+    let minutes = clamp(params.minutes.unwrap_or(5.0), 1.0, 525600.0);
+    ws.on_upgrade(move |socket| handle_ws_positions(socket, state, minutes))
+}
+
+async fn handle_ws_positions(
+    mut socket: axum::extract::ws::WebSocket,
+    state: Arc<AppState>,
+    minutes: f64,
+) {
+    use axum::extract::ws::Message;
+    use std::time::Duration;
+
+    // Send an initial snapshot immediately so the client doesn't wait a tick.
+    if let Ok(text) = serde_json::to_string(&collect_positions_snapshot(&state, minutes).await) {
+        if socket.send(Message::Text(text)).await.is_err() {
+            return;
+        }
+    }
+
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    interval.tick().await; // skip the immediate first tick
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let snapshot = collect_positions_snapshot(&state, minutes).await;
+                let text = match serde_json::to_string(&snapshot) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                if socket.send(Message::Text(text)).await.is_err() {
+                    break;
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                    _ => {} // ignore Ping/Pong/Text/Binary from client
+                }
+            }
+        }
+    }
 }
 
 /// GET /api/trails — position trails per aircraft.
@@ -2729,6 +2788,72 @@ mod pages_tests {
             body.contains("api.rainviewer.com"),
             "weather toggle present but RainViewer manifest URL missing"
         );
+    }
+
+    /// Map page wires the WS pusher with a polling fallback. Pin both the
+    /// connect call and the fallback function name so a refactor can't
+    /// silently drop one of the two paths.
+    #[tokio::test]
+    async fn page_map_uses_websocket_with_polling_fallback() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/").await;
+        assert_eq!(status, StatusCode::OK);
+        for needle in [
+            "connectPositionsWebSocket",
+            "applyPositions",
+            "startPositionsPollingFallback",
+            "/ws/positions",
+        ] {
+            assert!(
+                body.contains(needle),
+                "map.html missing WS hook {needle}"
+            );
+        }
+    }
+
+    /// `/ws/positions` — WebSocket stream replacing the 2-second poll.
+    /// Plain GET without WebSocket upgrade headers must return 4xx (axum's
+    /// `WebSocketUpgrade` extractor rejects non-upgrade requests). This pins
+    /// that the route is registered without faking a real WS handshake.
+    #[tokio::test]
+    async fn ws_positions_route_rejects_plain_http() {
+        let (state, _dir) = empty_state();
+        let app = crate::web::build_router(state, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ws/positions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // axum's WebSocketUpgrade returns 426 (Upgrade Required) or 400
+        // depending on which header is missing. Both signal "this is a WS
+        // route, you didn't give me an upgrade." 200 OK would mean the
+        // route accidentally got served as a normal GET — broken.
+        let status = response.status();
+        assert!(
+            status.is_client_error(),
+            "/ws/positions on plain GET must be 4xx, got {status}"
+        );
+    }
+
+    /// snapshot helper produces a JSON array, even when nothing's flying.
+    /// Pin the empty-DB shape so the WS pusher and the polling endpoint
+    /// can rely on `[]` rather than `null` or some object envelope.
+    #[tokio::test]
+    async fn collect_positions_snapshot_returns_empty_array_with_no_data() {
+        let (state, _dir) = empty_state();
+        let snapshot = super::collect_positions_snapshot(&state, 5.0).await;
+        assert_eq!(
+            snapshot.len(),
+            0,
+            "empty DB should produce empty snapshot, got {snapshot:?}"
+        );
+        // Round-trip via serde_json — the WS pusher does this on every tick.
+        let json_str = serde_json::to_string(&snapshot).unwrap();
+        assert_eq!(json_str, "[]", "snapshot must serialize as [] not null");
     }
 
     /// /replay — historical playback. Pinned because the page renders inline JS

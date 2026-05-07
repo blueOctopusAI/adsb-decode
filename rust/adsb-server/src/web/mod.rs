@@ -82,6 +82,7 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
             axum::routing::get(routes::api_aircraft_detail),
         )
         .route("/api/positions", axum::routing::get(routes::api_positions))
+        .route("/ws/positions", axum::routing::get(routes::ws_positions))
         .route("/api/trails", axum::routing::get(routes::api_trails))
         .route("/api/events", axum::routing::get(routes::api_events))
         .route("/api/stats", axum::routing::get(routes::api_stats))

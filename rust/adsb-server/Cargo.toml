@@ -24,7 +24,7 @@ native-sdr = ["adsb-feeder/native-sdr"]
 adsb-core = { path = "../adsb-core" }
 adsb-feeder = { path = "../adsb-feeder" }
 async-trait = "0.1"
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 clap = { version = "4", features = ["derive", "env"] }
 comfy-table = "7"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
