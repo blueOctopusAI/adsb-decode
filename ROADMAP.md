@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-05-05.*
+*As of 2026-05-07.*
 
 ---
 
@@ -73,19 +73,37 @@ Not blocking anything; revisit when one of the above concerns escalates.
 | T3.2 | On-drone AIS receiver | Current AIS path is ground-side via WebSocket; an actual flying AIS receiver is a hardware path, not a server-side change. |
 | T3.3 | API CORS / API-key story | All consumers today are first-party. Revisit if third-party clients appear. |
 
+### Tier 3.5 — UX / dashboard polish
+
+Visible improvements that make the public site feel like a real product, not a demo.
+
+| ID | Item | Status |
+|---|---|---|
+| T3.5.1 | **Weather radar overlay (B235).** RainViewer (free, key-less, public) tile layer on both Leaflet and Cesium. Toggle next to Vessels, 5-minute auto-refresh, persists in localStorage. | Shipped 2026-05-07 |
+| T3.5.2 | **4D replay (B209).** Lazy-loaded CesiumJS on `/replay`. The same playback timeline (interpolation + speed multiplier + event markers) drives 3D entity positions; altitude in meters via `* 0.3048`. Default 2D path stays ~3MB lighter (no top-level Cesium script tag). | Shipped 2026-05-07 |
+| T3.5.3 | **One-command receiver setup.** `deploy/receiver-setup.sh` rewritten as env-var-driven. `ADSB_API_KEY=xxx ADSB_NAME=my-pi curl ... \| sudo -E bash` populates env file + installs unit + auto-starts in one command. New `tests/setup/test_receiver_setup.sh` (31 bash smoke tests) wired into a `setup-scripts` CI job. | Shipped 2026-05-07 |
+
 ### Tier 4 — Backlog
 
 Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 
-- B209 — 4D replay mode on a CesiumJS timeline
 - B234 — mobile ADS-B station mounted in a vehicle for ridgeline coverage
 - B239 — ADS-B + acoustics correlation (acoustic signature per aircraft type)
 - B240 — power infrastructure overlay (EIA Form 860, HIFLD transmission lines)
 - B322 — 3D building dataset (2.75 B buildings) for terrain + occlusion modeling
+- B235 → SHIPPED 2026-05-07 (see Tier 3.5)
+- B209 → SHIPPED 2026-05-07 (see Tier 3.5)
 
 ---
 
 ## Recent
+
+### 2026-05-07 — UX session: setup script + weather + 4D replay
+- **One-command receiver setup is one command for real.** Previously `curl | sudo bash` ran but still left the user editing /etc/adsb-receiver.env and running `systemctl enable --now`. Now `ADSB_API_KEY=xxx curl ... | sudo -E bash` finishes the install in one shell line. Added `--dry-run` (touches nothing, announces every action) and `--help` (reads usage out of the script header). New bash test suite (`tests/setup/test_receiver_setup.sh`) with 31 smoke tests covers arg parsing, env-var injection, file-path overrides, auto-start gating, root-check rejection. Wired into CI as a separate `setup-scripts` job.
+- **Weather radar overlay (RainViewer).** Free, key-less, public radar tile service. Tile URL works as both a Leaflet `TileLayer` and a Cesium `UrlTemplateImageryProvider` — same overlay on both 2D and 3D. Toggle next to Vessels in map controls, 5-minute auto-refresh, persists in localStorage. Mode-switch handling: if user toggles 3D while weather is on, the layer follows.
+- **4D replay (3D + time).** `/replay` page gains a 3D toggle that lazy-loads CesiumJS and renders the existing playback timeline in 3D. Same `interpolateAt` path drives Cesium entity positions; altitude in meters via `* 0.3048`. Per-icao point + polyline trail entities. Default 2D path stays ~3MB lighter (pinned by test — no top-level `<script src=cesium>` allowed).
+- **Inline JS contract pins.** Two new `pages_tests` patterns added: balanced-`<script>`-tag count check (catches accidental tag breakage in 2,400-line embedded-JS templates) + per-page hook-name asserts (`enableWeather`, `disableWeather`, `loadCesiumJS`, `updateDisplay3D`, etc.). Substring-only checks were missing the parse-correctness gap; this pair gets closer to "the JS at least loads."
+- **Stale catches:** `features.html` had a hardcoded "269 Tests" count — replaced with descriptive language. The "4D Replay" feature card had a 2D-only description (this was the V1 honest framing; now V1 ships 4D so the description got rewritten to match).
 
 ### 2026-05-05 — v0.2.9 release
 - **v0.2.9 cut + deployed to prod.** Tag `v0.2.9` on commit `a472847` (post-`cargo fmt` on top of `e058341`). CI matrix passed on the second attempt — first attempt failed at fmt check on the new pg_integration / cli_dispatch / consumer_contract_tests blocks. GitHub release published with `adsb-server-x86_64-unknown-linux-gnu-timescaledb.tar.gz`. Binary swapped on Lightsail VPS via `deploy.sh` pattern; old binary backed up to `/opt/adsb-decode/adsb.v0.2.8.bak`. Service active.

@@ -31,6 +31,10 @@
         <div class="detail">CesiumJS globe with aircraft rendered at true altitudes, altitude stalks, flight level labels, and synchronized mode switching between 2D and 3D.</div>
     </div>
     <div class="feature">
+        <div class="title">Weather Radar</div>
+        <div class="detail">Live precipitation radar overlay via RainViewer, refreshed every 5 minutes. Works on both the 2D map and the 3D globe.</div>
+    </div>
+    <div class="feature">
         <div class="title">Density Heatmaps</div>
         <div class="detail">Aggregate aircraft positions into color-coded density heatmaps with adjustable time sliders. See traffic patterns at a glance.</div>
     </div>
@@ -68,7 +72,7 @@
     </div>
     <div class="feature">
         <div class="title">4D Replay</div>
-        <div class="detail">Select a time range and replay historical flights on the map. Watch traffic patterns unfold in accelerated time.</div>
+        <div class="detail">Pick any historical time range and scrub through it on a 3D globe — aircraft render at true altitudes, trails draw behind them, and the time slider drives the whole scene. Toggle to flat 2D for the same playback on a Leaflet map.</div>
     </div>
     <div class="feature">
         <div class="title">Aircraft Enrichment</div>
@@ -103,8 +107,8 @@
 <h2 class="section-title">Quality</h2>
 <div class="features-grid">
     <div class="feature">
-        <div class="title">269 Tests</div>
-        <div class="detail">Comprehensive test coverage across 3 Rust crates: core decoder (153), feeder (13), and server (90). Plus 394 Python reference tests.</div>
+        <div class="title">Comprehensive Tests</div>
+        <div class="detail">Test coverage across all four Rust crates — core decoder, server, feeder, and receiver — plus the Python reference implementation. Consumer-contract tests pin every JSON shape that downstream projects depend on; TimescaleDB invariant tests encode the compression/retention discipline; CLI dispatch tests pin the user-facing arg surface.</div>
     </div>
     <div class="feature">
         <div class="title">Cross-Validated</div>

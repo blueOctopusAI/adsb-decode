@@ -229,10 +229,11 @@ Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 - **Aircraft detail** — Split-screen view. Left: captured trail map, events, position history. Right: external intel from hexdb.io (manufacturer, type, owner), link cards to ADSBExchange/Planespotters/FlightAware/FlightRadar24/FAA Registry/OpenSky, altitude profile chart.
 - **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links. Works in both 2D (Leaflet markers) and 3D (Cesium billboards).
 - **Heatmap** — Position density visualization. 2D uses Leaflet heat layer; 3D renders colored density rectangles on the globe.
+- **Weather radar** — Live precipitation overlay via RainViewer (free, key-less). 5-minute auto-refresh. Works on both 2D map and 3D globe.
 - **Map styles** — Dark, Satellite, Topo, Streets, Dark Matter, Voyager (persisted in localStorage)
 - **Events dashboard** — Color-coded events with type filters, auto-enriched with aircraft type/owner from hexdb.io
 - **Query builder** — Preset queries (military, low altitude, fast) + custom filters with map visualization
-- **Historical replay** — Time slider with play/pause, adjustable speed (1x-10min)
+- **4D replay** — Pick a historical time range and scrub through it. Toggle between 2D Leaflet (flat ground track) and 3D Cesium (aircraft at true altitude with trails). Same time slider, speed multiplier, and event markers drive both modes.
 - **Receiver management** — Connected feeders with coverage circles
 - **Table view** — Sortable aircraft list with detail pages
 
@@ -255,10 +256,15 @@ Hub-and-spoke architecture for distributed coverage:
 
 ### Receiver Setup
 
-Set up a remote receiver to feed data to a central server:
+Set up a remote receiver to feed data to a central server. With an API key from `https://your-server/register`, the install + start happens in a single shell line:
 
 ```bash
-# One-command automated setup (installs drivers, binary, systemd service):
+# Fully automated (drivers + binary + systemd unit + service start):
+ADSB_API_KEY=your-key ADSB_NAME=my-pi \
+  curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh \
+  | sudo -E bash
+
+# Or, get the template first (writes /etc/adsb-receiver.env to edit, doesn't auto-start):
 curl -sL https://raw.githubusercontent.com/blueOctopusAI/adsb-decode/main/deploy/receiver-setup.sh | sudo bash
 
 # Or manually:
