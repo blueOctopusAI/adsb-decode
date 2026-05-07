@@ -377,13 +377,10 @@ function loadCesiumJS() {
 function initReplayCesium() {
     if (cesiumViewer) return;
     Cesium.Ion.defaultAccessToken = '';
-    const imagery = new Cesium.UrlTemplateImageryProvider({
-        url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-        subdomains: ['a', 'b', 'c', 'd'],
-        maximumLevel: 19,
-    });
+    // Cesium 1.107+ removed the `imageryProvider` constructor option — passing
+    // it silently no-ops and the globe renders black. Build the viewer first,
+    // then attach the imagery via imageryLayers.addImageryProvider().
     cesiumViewer = new Cesium.Viewer('replay-cesium', {
-        imageryProvider: imagery,
         baseLayerPicker: false,
         geocoder: false,
         homeButton: false,
@@ -395,6 +392,12 @@ function initReplayCesium() {
         infoBox: false,
         selectionIndicator: false,
     });
+    const imagery = new Cesium.UrlTemplateImageryProvider({
+        url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        subdomains: ['a', 'b', 'c', 'd'],
+        maximumLevel: 19,
+    });
+    cesiumViewer.imageryLayers.addImageryProvider(imagery);
     cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a0a0a');
     cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0a0a0a');
     if (allPositions.length > 0) {
