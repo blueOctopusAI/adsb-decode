@@ -797,9 +797,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
             photo_cache: std::sync::Mutex::new(HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: opts.ollama_url.clone(),
-            baseline: std::sync::Arc::new(std::sync::RwLock::new(
-                baseline::BaselineCache::new(),
-            )),
+            baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
         });
         spawn_baseline_refresh(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
@@ -1093,9 +1091,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
             photo_cache: std::sync::Mutex::new(HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: opts.ollama_url.clone(),
-            baseline: std::sync::Arc::new(std::sync::RwLock::new(
-                baseline::BaselineCache::new(),
-            )),
+            baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
         });
         spawn_baseline_refresh(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
@@ -1386,9 +1382,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
             photo_cache: std::sync::Mutex::new(HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: opts.ollama_url.clone(),
-            baseline: std::sync::Arc::new(std::sync::RwLock::new(
-                baseline::BaselineCache::new(),
-            )),
+            baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
         });
         spawn_baseline_refresh(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
