@@ -88,6 +88,28 @@
 .ac-popup .popup-label { color: #888; }
 .ac-popup .popup-value { font-weight: bold; }
 .ac-popup .popup-mil { color: #ff4444; }
+/* Anomaly score indicators. Three tiers: low (single rule fired),
+   med (two rules or moderate stat baseline), high (multiple rules or
+   rare-cell statistical signal). Colors picked to read against dark theme
+   without colliding with the existing military-red highlight. */
+.popup-anomaly-low { color: #ffcc66; }
+.popup-anomaly-med { color: #ff9933; }
+.popup-anomaly-high { color: #ff4444; font-weight: bold; }
+tr.ac-anomaly-low td { background: rgba(255, 204, 102, 0.06); }
+tr.ac-anomaly-med td { background: rgba(255, 153, 51, 0.10); }
+tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
+.ac-anomaly-mark {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    font-size: 10px;
+    font-weight: bold;
+    border-radius: 3px;
+    background: #2a1a00;
+}
+.ac-anomaly-mark.ac-anomaly-low { color: #ffcc66; border: 1px solid #553300; }
+.ac-anomaly-mark.ac-anomaly-med { color: #ff9933; border: 1px solid #663300; }
+.ac-anomaly-mark.ac-anomaly-high { color: #ff4444; border: 1px solid #660000; }
 .ac-popup a { color: #00aaff; }
 .leaflet-popup-content-wrapper { background: #111; color: #e0e0e0; border: 1px solid #333; }
 .leaflet-popup-tip { background: #111; }
@@ -436,11 +458,26 @@ function esc(s) {
 }
 
 // --- Popup content ---
+// Anomaly score thresholds. Rules-based scorer contributes 0.5\u20132.0 per rule;
+// statistical scorer adds up to 5.0. Combined score in /api/positions for
+// the live tracker path is rules-only (DB column has the combined value).
+// `0.5` is the smallest single rule firing (stuck_position / nonmonotonic_time).
+function anomalyClass(score) {
+    if (score == null || score < 0.5) return null;
+    if (score < 2.0) return 'low';
+    if (score < 4.0) return 'med';
+    return 'high';
+}
+
 function popupHtml(p, acType) {
     const mil = p.is_military ? '<span class="popup-mil"> [MIL]</span>' : '';
     const name = esc(p.callsign || p.registration || p.icao);
     const typeLabel = esc((acType || 'unknown').charAt(0).toUpperCase() + (acType || 'unknown').slice(1));
     const hexIcao = esc(p.icao.toUpperCase());
+    const anomalyCls = anomalyClass(p.anomaly_score);
+    const anomalyRow = anomalyCls
+        ? `<div class="popup-row"><span class="popup-label">Anomaly</span><span class="popup-value popup-anomaly-${anomalyCls}">${p.anomaly_score.toFixed(2)} (${anomalyCls})</span></div>`
+        : '';
     return `<div class="ac-popup">
         <div class="popup-title">${name}${mil}</div>
         <div class="popup-row"><span class="popup-label">ICAO</span><span class="popup-value">${esc(p.icao)}</span></div>
@@ -452,6 +489,7 @@ function popupHtml(p, acType) {
         <div class="popup-row"><span class="popup-label">Speed</span><span class="popup-value">${p.speed_kts != null ? Math.round(p.speed_kts) + ' kts' : '--'}</span></div>
         <div class="popup-row"><span class="popup-label">Heading</span><span class="popup-value">${p.heading_deg != null ? Math.round(p.heading_deg) + '\u00B0' : '--'}</span></div>
         <div class="popup-row"><span class="popup-label">VRate</span><span class="popup-value">${p.vertical_rate_fpm != null ? p.vertical_rate_fpm + ' fpm' : '--'}</span></div>
+        ${anomalyRow}
         <div id="photo-${esc(p.icao)}" style="margin-top:6px;text-align:center;"></div>
         <div style="margin-top:6px; display:flex; gap:8px; flex-wrap:wrap;">
             <a href="/aircraft/${encodeURIComponent(p.icao)}">Detail &rarr;</a>
@@ -653,8 +691,13 @@ function applyPositions(posData) {
 
             const cls = p.is_military ? 'mil' : '';
             const hdg = p.heading_deg != null ? Math.round(p.heading_deg) + '\u00B0' : '-';
-            tbody.innerHTML += `<tr>
-                <td><a href="/aircraft/${encodeURIComponent(p.icao)}" class="${cls}">${esc(p.icao)}</a></td>
+            const anomalyCls = anomalyClass(p.anomaly_score);
+            const rowCls = anomalyCls ? `ac-anomaly-${anomalyCls}` : '';
+            const anomalyMark = anomalyCls
+                ? `<span class="ac-anomaly-mark ac-anomaly-${anomalyCls}" title="anomaly score ${p.anomaly_score.toFixed(2)}">!</span>`
+                : '';
+            tbody.innerHTML += `<tr class="${rowCls}">
+                <td><a href="/aircraft/${encodeURIComponent(p.icao)}" class="${cls}">${esc(p.icao)}</a>${anomalyMark}</td>
                 <td>${esc(p.callsign || p.registration || '-')}</td>
                 <td>${p.altitude_ft != null ? p.altitude_ft.toLocaleString() : '-'}</td>
                 <td>${p.speed_kts ? Math.round(p.speed_kts) : '-'}</td>

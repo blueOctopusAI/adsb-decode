@@ -108,6 +108,13 @@ pub struct AircraftState {
     pub last_bds60: Option<crate::types::Bds60>,
     pub last_comm_b_seen: f64,
 
+    /// Most-recent rules-based anomaly score for the live-tracker view.
+    /// Stat-baseline contribution is added at ingest time (live tracker
+    /// crate doesn't know about the DB), so the dashboard live path shows
+    /// rules-only scoring; combined scores live in the `anomaly_score`
+    /// column for historical queries.
+    pub last_anomaly_score: Option<f64>,
+
     // History buffers for pattern detection
     pub heading_history: Vec<(f64, f64)>, // (timestamp, heading_deg)
     pub position_history: Vec<(f64, f64, f64, Option<i32>)>, // (ts, lat, lon, alt)
@@ -141,6 +148,7 @@ impl AircraftState {
             last_bds50: None,
             last_bds60: None,
             last_comm_b_seen: 0.0,
+            last_anomaly_score: None,
             heading_history: Vec::new(),
             position_history: Vec::new(),
         }
@@ -311,6 +319,7 @@ impl Tracker {
                         });
                         let scored =
                             crate::anomaly::score_position(&current_ctx, previous_ctx.as_ref());
+                        ac.last_anomaly_score = Some(scored.score);
                         events.push(TrackEvent::PositionUpdate {
                             icao,
                             lat,

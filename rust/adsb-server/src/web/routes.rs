@@ -256,6 +256,7 @@ pub async fn collect_positions_snapshot(state: &AppState, minutes: f64) -> Vec<V
                     "is_military": ac.is_military,
                     "country": ac.country,
                     "registration": ac.registration,
+                    "anomaly_score": ac.last_anomaly_score,
                 })
             })
             .collect();
@@ -286,6 +287,7 @@ pub async fn collect_positions_snapshot(state: &AppState, minutes: f64) -> Vec<V
                 "registration": ac.and_then(|a| a.registration.as_deref()),
                 "country": ac.and_then(|a| a.country.as_deref()),
                 "is_military": ac.map(|a| a.is_military).unwrap_or(false),
+                "anomaly_score": p.anomaly_score,
             })
         })
         .collect()
@@ -2906,6 +2908,34 @@ mod pages_tests {
                 "detail page missing BDS label {label}"
             );
         }
+    }
+
+    /// Map page surfaces anomaly_score in popups + table rows. Pin the JS
+    /// hook (`anomalyClass`) and one CSS class per tier so a refactor can't
+    /// silently drop one tier of the visual indicator.
+    #[tokio::test]
+    async fn page_map_renders_anomaly_score_indicators() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("function anomalyClass"),
+            "map.html missing anomalyClass JS helper"
+        );
+        for cls in [
+            "popup-anomaly-low",
+            "popup-anomaly-med",
+            "popup-anomaly-high",
+            "ac-anomaly-low",
+            "ac-anomaly-med",
+            "ac-anomaly-high",
+        ] {
+            assert!(body.contains(cls), "map.html missing CSS class {cls}");
+        }
+        assert!(
+            body.contains("p.anomaly_score"),
+            "map.html must read anomaly_score off position payload"
+        );
     }
 
     /// Map page wires the WS pusher with a polling fallback. Pin both the
