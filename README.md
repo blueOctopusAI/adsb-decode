@@ -216,13 +216,13 @@ This isn't just a radio scanner. It's an intelligence tool.
 - **Historical queries** — SQLite database stores every position report. Query builder with preset and custom filters.
 - **CRC error correction** — 1-2 bit error correction via syndrome table lookup. Recovers corrupted frames that would otherwise be dropped.
 - **Enhanced Mode S (BDS) decoding** — DF20/DF21 long Comm-B replies decode to BDS 4,0 (autopilot selected altitude + baro setting), BDS 5,0 (true airspeed + roll angle + ground speed + track), BDS 6,0 (magnetic heading + IAS + Mach + vertical rates). Plausibility-scored register identification — ambiguous frames are dropped, not guessed. Data ADS-B alone never carries.
-- **Per-position anomaly score** — Every position is scored against physical-plausibility rules (extreme speed, extreme vertical rate, position teleport, altitude jump, stuck position, nonmonotonic timestamps). Score and stable text flags persist on every row of the `positions` table — foundation for ML pattern detection on top of the historical corpus.
+- **Per-position anomaly score** — Two-layer scorer combined additively. Rules-based layer flags physical-plausibility violations (extreme speed, extreme vertical rate, position teleport, altitude jump, stuck position, nonmonotonic timestamps). Statistical layer scores against a 0.1° spatial position-density baseline refreshed hourly from the past 7 days — flags positions in cells where almost nothing has flown. Score persists on every row of the `positions` table; map popups + table rows surface it color-coded by tier (low/med/high).
 
 ## Web Dashboard
 
 Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 
-- **WebSocket position stream** — `/ws/positions` pushes position snapshots every 2s on one persistent connection per tab; the 2-second `/api/positions` polling becomes fallback-only when WS isn't available (proxy strips upgrade, network blocks, etc.).
+- **WebSocket position stream** — `/ws/positions` pushes position snapshots every 2s on one persistent connection per tab. Default 5-minute window goes through a single shared `tokio::sync::broadcast` channel — one server-side snapshot rebuild per tick fanned out to all subscribers. The 2-second `/api/positions` polling becomes fallback-only when WS isn't available (proxy strips upgrade, network blocks, etc.).
 - **Live map** — Aircraft silhouette icons (jet/prop/turboprop/helicopter/military) with heading rotation, altitude-colored trail lines (green→yellow→red), stats overlay, altitude legend
 - **3D globe view** — CesiumJS toggle shows aircraft at real altitudes with heading-rotated billboards, altitude stalks, flight level labels, and live updates. Full feature parity with 2D: heatmap, airports, trails, and toggle states all carry over between modes.
 - **Historical aircraft** — At trail durations >= 1h, aircraft that stopped transmitting appear as faded ghost markers with computed headings. Works in both 2D and 3D.

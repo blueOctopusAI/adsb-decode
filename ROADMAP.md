@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-05-07 (afternoon).*
+*As of 2026-05-07 (evening — v0.2.19 deployed, full session 176 chain live).*
 
 ---
 
@@ -82,6 +82,11 @@ Engineering-shaped pieces that turn one-off polish into compounding capability.
 | T1.5.1 | **BDS 4,0 / 5,0 / 6,0 decoding for DF20/DF21 long Comm-B** (Enhanced Mode S). Recovers data ADS-B never carries: autopilot setting (selected altitude, FMS, baro), true airspeed + roll angle + ground speed (track and turn report), magnetic heading + IAS + Mach + barometric/inertial vertical rate (heading and speed report). Plausibility-based register identification — winning register must beat runner-up by ≥4 points or frame is dropped. New module `adsb-core::comm_b` (12 unit tests). | Shipped 2026-05-07 |
 | T1.5.2 | **Per-position anomaly score + DB column.** Foundation for ML; today the scorer is hand-tuned thresholds (extreme speed, extreme vertical rate, position teleport, altitude jump, stuck position, nonmonotonic timestamps) but the persistence shape is what later ML work will replace, not the column. New module `adsb-core::anomaly`. Schema gets `anomaly_score REAL` on positions; idempotent migration in both SQLite and TimescaleDB backends. Tracker computes the score per position update and includes it on the TrackEvent. 11 anomaly unit tests + 3 DB migration/roundtrip tests. | Shipped 2026-05-07 |
 | T1.5.3 | **WebSocket position stream (`/ws/positions`).** Replaces the per-tab 30 HTTP requests/min poll with one persistent socket that pushes the same JSON snapshot every 2 seconds. Polling becomes fallback-only — fires when WS isn't available (proxy strips upgrade, network blocks, etc.) or while reconnecting with backoff. Trail-duration slider triggers WS reconnect so live pushes match the user-selected window. | Shipped 2026-05-07 |
+| T1.5.4 | **BDS Comm-B data on aircraft detail page.** Tracker absorbs decoded BDS register payloads onto `AircraftState` per-register slots. `/api/aircraft/<icao>` adds a `comm_b` block when the live tracker has data; detail page renders fields (Selected Alt MCP, True Airspeed, Magnetic Heading, Mach, Roll Angle) as info-grid items. | Shipped 2026-05-07 |
+| T1.5.5 | **Statistical anomaly baseline scorer.** Spatial position-density grid (0.1° cells); hourly background refresh queries `position_density_grid()` over last 7 days; `score(lat, lon)` returns Laplace-smoothed log-probability clamped to [0, 5]. Combined additively with the rules-based scorer in the ingest path before persisting `anomaly_score`. | Shipped 2026-05-07 |
+| T1.5.6 | **WebSocket broadcast topology.** Single `tokio::sync::broadcast` channel for default 5-minute window. One server-side producer ticks every 2s, sends to all subscribers — N clients = 1 snapshot rebuild per tick. Non-default windows fall back to per-connection timer. Producer skips work when no receivers connected. | Shipped 2026-05-07 |
+| T1.5.7 | **Anomaly score on dashboard.** Map popups show an Anomaly line color-coded by tier (low/med/high); table rows get tinted backgrounds + "!" markers when anomalous. AircraftState carries `last_anomaly_score`; `/api/positions` exposes it on every row from the live tracker path. | Shipped 2026-05-07 |
+| T1.5.8 | **`position_count_hourly` continuous aggregate.** TimescaleDB matview precomputes hourly position counts. `/api/stats` 24-hour count is `SUM(cnt)` over 24 rows instead of `COUNT(*)` over millions; real-time aggregates (`materialized_only = false`) cover the partial current hour. Addresses the Mar 14 connection-pool exhaustion incident class. Falls back to direct `COUNT(*)` when matview isn't installed. | Shipped 2026-05-07 |
 
 ### Tier 3.5 — UX / dashboard polish
 
@@ -107,6 +112,21 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 ---
 
 ## Recent
+
+### 2026-05-07 (evening) — Surfacing + perf: anomaly UI + stats CAGG (v0.2.18 + v0.2.19)
+- **Anomaly score visible on map (v0.2.18).** AircraftState gains `last_anomaly_score`; tracker stores it when emitting PositionUpdate. `/api/positions` live-tracker path includes `anomaly_score` per row. Dashboard `anomalyClass()` helper maps to 3 tiers (low ≥ 0.5, med ≥ 2.0, high ≥ 4.0). Popup adds an Anomaly line color-coded by tier; table rows get tinted backgrounds + "!" marker.
+- **`position_count_hourly` continuous aggregate (v0.2.19).** TimescaleDB matview precomputes hourly position counts; `/api/stats` 24-hour count goes from `COUNT(*)` over the full positions hypertable to `SUM(cnt)` over 24 precomputed rows. Real-time aggregates cover the partial current hour. Match-fallback to direct COUNT when matview isn't installed (plain Postgres / fresh DB pre-materialization). Verified live: matview registered alongside existing `positions_30s` and `positions_5m`.
+
+### 2026-05-07 (mid-day Cesium fixes) — Two imageryProvider regressions caught (v0.2.13 + v0.2.14)
+- Cesium 1.107+ removed the `imageryProvider` constructor option. Passing it to `new Viewer({...})` is silently ignored — globe renders black until something else attaches imagery via `imageryLayers.addImageryProvider()`. The existing `setCesiumMapStyle()` did it the right way, which is why "switch styles and back, then it works" was the user-hit workaround.
+- Fix on map page (v0.2.13): build viewer with no initial imagery, then await `setCesiumMapStyle(style)`.
+- Same bug in today's new `/replay` 4D toggle (v0.2.14) — caught and fixed before any user hit it.
+- Drop the camera-framing tweak from v0.2.12; that was a misdiagnosis of the imagery bug.
+
+### 2026-05-07 (BDS surfacing + statistical scorer + broadcast topology) — v0.2.15 + v0.2.16 + v0.2.17
+- **BDS surfacing on detail page (v0.2.15).** Today's BDS decoder was extracting Comm-B data and dropping it on the floor; now the tracker absorbs each register's most-recent payload onto `AircraftState` per-register slots so a fresh BDS 5,0 doesn't clobber the last BDS 4,0. `/api/aircraft/<icao>` adds a `comm_b` block when present; detail page renders the fields. 12 + 3 new tests.
+- **Statistical anomaly baseline (v0.2.16).** New `adsb-server::baseline::BaselineCache` holds a 0.1° spatial grid populated from a hourly `position_density_grid()` SQL aggregation over the last 7 days. Score function is Laplace-smoothed log-probability, clamped [0, 5]. Combined additively with the rules-based score on every position write. New SQL trait method on both backends; SQLite path uses a `CASE WHEN lat >= 0 ...` expression to get true floor semantics on negative longitudes (cast-to-int truncates toward zero, wrong bucket). 5 baseline tests + 1 SQL roundtrip test.
+- **WS broadcast topology (v0.2.17).** Replaced N-clients × 1-snapshot-rebuild-per-tick with 1-snapshot-rebuild-per-tick fanned out via `tokio::sync::broadcast`. Default 5-minute window only; non-default windows fall back to per-connection timer. Producer skips work when no receivers connected (broadcast::send returns Err with no receivers).
 
 ### 2026-05-07 (afternoon) — Foundations: BDS / anomaly score / WebSocket
 - **BDS decoding (T1.5.1).** DF20/DF21 long Comm-B replies were silently dropping their 56-bit MB field on every aircraft we heard. New `adsb-core::comm_b` module decodes BDS 4,0 (Selected Vertical Intention), BDS 5,0 (Track and Turn Report), BDS 6,0 (Heading and Speed Report). Identifies registers via plausibility scoring — each register's decoded values must pass physical sanity bounds and the winning register must beat the runner-up by ≥4 points. Ambiguous frames return None; conservative default. Register data now rides on the existing `AltitudeMsg` / `SquawkMsg` types as `comm_b: Option<CommBRegister>`, JSON-serialized only when populated. 12 new tests; net `adsb-core` 155 → 167 tests.
