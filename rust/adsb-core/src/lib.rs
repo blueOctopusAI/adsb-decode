@@ -3,6 +3,7 @@
 //! No async, no I/O — just algorithms. This crate is the shared core used by
 //! both `adsb-feeder` (edge device) and `adsb-server` (web server + CLI).
 
+pub mod comm_b;
 pub mod config;
 pub mod cpr;
 pub mod crc;

@@ -253,19 +253,72 @@ impl std::fmt::Display for SpeedType {
 }
 
 /// DF0/4/16/20: Altitude reply.
+///
+/// `comm_b` is populated only for DF20 long replies and only when one BDS
+/// register dominates the plausibility scoring. ADS-B-equipped aircraft
+/// rarely reply to selective interrogation, so this field stays None most
+/// of the time.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AltitudeMsg {
     pub icao: Icao,
     pub altitude_ft: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comm_b: Option<CommBRegister>,
     pub timestamp: f64,
 }
 
 /// DF5/21: Identity reply (squawk code).
+///
+/// `comm_b` is populated only for DF21 long replies. See `AltitudeMsg`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SquawkMsg {
     pub icao: Icao,
     pub squawk: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comm_b: Option<CommBRegister>,
     pub timestamp: f64,
+}
+
+/// Mode S Comm-B register. The 56-bit MB field of a DF20/DF21 long reply
+/// contains data from one of these registers; the variant indicates which
+/// the plausibility identifier picked.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "register")]
+pub enum CommBRegister {
+    /// BDS 4,0 — Selected Vertical Intention. Autopilot setting data not in ADS-B.
+    Bds40(Bds40),
+    /// BDS 5,0 — Track and Turn Report. True airspeed + roll angle, neither in ADS-B.
+    Bds50(Bds50),
+    /// BDS 6,0 — Heading and Speed Report. Magnetic heading + IAS + Mach.
+    Bds60(Bds60),
+}
+
+/// BDS 4,0 — Selected Vertical Intention payload.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+pub struct Bds40 {
+    pub mcp_altitude_ft: Option<i32>,
+    pub fms_altitude_ft: Option<i32>,
+    pub baro_setting_mb: Option<f64>,
+}
+
+/// BDS 5,0 — Track and Turn Report payload.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+pub struct Bds50 {
+    pub roll_deg: Option<f64>,
+    pub true_track_deg: Option<f64>,
+    pub ground_speed_kts: Option<u32>,
+    pub track_rate_dps: Option<f64>,
+    pub true_airspeed_kts: Option<u32>,
+}
+
+/// BDS 6,0 — Heading and Speed Report payload.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+pub struct Bds60 {
+    pub magnetic_heading_deg: Option<f64>,
+    pub indicated_airspeed_kts: Option<u32>,
+    pub mach: Option<f64>,
+    pub baro_vertical_rate_fpm: Option<i32>,
+    pub inertial_vertical_rate_fpm: Option<i32>,
 }
 
 /// Union type for all decoded messages.

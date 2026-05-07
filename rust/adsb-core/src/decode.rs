@@ -343,6 +343,10 @@ fn decode_airspeed(icao: Icao, bits: u64, _subtype: u8, timestamp: f64) -> Veloc
 }
 
 /// Decode DF0/4/16/20: altitude from surveillance replies.
+///
+/// For DF20 (long Comm-B), also attempts BDS register identification on the
+/// 56-bit MB field at bytes 4-10 — populates `comm_b` when one register
+/// clearly dominates the plausibility scoring.
 pub fn decode_df_altitude(frame: &ModeFrame) -> Option<AltitudeMsg> {
     if !matches!(frame.df, 0 | 4 | 16 | 20) {
         return None;
@@ -355,14 +359,24 @@ pub fn decode_df_altitude(frame: &ModeFrame) -> Option<AltitudeMsg> {
     let alt_code = ((frame.raw[2] as u32 & 0x1F) << 8) | frame.raw[3] as u32;
     let altitude_ft = decode_altitude_13bit(alt_code);
 
+    let comm_b = if frame.df == 20 && frame.raw.len() >= 11 {
+        crate::comm_b::identify_comm_b(&frame.raw[4..11], &frame.icao)
+    } else {
+        None
+    };
+
     Some(AltitudeMsg {
         icao: frame.icao,
         altitude_ft,
+        comm_b,
         timestamp: frame.timestamp,
     })
 }
 
 /// Decode DF5/21: identity (squawk) from surveillance replies.
+///
+/// For DF21 (long Comm-B), also attempts BDS register identification on the
+/// 56-bit MB field at bytes 4-10.
 pub fn decode_df_squawk(frame: &ModeFrame) -> Option<SquawkMsg> {
     if !matches!(frame.df, 5 | 21) {
         return None;
@@ -375,9 +389,16 @@ pub fn decode_df_squawk(frame: &ModeFrame) -> Option<SquawkMsg> {
     let id_code = ((frame.raw[2] as u32 & 0x1F) << 8) | frame.raw[3] as u32;
     let squawk = decode_squawk(id_code);
 
+    let comm_b = if frame.df == 21 && frame.raw.len() >= 11 {
+        crate::comm_b::identify_comm_b(&frame.raw[4..11], &frame.icao)
+    } else {
+        None
+    };
+
     Some(SquawkMsg {
         icao: frame.icao,
         squawk,
+        comm_b,
         timestamp: frame.timestamp,
     })
 }
