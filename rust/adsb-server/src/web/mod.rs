@@ -33,6 +33,10 @@ pub struct AppState {
     pub photo_cache: std::sync::Mutex<std::collections::HashMap<String, Option<serde_json::Value>>>,
     pub airspace_cache: std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>,
     pub ollama_url: Option<String>,
+    /// Spatial position-density baseline used by the statistical anomaly
+    /// scorer. Refreshed periodically by a background task; queried on every
+    /// position write before persisting `anomaly_score`.
+    pub baseline: Arc<RwLock<crate::baseline::BaselineCache>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -180,6 +184,7 @@ pub async fn serve(
         photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         airspace_cache: std::sync::Mutex::new(None),
         ollama_url,
+        baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
     });
 
     // Spawn background filter engine — checks feeder aircraft for events every 10s

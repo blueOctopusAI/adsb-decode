@@ -997,6 +997,39 @@ impl AdsbDatabase for TimescaleDb {
         .await;
     }
 
+    /// Spatial density baseline. Postgres has a real `floor()` so we use it
+    /// directly. Cutoff is computed as a TIMESTAMPTZ from `NOW() - INTERVAL`
+    /// rather than an epoch param to keep the query plan simple.
+    async fn position_density_grid(
+        &self,
+        hours_back: f64,
+        grid_size_deg: f64,
+    ) -> Vec<(i32, i32, u64)> {
+        let rows = sqlx::query(
+            "SELECT
+                FLOOR(lat / $1)::INT AS lat_b,
+                FLOOR(lon / $1)::INT AS lon_b,
+                COUNT(*) AS cnt
+             FROM positions
+             WHERE time >= NOW() - ($2 * INTERVAL '1 hour')
+             GROUP BY lat_b, lon_b",
+        )
+        .bind(grid_size_deg)
+        .bind(hours_back)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        rows.into_iter()
+            .map(|r| {
+                use sqlx::Row;
+                let lat_b: i32 = r.get("lat_b");
+                let lon_b: i32 = r.get("lon_b");
+                let cnt: i64 = r.get("cnt");
+                (lat_b, lon_b, cnt as u64)
+            })
+            .collect()
+    }
+
     // -----------------------------------------------------------------------
     // Vessel (AIS) methods
     // -----------------------------------------------------------------------

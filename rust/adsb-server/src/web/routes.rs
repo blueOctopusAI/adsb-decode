@@ -939,6 +939,7 @@ mod tests {
             photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
+            baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         });
         (state, dir)
     }
@@ -1080,6 +1081,7 @@ mod tests {
             photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
+            baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         });
 
         // Create geofence
@@ -1156,6 +1158,7 @@ mod tests {
                 photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
                 airspace_cache: std::sync::Mutex::new(None),
                 ollama_url: None,
+                baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             }),
             None,
         );
@@ -1672,6 +1675,7 @@ mod tests {
             photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
+            baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         });
         (state, dir)
     }
@@ -2173,6 +2177,7 @@ mod consumer_contract_tests {
             photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
+            baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         });
         (state, dir)
     }
@@ -2581,6 +2586,7 @@ mod pages_tests {
             photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
+            baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         });
         (state, dir)
     }

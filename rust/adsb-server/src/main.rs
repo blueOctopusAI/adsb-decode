@@ -21,7 +21,37 @@ use adsb_core::types::*;
 /// Cache for hexdb.io lookups: ICAO hex string -> enrichment summary (None = lookup attempted but failed).
 type HexDbCache = Arc<Mutex<HashMap<String, Option<String>>>>;
 
+/// Spawn a background task that periodically refreshes the spatial position-
+/// density baseline used by the statistical anomaly scorer. First refresh
+/// fires after 30s (so the server is up before we hit the DB hard); then
+/// every hour.
+fn spawn_baseline_refresh(state: Arc<web::AppState>) {
+    tokio::spawn(async move {
+        // Initial delay so the rest of the server can come up first.
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await; // skip immediate first tick (already slept above)
+        loop {
+            let cells = state
+                .db
+                .position_density_grid(baseline::LOOKBACK_HOURS, baseline::GRID_SIZE_DEG)
+                .await;
+            let map: std::collections::HashMap<(i32, i32), u64> =
+                cells.into_iter().map(|(la, lo, n)| ((la, lo), n)).collect();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+            if let Ok(mut cache) = state.baseline.write() {
+                cache.replace(map, now);
+            }
+            interval.tick().await;
+        }
+    });
+}
+
 mod ais;
+mod baseline;
 mod db;
 #[cfg(feature = "timescaledb")]
 mod db_pg;
@@ -767,7 +797,11 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
             photo_cache: std::sync::Mutex::new(HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: opts.ollama_url.clone(),
+            baseline: std::sync::Arc::new(std::sync::RwLock::new(
+                baseline::BaselineCache::new(),
+            )),
         });
+        spawn_baseline_refresh(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
         eprintln!("Dashboard → http://127.0.0.1:{p}");
@@ -1059,7 +1093,11 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
             photo_cache: std::sync::Mutex::new(HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: opts.ollama_url.clone(),
+            baseline: std::sync::Arc::new(std::sync::RwLock::new(
+                baseline::BaselineCache::new(),
+            )),
         });
+        spawn_baseline_refresh(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
         eprintln!("Dashboard → http://127.0.0.1:{p}");
@@ -1348,7 +1386,11 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
             photo_cache: std::sync::Mutex::new(HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: opts.ollama_url.clone(),
+            baseline: std::sync::Arc::new(std::sync::RwLock::new(
+                baseline::BaselineCache::new(),
+            )),
         });
+        spawn_baseline_refresh(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
         eprintln!("Dashboard → http://127.0.0.1:{p}");
@@ -1970,6 +2012,7 @@ async fn cmd_serve_demo(
         photo_cache: std::sync::Mutex::new(HashMap::new()),
         airspace_cache: std::sync::Mutex::new(None),
         ollama_url,
+        baseline: Arc::new(RwLock::new(baseline::BaselineCache::new())),
     });
 
     let app = web::build_router(state, cors_origin.as_deref());

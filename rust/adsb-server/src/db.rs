@@ -431,6 +431,42 @@ impl Database {
             .unwrap_or(0)
     }
 
+    /// Aggregate recent positions into spatial grid cells. Used by the
+    /// statistical anomaly scorer's baseline. Buckets are integer multiples
+    /// of `grid_size_deg`. SQLite's `floor()` from `1.0 * cast(... AS INTEGER)`
+    /// would round toward zero on negative longitudes — use a `CASE` to get
+    /// true floor semantics matching Rust's `f64::floor`.
+    pub fn position_density_grid(
+        &self,
+        hours_back: f64,
+        grid_size_deg: f64,
+    ) -> Vec<(i32, i32, u64)> {
+        let cutoff = now() - hours_back * 3600.0;
+        let mut stmt = match self.conn.prepare(
+            "SELECT
+                CAST(CASE WHEN lat >= 0 THEN lat / ?1
+                          ELSE (lat / ?1) - 1.0 + 1e-9 END AS INTEGER) AS lat_b,
+                CAST(CASE WHEN lon >= 0 THEN lon / ?1
+                          ELSE (lon / ?1) - 1.0 + 1e-9 END AS INTEGER) AS lon_b,
+                COUNT(*) AS cnt
+             FROM positions
+             WHERE timestamp >= ?2
+             GROUP BY lat_b, lon_b",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![grid_size_deg, cutoff], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as i32,
+                r.get::<_, i64>(1)? as i32,
+                r.get::<_, i64>(2)? as u64,
+            ))
+        })
+        .map(|iter| iter.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
     // -----------------------------------------------------------------------
     // Captures
     // -----------------------------------------------------------------------
@@ -1530,6 +1566,16 @@ pub trait AdsbDatabase: Send + Sync {
         timestamp: f64,
     );
 
+    /// Spatial density of recent positions. Returns (lat_bucket, lon_bucket,
+    /// count) where buckets are integer multiples of `grid_size_deg`. Used by
+    /// the statistical anomaly scorer's baseline. `grid_size_deg` should match
+    /// `crate::baseline::GRID_SIZE_DEG`.
+    async fn position_density_grid(
+        &self,
+        hours_back: f64,
+        grid_size_deg: f64,
+    ) -> Vec<(i32, i32, u64)>;
+
     // Vessel (AIS) methods
     async fn get_vessels(&self, limit: i64) -> Vec<VesselRow>;
     async fn get_vessel_positions(&self, minutes: f64, limit: i64) -> Vec<VesselPositionRow>;
@@ -1749,6 +1795,14 @@ impl AdsbDatabase for SqliteDb {
         self.open().get_vessels(limit)
     }
 
+    async fn position_density_grid(
+        &self,
+        hours_back: f64,
+        grid_size_deg: f64,
+    ) -> Vec<(i32, i32, u64)> {
+        self.open().position_density_grid(hours_back, grid_size_deg)
+    }
+
     async fn get_vessel_positions(&self, minutes: f64, limit: i64) -> Vec<VesselPositionRow> {
         self.open().get_vessel_positions(minutes, limit)
     }
@@ -1872,6 +1926,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, Some(2.5));
+    }
+
+    /// position_density_grid SQL bucket math matches Rust f64::floor — both
+    /// for positive longitudes (Eastern hemisphere) and negative longitudes
+    /// (Western, where naive `CAST AS INT` would truncate toward zero and
+    /// give the wrong bucket). Catches the SQLite-vs-Postgres bucket math
+    /// drift class statically: insert known-bucket positions, run the grid
+    /// query, assert the cells appear at the bucket coordinates the in-process
+    /// `lat_lon_bucket` helper produces.
+    #[test]
+    fn test_position_density_grid_buckets_match_rust_floor() {
+        use crate::baseline::{lat_lon_bucket, GRID_SIZE_DEG};
+        let mut db = test_db();
+        let icao = icao_from_hex("ABCDEF").unwrap();
+        db.upsert_aircraft(&icao, None, None, false, now());
+
+        // Two positions: one in the eastern hemisphere, one western.
+        // Use timestamps within the lookback window.
+        let ts = now();
+        let east = (35.05, 2.05); // bucket (350, 20)
+        let west = (35.05, -82.05); // bucket (350, -821) — negative-floor case
+        db.add_position(
+            &icao, east.0, east.1, None, None, None, None, None, None, ts,
+        );
+        db.add_position(
+            &icao, west.0, west.1, None, None, None, None, None, None, ts,
+        );
+        db.flush();
+
+        let grid = db.position_density_grid(1.0, GRID_SIZE_DEG);
+
+        let want_east = lat_lon_bucket(east.0, east.1);
+        let want_west = lat_lon_bucket(west.0, west.1);
+        let cells: std::collections::HashSet<(i32, i32)> =
+            grid.iter().map(|(la, lo, _)| (*la, *lo)).collect();
+        assert!(
+            cells.contains(&want_east),
+            "missing eastern bucket {want_east:?}; got {cells:?}"
+        );
+        assert!(
+            cells.contains(&want_west),
+            "missing western bucket {want_west:?} (negative-floor case); got {cells:?}"
+        );
     }
 
     /// Migration is idempotent: running open() on an existing path that

@@ -341,6 +341,17 @@ pub async fn api_ingest_frames(
                 let icao_str = icao_to_string(icao);
                 // Prefer auth-resolved receiver_id over tracker-assigned one
                 let rid = auth_receiver_id.or(*receiver_id);
+                // Combine the rules-based score (computed in the tracker
+                // from physical-plausibility checks) with the statistical
+                // score from the spatial-density baseline. Additive: each
+                // rule contributes 0.5–2.0, baseline contributes 0–5.
+                let stat_score = state
+                    .baseline
+                    .read()
+                    .ok()
+                    .map(|b| b.score(*lat, *lon))
+                    .unwrap_or(0.0);
+                let combined = Some(anomaly_score.unwrap_or(0.0) + stat_score);
                 state
                     .db
                     .add_position(
@@ -351,7 +362,7 @@ pub async fn api_ingest_frames(
                         *speed_kts,
                         *heading_deg,
                         *vertical_rate_fpm,
-                        *anomaly_score,
+                        combined,
                         rid,
                         *timestamp,
                     )
@@ -638,6 +649,7 @@ mod tests {
             photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
+            baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         });
         (state, dir)
     }
@@ -655,6 +667,7 @@ mod tests {
             photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
+            baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         });
         (state, dir)
     }
