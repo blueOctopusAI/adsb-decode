@@ -37,6 +37,12 @@ pub struct AppState {
     /// scorer. Refreshed periodically by a background task; queried on every
     /// position write before persisting `anomaly_score`.
     pub baseline: Arc<RwLock<crate::baseline::BaselineCache>>,
+    /// Single broadcast channel for the default-window (5-minute) /ws/positions
+    /// stream. One background producer ticks every 2s, builds the snapshot
+    /// once, and broadcasts the JSON string to all subscribers — vs N clients
+    /// each rebuilding the snapshot themselves. Non-default-window clients
+    /// (slider extended past 5m) fall back to per-connection snapshot timers.
+    pub positions_broadcast: tokio::sync::broadcast::Sender<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -185,6 +191,7 @@ pub async fn serve(
         airspace_cache: std::sync::Mutex::new(None),
         ollama_url,
         baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+        positions_broadcast: tokio::sync::broadcast::channel(8).0,
     });
 
     // Spawn background filter engine — checks feeder aircraft for events every 10s

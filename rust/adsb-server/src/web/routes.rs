@@ -300,6 +300,8 @@ pub async fn collect_positions_snapshot(state: &AppState, minutes: f64) -> Vec<V
 ///
 /// On socket-write failure (client disconnected, network gone), the loop
 /// exits cleanly. axum drops the upgraded connection.
+pub const WS_BROADCAST_MINUTES: f64 = 5.0;
+
 pub async fn ws_positions(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -314,10 +316,64 @@ async fn handle_ws_positions(
     state: Arc<AppState>,
     minutes: f64,
 ) {
+    // Default-window clients subscribe to the shared broadcast channel; one
+    // producer ticks every 2s for the entire connection pool. Non-default
+    // windows still get per-connection snapshot timers (rare path — slider
+    // pulled past 5m).
+    if (minutes - WS_BROADCAST_MINUTES).abs() < f64::EPSILON {
+        handle_ws_via_broadcast(socket, state).await;
+    } else {
+        handle_ws_via_per_connection_timer(&mut socket, state, minutes).await;
+    }
+}
+
+async fn handle_ws_via_broadcast(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>) {
+    use axum::extract::ws::Message;
+
+    // Send an initial snapshot immediately — broadcast ticks every 2s, so
+    // without this a fresh client could wait up to 2s for first paint.
+    if let Ok(text) =
+        serde_json::to_string(&collect_positions_snapshot(&state, WS_BROADCAST_MINUTES).await)
+    {
+        if socket.send(Message::Text(text)).await.is_err() {
+            return;
+        }
+    }
+
+    let mut rx = state.positions_broadcast.subscribe();
+    loop {
+        tokio::select! {
+            recv = rx.recv() => {
+                match recv {
+                    Ok(text) => {
+                        if socket.send(Message::Text(text)).await.is_err() { break; }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Skipped frames because this consumer fell behind.
+                        // Ignore — next push is fine.
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+async fn handle_ws_via_per_connection_timer(
+    socket: &mut axum::extract::ws::WebSocket,
+    state: Arc<AppState>,
+    minutes: f64,
+) {
     use axum::extract::ws::Message;
     use std::time::Duration;
 
-    // Send an initial snapshot immediately so the client doesn't wait a tick.
     if let Ok(text) = serde_json::to_string(&collect_positions_snapshot(&state, minutes).await) {
         if socket.send(Message::Text(text)).await.is_err() {
             return;
@@ -325,7 +381,7 @@ async fn handle_ws_positions(
     }
 
     let mut interval = tokio::time::interval(Duration::from_secs(2));
-    interval.tick().await; // skip the immediate first tick
+    interval.tick().await;
 
     loop {
         tokio::select! {
@@ -343,7 +399,7 @@ async fn handle_ws_positions(
                 match msg {
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(_)) => break,
-                    _ => {} // ignore Ping/Pong/Text/Binary from client
+                    _ => {}
                 }
             }
         }
@@ -940,6 +996,7 @@ mod tests {
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+            positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
         (state, dir)
     }
@@ -1082,6 +1139,7 @@ mod tests {
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+            positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
 
         // Create geofence
@@ -1159,6 +1217,7 @@ mod tests {
                 airspace_cache: std::sync::Mutex::new(None),
                 ollama_url: None,
                 baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+                positions_broadcast: tokio::sync::broadcast::channel(8).0,
             }),
             None,
         );
@@ -1676,6 +1735,7 @@ mod tests {
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+            positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
         (state, dir)
     }
@@ -2178,6 +2238,7 @@ mod consumer_contract_tests {
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+            positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
         (state, dir)
     }
@@ -2587,6 +2648,7 @@ mod pages_tests {
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+            positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
         (state, dir)
     }

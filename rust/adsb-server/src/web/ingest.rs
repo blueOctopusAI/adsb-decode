@@ -650,6 +650,7 @@ mod tests {
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+            positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
         (state, dir)
     }
@@ -668,6 +669,7 @@ mod tests {
             airspace_cache: std::sync::Mutex::new(None),
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+            positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
         (state, dir)
     }

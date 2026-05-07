@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adsb-core"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "adsb-feeder"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "adsb-core",
  "clap",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "adsb-receiver"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "adsb-core",
  "adsb-feeder",
@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "adsb-server"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "adsb-core",
  "adsb-feeder",
