@@ -1,5 +1,7 @@
 <style>
 #replay-map { width: 100%; height: calc(100vh - 160px); }
+#replay-cesium { width: 100%; height: calc(100vh - 160px); display: none; }
+.cesium-viewer .cesium-widget-credits { display: none !important; }
 #range-panel {
     background: #111;
     border-bottom: 1px solid #333;
@@ -81,9 +83,11 @@
     <input type="datetime-local" id="range-end">
     <button class="ctrl-btn" id="load-range">Load Range</button>
     <button class="ctrl-btn" id="load-all">Load All</button>
+    <button class="ctrl-btn" id="mode-3d-btn" title="Switch to 3D globe view">3D</button>
     <span id="data-info">Loading...</span>
 </div>
 <div id="replay-map"></div>
+<div id="replay-cesium"></div>
 <div id="controls">
     <button class="ctrl-btn" id="play-btn">Play</button>
     <div id="slider-container">
@@ -267,6 +271,7 @@ function loadPositions(start, end) {
     // Clear existing
     Object.keys(markers).forEach(k => { map.removeLayer(markers[k]); delete markers[k]; });
     Object.keys(trails).forEach(k => { trails[k].forEach(s => map.removeLayer(s)); delete trails[k]; });
+    clearCesium3DEntities();
 
     fetch(url)
         .then(r => r.json())
@@ -292,6 +297,14 @@ function loadPositions(start, end) {
                 `${allPositions.length.toLocaleString()} pts, ${uniqueIcao.size} aircraft`;
 
             map.setView([allPositions[0].lat, allPositions[0].lon], 8);
+            if (cesiumViewer) {
+                const c = allPositions[0];
+                cesiumViewer.camera.flyTo({
+                    destination: Cesium.Cartesian3.fromDegrees(c.lon, c.lat - 1.5, 120000),
+                    orientation: { heading: 0, pitch: Cesium.Math.toRadians(-25), roll: 0 },
+                    duration: 1.0,
+                });
+            }
             document.getElementById('play-btn').disabled = false;
             loadEvents();
             updateDisplay();
@@ -338,8 +351,194 @@ function renderEventMarkers() {
     }
 }
 
+// ---- 3D mode (CesiumJS) ----
+let cesiumLoaded = false;
+let cesiumViewer = null;
+let is3DMode = false;
+const cesiumMarkers = {}; // icao -> entity
+const cesiumTrails = {};  // icao -> entity
+
+function loadCesiumJS() {
+    return new Promise((resolve, reject) => {
+        if (cesiumLoaded) { resolve(); return; }
+        window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/';
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/Widgets/widgets.css';
+        document.head.appendChild(link);
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/Cesium.js';
+        script.onload = () => { cesiumLoaded = true; resolve(); };
+        script.onerror = () => reject(new Error('Failed to load CesiumJS'));
+        document.head.appendChild(script);
+    });
+}
+
+function initReplayCesium() {
+    if (cesiumViewer) return;
+    Cesium.Ion.defaultAccessToken = '';
+    const imagery = new Cesium.UrlTemplateImageryProvider({
+        url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        subdomains: ['a', 'b', 'c', 'd'],
+        maximumLevel: 19,
+    });
+    cesiumViewer = new Cesium.Viewer('replay-cesium', {
+        imageryProvider: imagery,
+        baseLayerPicker: false,
+        geocoder: false,
+        homeButton: false,
+        sceneModePicker: false,
+        navigationHelpButton: false,
+        animation: false,
+        timeline: false,
+        fullscreenButton: false,
+        infoBox: false,
+        selectionIndicator: false,
+    });
+    cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a0a0a');
+    cesiumViewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0a0a0a');
+    if (allPositions.length > 0) {
+        const c = allPositions[0];
+        cesiumViewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(c.lon, c.lat - 1.5, 120000),
+            orientation: { heading: 0, pitch: Cesium.Math.toRadians(-25), roll: 0 },
+            duration: 0,
+        });
+    }
+}
+
+function clearCesium3DEntities() {
+    if (!cesiumViewer) return;
+    Object.keys(cesiumMarkers).forEach(k => { cesiumViewer.entities.remove(cesiumMarkers[k]); delete cesiumMarkers[k]; });
+    Object.keys(cesiumTrails).forEach(k => { cesiumViewer.entities.remove(cesiumTrails[k]); delete cesiumTrails[k]; });
+}
+
+function updateDisplay3D() {
+    if (timeMax <= timeMin || !cesiumViewer) return;
+
+    const slider = document.getElementById('time-slider');
+    const pct = ((currentTime - timeMin) / (timeMax - timeMin)) * 10000;
+    slider.value = Math.round(pct);
+
+    const timeStr = formatTime(currentTime);
+    document.getElementById('time-display').textContent = timeStr;
+    const overlay = document.getElementById('timestamp-overlay');
+    overlay.textContent = timeStr;
+    overlay.style.display = playing ? 'block' : 'none';
+
+    const seen = new Set();
+    let acCount = 0;
+
+    Object.keys(acIndex).forEach(icao => {
+        const interp = interpolateAt(icao, currentTime);
+        if (!interp) return;
+
+        seen.add(icao);
+        acCount++;
+        const altMeters = (interp.altitude_ft != null ? interp.altitude_ft : 0) * 0.3048;
+        const pos = Cesium.Cartesian3.fromDegrees(interp.lon, interp.lat, altMeters);
+        const color = interp.is_military
+            ? Cesium.Color.fromCssColorString('#ff4444')
+            : Cesium.Color.fromCssColorString(altColor(interp.altitude_ft));
+        const label = interp.callsign || interp.registration || interp.icao;
+
+        if (cesiumMarkers[icao]) {
+            cesiumMarkers[icao].position = pos;
+            cesiumMarkers[icao].point.color = color;
+            cesiumMarkers[icao].label.text = label;
+        } else {
+            cesiumMarkers[icao] = cesiumViewer.entities.add({
+                position: pos,
+                point: {
+                    pixelSize: 8,
+                    color: color,
+                    outlineColor: Cesium.Color.BLACK,
+                    outlineWidth: 1,
+                    heightReference: Cesium.HeightReference.NONE,
+                },
+                label: {
+                    text: label,
+                    font: '11px monospace',
+                    fillColor: Cesium.Color.fromCssColorString('#cccccc'),
+                    outlineColor: Cesium.Color.BLACK,
+                    outlineWidth: 2,
+                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                    pixelOffset: new Cesium.Cartesian2(10, 0),
+                    distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 300000),
+                    showBackground: false,
+                },
+            });
+        }
+
+        // Trail polyline (positions up to currentTime)
+        const pts = getTrailPoints(icao, currentTime);
+        const trailPositions = pts
+            .filter(p => p.lat != null && p.lon != null)
+            .map(p => Cesium.Cartesian3.fromDegrees(
+                p.lon,
+                p.lat,
+                (p.altitude_ft != null ? p.altitude_ft : 0) * 0.3048,
+            ));
+        if (cesiumTrails[icao]) cesiumViewer.entities.remove(cesiumTrails[icao]);
+        if (trailPositions.length >= 2) {
+            cesiumTrails[icao] = cesiumViewer.entities.add({
+                polyline: {
+                    positions: trailPositions,
+                    width: 2,
+                    material: new Cesium.ColorMaterialProperty(color.withAlpha(0.55)),
+                    arcType: Cesium.ArcType.NONE,
+                },
+            });
+        } else {
+            delete cesiumTrails[icao];
+        }
+    });
+
+    document.getElementById('ac-count').textContent = acCount;
+
+    Object.keys(cesiumMarkers).forEach(k => {
+        if (!seen.has(k)) {
+            cesiumViewer.entities.remove(cesiumMarkers[k]);
+            delete cesiumMarkers[k];
+            if (cesiumTrails[k]) { cesiumViewer.entities.remove(cesiumTrails[k]); delete cesiumTrails[k]; }
+        }
+    });
+    cesiumViewer.scene.requestRender();
+}
+
+document.getElementById('mode-3d-btn').addEventListener('click', function() {
+    if (is3DMode) {
+        is3DMode = false;
+        document.getElementById('replay-cesium').style.display = 'none';
+        document.getElementById('replay-map').style.display = 'block';
+        this.textContent = '3D';
+        this.classList.remove('active');
+        map.invalidateSize();
+        updateDisplay();
+    } else {
+        const btn = this;
+        btn.textContent = '...';
+        btn.disabled = true;
+        loadCesiumJS().then(() => {
+            initReplayCesium();
+            is3DMode = true;
+            document.getElementById('replay-map').style.display = 'none';
+            document.getElementById('replay-cesium').style.display = 'block';
+            btn.textContent = '2D';
+            btn.classList.add('active');
+            btn.disabled = false;
+            updateDisplay3D();
+        }).catch(err => {
+            console.error('CesiumJS load error:', err);
+            btn.textContent = '3D';
+            btn.disabled = false;
+        });
+    }
+});
+
 // ---- Display update ----
 function updateDisplay() {
+    if (is3DMode) { updateDisplay3D(); return; }
     if (timeMax <= timeMin) return;
 
     const slider = document.getElementById('time-slider');

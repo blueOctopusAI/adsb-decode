@@ -2729,6 +2729,56 @@ mod pages_tests {
         );
     }
 
+    /// /replay — historical playback. Pinned because the page renders inline JS
+    /// for both Leaflet (2D) and CesiumJS (3D, lazy-loaded). A `<script>` tag
+    /// mismatch breaks both renderers; the 3D toggle name + lazy-loader are the
+    /// contract between user UI and the entity update path.
+    #[tokio::test]
+    async fn page_replay_renders_with_balanced_script_tags() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/replay").await;
+        assert_eq!(status, StatusCode::OK);
+        let opens = body.matches("<script").count();
+        let closes = body.matches("</script>").count();
+        assert_eq!(
+            opens, closes,
+            "replay.html script tags unbalanced: {opens} opens vs {closes} closes"
+        );
+    }
+
+    /// 4D replay (B209). Lazy-loads CesiumJS only when the 3D button is clicked
+    /// — the default 2D path must NOT pull the ~3MB Cesium bundle.
+    #[tokio::test]
+    async fn page_replay_has_3d_toggle_with_lazy_cesium_load() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/replay").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("id=\"mode-3d-btn\""),
+            "replay 3D toggle button missing"
+        );
+        for needle in [
+            "loadCesiumJS",
+            "initReplayCesium",
+            "updateDisplay3D",
+            "clearCesium3DEntities",
+        ] {
+            assert!(
+                body.contains(needle),
+                "replay 3D function {needle} missing — 4D replay broken"
+            );
+        }
+        // Cesium URL should appear inside the lazy-loader, not as a top-level
+        // <script src=> tag — that's what makes the load lazy. Pin the lazy
+        // shape by asserting NO <script src=...cesium...> element.
+        let cesium_top_level_script = body.contains("<script src=\"https://cdn.jsdelivr.net/npm/cesium")
+            || body.contains("<script src=\"https://unpkg.com/cesium");
+        assert!(
+            !cesium_top_level_script,
+            "Cesium loaded as top-level <script src=> — should be lazy via loadCesiumJS()"
+        );
+    }
+
     /// `/api/airports` is consumed by the map page JS to draw airport overlays.
     /// Bare-array contract (not envelope) — pinned to prevent the same shape
     /// regression that bit /api/positions on 2026-04-28.
