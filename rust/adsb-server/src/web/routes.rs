@@ -318,17 +318,18 @@ async fn handle_ws_positions(
     state: Arc<AppState>,
     minutes: f64,
 ) {
-    // Default-window clients subscribe to the shared broadcast channel; one
-    // producer ticks every 2s for the entire connection pool. Non-default
-    // windows still get per-connection snapshot timers (rare path — slider
-    // pulled past 5m).
-    if (minutes - WS_BROADCAST_MINUTES).abs() < f64::EPSILON {
-        handle_ws_via_broadcast(socket, state).await;
-    } else {
-        handle_ws_via_per_connection_timer(&mut socket, state, minutes).await;
-    }
+    // All clients use the per-connection snapshot timer. The shared
+    // broadcast topology (still wired in `main::spawn_positions_broadcast` and
+    // `handle_ws_via_broadcast`) silently stopped ticking on the v0.2.19 prod
+    // binary: default-window clients (`?minutes=5`) received the initial
+    // snapshot and then no further frames, while the polling fallback never
+    // kicked in because the socket stayed open. The per-connection timer path
+    // was verified live with frames arriving every 2s as expected. Keeping the
+    // broadcast code in place for future debug; the routing decision is here.
+    handle_ws_via_per_connection_timer(&mut socket, state, minutes).await;
 }
 
+#[allow(dead_code)]
 async fn handle_ws_via_broadcast(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>) {
     use axum::extract::ws::Message;
 
@@ -3076,6 +3077,126 @@ mod pages_tests {
         assert!(
             json.is_array(),
             "/api/airports must be a bare array (map JS expects this). Got: {json}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket streaming tests
+// ---------------------------------------------------------------------------
+// These open a real WebSocket against a router bound on a random port and
+// verify that frame N+1 actually arrives within the expected tick window.
+//
+// Why this exists: v0.2.19 prod regression — the default-window
+// (`?minutes=5`) WebSocket path used a shared broadcast producer that
+// silently stopped ticking. Browsers received the initial snapshot and
+// then no further frames; the polling fallback never kicked in because
+// the socket stayed open, so the dashboard froze on the first paint.
+// Single-shot tests (handshake works, snapshot serializes) all passed.
+// These tests cross the time boundary and assert the loop actually loops.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod ws_streaming_tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use std::sync::RwLock;
+    use std::time::{Duration, Instant};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    use crate::db::SqliteDb;
+
+    async fn boot_server() -> u16 {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db").to_str().unwrap().to_string();
+        let state = Arc::new(AppState {
+            db: Arc::new(SqliteDb::new(db_path)),
+            tracker: None,
+            geofences: RwLock::new(Vec::new()),
+            geofence_next_id: RwLock::new(1),
+            auth_token: None,
+            photo_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            airspace_cache: std::sync::Mutex::new(None),
+            ollama_url: None,
+            baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
+            positions_broadcast: tokio::sync::broadcast::channel(8).0,
+        });
+        let app = crate::web::build_router(state, None);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        // Tempdir must outlive the server task, so leak it for the test process.
+        std::mem::forget(dir);
+        // Give axum a beat to start accepting before the client dials.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        port
+    }
+
+    /// Open a WS client and count `Text` frames received within `budget`.
+    async fn count_text_frames(port: u16, minutes: f64, budget: Duration) -> usize {
+        let url = format!("ws://127.0.0.1:{port}/ws/positions?minutes={minutes}");
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("ws connect");
+
+        let deadline = Instant::now() + budget;
+        let mut frames = 0usize;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, ws.next()).await {
+                Ok(Some(Ok(Message::Text(_)))) => frames += 1,
+                Ok(Some(Ok(_))) => continue, // ping/pong/binary — not a payload
+                Ok(Some(Err(e))) => panic!("ws stream error: {e}"),
+                Ok(None) => break,
+                Err(_) => break, // budget expired mid-recv
+            }
+        }
+        frames
+    }
+
+    /// The prod-broken path on v0.2.19. Server must push the initial snapshot
+    /// AND at least one follow-up frame within ~5.5s (≥ 2× the 2s tick).
+    /// Anything less reproduces the v0.2.19 freeze.
+    #[tokio::test]
+    async fn ws_default_window_keeps_streaming_after_initial_snapshot() {
+        let port = boot_server().await;
+        let frames = count_text_frames(port, 5.0, Duration::from_millis(5_500)).await;
+        assert!(
+            frames >= 2,
+            "default-window /ws/positions should push initial + ≥1 follow-up \
+             frame within 5.5s, got {frames}. This is the v0.2.19 regression \
+             — the broadcast producer stalled and the dashboard froze."
+        );
+    }
+
+    /// Parity check against the path that was always healthy on v0.2.19.
+    /// If this ever regresses, the bug is in the snapshot pipeline itself,
+    /// not in the WS routing decision.
+    #[tokio::test]
+    async fn ws_extended_window_keeps_streaming() {
+        let port = boot_server().await;
+        let frames = count_text_frames(port, 10.0, Duration::from_millis(5_500)).await;
+        assert!(
+            frames >= 2,
+            "extended-window /ws/positions should push initial + ≥1 follow-up \
+             frame within 5.5s, got {frames}."
+        );
+    }
+
+    /// 1-minute window — the path a user hits by pulling the trail slider all
+    /// the way back. Same regression class; verify it ticks.
+    #[tokio::test]
+    async fn ws_short_window_keeps_streaming() {
+        let port = boot_server().await;
+        let frames = count_text_frames(port, 1.0, Duration::from_millis(5_500)).await;
+        assert!(
+            frames >= 2,
+            "short-window /ws/positions should push initial + ≥1 follow-up \
+             frame within 5.5s, got {frames}."
         );
     }
 }
