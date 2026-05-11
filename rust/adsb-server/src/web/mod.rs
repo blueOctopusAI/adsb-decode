@@ -196,6 +196,14 @@ pub async fn serve(
         positions_broadcast: tokio::sync::broadcast::channel(8).0,
     });
 
+    // Spawn the spatial-baseline refresh task. Without this, `BaselineCache`
+    // stays at total=0 and `score()` short-circuits to 0.0 for every
+    // position — which is exactly what was happening on prod up to v0.2.21:
+    // the `serve` subcommand entered this function but the refresh was only
+    // wired into `cmd_track_live*` paths in main.rs. The statistical anomaly
+    // scorer (T1.5.5) was effectively a no-op in production for ~4 days.
+    spawn_baseline_refresh(state.clone());
+
     // Spawn background filter engine — checks feeder aircraft for events every 10s
     let filter_db = db.clone();
     let filter_state = state.clone();
@@ -305,4 +313,48 @@ pub async fn serve(
         }
     };
     axum::serve(listener, app).await.unwrap();
+}
+
+/// Background task: refresh the spatial-baseline cache hourly so the
+/// statistical anomaly scorer (`baseline::BaselineCache::score`) sees real
+/// data instead of short-circuiting to 0.0. First refresh fires after 30 s
+/// (give the server a moment to come up); subsequent refreshes hourly.
+///
+/// Lives in the web module so every AppState producer has one obvious place
+/// to wire it from. Prior to v0.2.22 this was only called from the
+/// `cmd_track_live*` paths in `main.rs`; production runs the `serve`
+/// subcommand which didn't spawn it, so the scorer was dormant the entire
+/// time T1.5.5 / T1.5.7 were marked "shipped."
+pub fn spawn_baseline_refresh(state: std::sync::Arc<AppState>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await; // skip immediate first tick (already slept above)
+        loop {
+            refresh_baseline_once(&state).await;
+            interval.tick().await;
+        }
+    });
+}
+
+/// One-shot baseline refresh — pull density grid from the DB, recompute the
+/// in-memory cache. Extracted so tests can drive a deterministic refresh
+/// without waiting for the 30 s initial delay in `spawn_baseline_refresh`.
+pub async fn refresh_baseline_once(state: &AppState) {
+    let cells = state
+        .db
+        .position_density_grid(
+            crate::baseline::LOOKBACK_HOURS,
+            crate::baseline::GRID_SIZE_DEG,
+        )
+        .await;
+    let map: std::collections::HashMap<(i32, i32), u64> =
+        cells.into_iter().map(|(la, lo, n)| ((la, lo), n)).collect();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    if let Ok(mut cache) = state.baseline.write() {
+        cache.replace(map, now);
+    }
 }

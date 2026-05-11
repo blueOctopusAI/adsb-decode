@@ -76,11 +76,17 @@ impl BaselineCache {
     }
 
     /// Number of distinct grid cells with at least one observation.
-    /// Currently used only in tests; future surfacing on /api/stats would
-    /// give operators a quick "is the baseline populated" signal.
-    #[allow(dead_code)]
+    /// Surfaced on /api/stats so operators can tell at a glance whether the
+    /// baseline scorer is producing signal vs silently dormant.
     pub fn cell_count(&self) -> usize {
         self.cells.len()
+    }
+
+    /// Total observations across all cells — the denominator in the score
+    /// calculation. Zero means the scorer is short-circuiting to 0.0 for
+    /// every position.
+    pub fn total(&self) -> u64 {
+        self.total
     }
 }
 

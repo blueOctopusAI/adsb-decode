@@ -468,10 +468,27 @@ pub async fn api_events(
     Json(serde_json::to_value(&events).unwrap_or(json!([])))
 }
 
-/// GET /api/stats — database statistics.
+/// GET /api/stats — database statistics + baseline-cache health.
+///
+/// Baseline fields exposed so operators can tell whether the statistical
+/// anomaly scorer is actually producing signal. Without these, "the
+/// anomaly score is always 0" looks the same whether the baseline scorer
+/// is silently dormant (cache never refreshed) or working correctly
+/// (every observed position is in a high-density cell).
 pub async fn api_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let stats = state.db.stats().await;
-    Json(serde_json::to_value(&stats).unwrap_or(json!({})))
+    let mut value = serde_json::to_value(&stats).unwrap_or(json!({}));
+
+    if let Some(obj) = value.as_object_mut() {
+        let (last_refresh, cell_count, total) = match state.baseline.read() {
+            Ok(b) => (b.last_refresh, b.cell_count() as u64, b.total()),
+            Err(_) => (0.0, 0, 0),
+        };
+        obj.insert("baseline_last_refresh".into(), json!(last_refresh));
+        obj.insert("baseline_cell_count".into(), json!(cell_count));
+        obj.insert("baseline_total".into(), json!(total));
+    }
+    Json(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -3181,6 +3198,97 @@ mod pages_tests {
             json.is_array(),
             "/api/airports must be a bare array (map JS expects this). Got: {json}"
         );
+    }
+
+    /// `/api/stats` exposes baseline-cache health (`baseline_last_refresh`,
+    /// `baseline_cell_count`, `baseline_total`). Without these fields,
+    /// "anomaly scores are always 0" looked the same whether the scorer was
+    /// silently dormant (cache never refreshed) or working as designed (every
+    /// position in a high-density cell). The 2026-05-11 prod investigation
+    /// — where the spatial baseline turned out to have never been refreshed
+    /// because `web::serve` didn't spawn the task — is the failure-class
+    /// this surface defends against repeating.
+    #[tokio::test]
+    async fn api_stats_exposes_baseline_state() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/api/stats").await;
+        assert_eq!(status, StatusCode::OK);
+        let json: Value = serde_json::from_str(&body).expect("stats must be JSON");
+        for key in [
+            "baseline_last_refresh",
+            "baseline_cell_count",
+            "baseline_total",
+        ] {
+            assert!(
+                json.get(key).is_some(),
+                "/api/stats missing {key:?} — without it, operators can't tell \
+                 whether the statistical scorer is producing signal. Full: {json}"
+            );
+        }
+        // Fresh cache: last_refresh == 0.0, cell_count == 0, total == 0.
+        assert_eq!(json["baseline_last_refresh"].as_f64(), Some(0.0));
+        assert_eq!(json["baseline_cell_count"].as_u64(), Some(0));
+        assert_eq!(json["baseline_total"].as_u64(), Some(0));
+    }
+
+    /// The baseline-refresh task actually does something when called.
+    /// Catches the 2026-05-11 regression class: `spawn_baseline_refresh`
+    /// was only wired into the `cmd_track_live*` subcommands; the `serve`
+    /// subcommand that production runs never called it, so the cache stayed
+    /// empty and `BaselineCache::score` short-circuited to 0.0 for every
+    /// position. Drives the refresh function directly so the test isn't
+    /// gated on the 30 s initial delay.
+    #[tokio::test]
+    async fn refresh_baseline_once_populates_cache_when_db_has_positions() {
+        // Seed positions across a few distinct grid cells.
+        let (state, _dir) = empty_state();
+        let icao = adsb_core::types::icao_from_hex("ABCDEF").unwrap();
+        let icao_str = adsb_core::types::icao_to_string(&icao);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        state
+            .db
+            .upsert_aircraft(&icao_str, None, None, false, now)
+            .await;
+        for (lat, lon, offset) in [(35.05, -82.05, 10.0), (36.05, -83.05, 5.0)] {
+            state
+                .db
+                .add_position(
+                    &icao_str,
+                    lat,
+                    lon,
+                    Some(30000),
+                    Some(400.0),
+                    Some(90.0),
+                    None,
+                    None,
+                    None,
+                    now - offset,
+                )
+                .await;
+        }
+
+        // Pre-refresh: cache is empty.
+        {
+            let cache = state.baseline.read().unwrap();
+            assert_eq!(cache.total(), 0, "fresh cache should have total=0");
+            assert_eq!(cache.last_refresh, 0.0);
+        }
+
+        crate::web::refresh_baseline_once(&state).await;
+
+        // Post-refresh: cache is populated.
+        let cache = state.baseline.read().unwrap();
+        assert!(
+            cache.total() > 0,
+            "refresh_baseline_once should populate cache.total when DB has \
+             positions, got 0. The 2026-05-11 prod regression had this \
+             condition silently holding forever."
+        );
+        assert!(cache.cell_count() > 0, "cell_count should be > 0 after refresh");
+        assert!(cache.last_refresh > 0.0, "last_refresh should advance");
     }
 }
 

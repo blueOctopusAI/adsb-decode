@@ -44,34 +44,13 @@ fn spawn_positions_broadcast(state: Arc<web::AppState>) {
     });
 }
 
-/// Spawn a background task that periodically refreshes the spatial position-
-/// density baseline used by the statistical anomaly scorer. First refresh
-/// fires after 30s (so the server is up before we hit the DB hard); then
-/// every hour.
-fn spawn_baseline_refresh(state: Arc<web::AppState>) {
-    tokio::spawn(async move {
-        // Initial delay so the rest of the server can come up first.
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-        interval.tick().await; // skip immediate first tick (already slept above)
-        loop {
-            let cells = state
-                .db
-                .position_density_grid(baseline::LOOKBACK_HOURS, baseline::GRID_SIZE_DEG)
-                .await;
-            let map: std::collections::HashMap<(i32, i32), u64> =
-                cells.into_iter().map(|(la, lo, n)| ((la, lo), n)).collect();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64();
-            if let Ok(mut cache) = state.baseline.write() {
-                cache.replace(map, now);
-            }
-            interval.tick().await;
-        }
-    });
-}
+// The baseline refresh task used to live here as `spawn_baseline_refresh`.
+// It now lives in `web::spawn_baseline_refresh` so every AppState producer
+// (cmd_track_live*, web::serve, future entry points) wires it from one
+// place. The v0.2.22 prod fix exposed that the previous main.rs-private
+// helper was only called from the live-tracking subcommands — the
+// `serve` subcommand never ran it, and the statistical anomaly scorer
+// was dormant in production from 2026-05-07 through 2026-05-11.
 
 mod ais;
 mod baseline;
@@ -823,7 +802,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
-        spawn_baseline_refresh(state.clone());
+        web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
@@ -1119,7 +1098,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
-        spawn_baseline_refresh(state.clone());
+        web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
@@ -1412,7 +1391,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
         });
-        spawn_baseline_refresh(state.clone());
+        web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
         let app = web::build_router(state.clone(), opts.cors_origin.as_deref());
         let addr = format!("0.0.0.0:{p}");
