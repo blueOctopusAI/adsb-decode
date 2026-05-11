@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-05-11 (v0.2.21 — anomaly visibility restored + stale-feed banner + map JS extracted).*
+*As of 2026-05-11 (v0.2.22 — baseline scorer actually runs in production).*
 
 ---
 
@@ -112,6 +112,14 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 ---
 
 ## Recent
+
+### 2026-05-11 — Statistical baseline scorer wired into the production code path (v0.2.22)
+- **Investigation.** After v0.2.21 made anomaly_score visible, the prod distribution looked wrong: 27 of 957 positions over a 30-min window scored non-zero, and every one was exactly `2.0` or `3.0`. A real statistical baseline produces continuous values (2.34, 3.71, etc.); integer-only output points at rules-only output, with the baseline contributing nothing.
+- **Root cause.** `spawn_baseline_refresh` lived in `main.rs` and was only called from the three `cmd_track_live*` subcommands. Production runs `adsb serve` (per `deploy/adsb-decode.service`), which calls `web::serve` — and `web::serve` never spawned the refresh. So `BaselineCache.total` stayed `0` and `score()` short-circuited to `0.0` for every position. T1.5.5 ("statistical anomaly baseline") and T1.5.7 ("anomaly on dashboard") had been marked shipped 2026-05-07 and were dormant the entire time.
+- **Fix.** Moved `spawn_baseline_refresh` from `main.rs` to `web::mod.rs` and made it `pub`. `web::serve` now spawns it. The three `cmd_track_live*` callers redirected to the new public location. Factored `refresh_baseline_once` out of the loop body so tests can drive a deterministic refresh without waiting on the 30s initial delay.
+- **Observability.** `/api/stats` exposes `baseline_last_refresh`, `baseline_cell_count`, `baseline_total`. Same problem class won't be invisible for 4 days next time — operators can curl the stats endpoint and see whether the scorer is alive.
+- **Tests.** `api_stats_exposes_baseline_state` pins the new diagnostic fields. `refresh_baseline_once_populates_cache_when_db_has_positions` seeds positions, calls the extracted helper, and asserts cache.total > 0 — catches the 2026-05-11 regression class statically.
+- 175/175 default tests green, clippy --workspace clean.
 
 ### 2026-05-11 — Anomaly visibility + stale-feed banner + map JS extracted (v0.2.21)
 - **Anomaly score was dark in prod (T1.5.2 / T1.5.5 / T1.5.7).** Investigation: `/api/positions/all` over the last hour returned 2638 rows with `anomaly_score` absent from every one; `/api/positions` returned `null` on every row. The INSERT path wrote the value, but every SELECT producer (`get_positions`, `get_recent_positions`, `get_all_positions_ordered`, `query_positions`, `export_positions`) omitted `p.anomaly_score` from the column list. `row_to_position`'s typed getter fell back to `None`, serde dropped the field. Every "visible on map" claim was non-functional. Fix adds the column to every Postgres + SQLite SELECT, plus `test_anomaly_score_surfaces_through_every_select_path` exercising all five read paths against a seeded score of 2.5.
