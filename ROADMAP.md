@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-05-11 (v0.2.23 — baseline scorer actually runs in production; v0.2.22 failed fmt-check, no behavioral diff).*
+*As of 2026-05-11 (v0.2.24 — baseline scorer recentered: typical cells score 0, only rare cells score positive).*
 
 ---
 
@@ -112,6 +112,13 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 ---
 
 ## Recent
+
+### 2026-05-11 — Statistical baseline recentered to observation-weighted median (v0.2.24)
+- **Verification.** After v0.2.23 actually spawned the refresh task, the prod distribution finally showed the baseline contributing — but the predicted pattern landed: a routine Delta cruise flight (DAL1225 west of Asheville) scored 4.98 out of MAX 5.0, every off-centerline cell was reading as red high-tier anomaly. The math was right but the calibration was wrong.
+- **Fix.** `BaselineCache::replace` now computes the **observation-weighted median** of `-ln(p)` across cells and stores it as an `offset`. `score()` subtracts the offset before clamping, so the typical cell (where the median *observation* lives — not the median *cell*) scores 0. Only cells genuinely rarer than typical traffic contribute positive score; unseen cells still flag at MAX_SCORE so the long-tail signal survives.
+- **Why observation-weighted, not cell-weighted.** Most grid cells are empty (water, forest, no traffic). Cell-weighted median would put "typical" in the empty bucket. Walking cells by score and stopping when the cumulative *observation* count crosses `total / 2` weights cells by their actual traffic share, which is what "typical" means in any user-relevant sense.
+- **Tests.** `typical_traffic_cell_scores_zero_after_recentering` seeds three centerline cells + two off-centerline cells, asserts the densest centerline scores exactly 0. `off_typical_cell_scores_above_zero_below_max` pins the middle case — moderately-trafficked cell scores 0 < x < 5. `unseen_cell_scores_at_max_after_recentering` confirms the recentering doesn't suppress the long-tail signal we want (never-seen cells still hit MAX_SCORE).
+- 175/175 default tests green, clippy --workspace clean.
 
 ### 2026-05-11 — Statistical baseline scorer wired into the production code path (v0.2.22)
 - **Investigation.** After v0.2.21 made anomaly_score visible, the prod distribution looked wrong: 27 of 957 positions over a 30-min window scored non-zero, and every one was exactly `2.0` or `3.0`. A real statistical baseline produces continuous values (2.34, 3.71, etc.); integer-only output points at rules-only output, with the baseline contributing nothing.
