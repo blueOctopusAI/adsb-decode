@@ -2957,6 +2957,32 @@ mod pages_tests {
         }
     }
 
+    /// Stale-feed banner — DOM element + JS hook + field-name reference all
+    /// present on the map page. Pairs with the server-side
+    /// `feed_age_seconds` field on `/api/stats`. Without these wires
+    /// connecting, a Pi crash would leave an empty map with no warning
+    /// (the failure mode behind the 27 h silent outage on 2026-05-04).
+    #[tokio::test]
+    async fn page_map_surfaces_feed_staleness_to_user() {
+        let (state, _dir) = empty_state();
+        let (status, _ct, body) = fetch(state, "/").await;
+        assert_eq!(status, StatusCode::OK);
+        for needle in [
+            "id=\"feed-stale-banner\"",
+            "applyFeedFreshness",
+            "FEED_STALE_THRESHOLD_SEC",
+            // Verify the JS actually reads the API field — not just defines
+            // a function. The substring-vs-parse lesson (session 170): the
+            // function being defined doesn't prove it ever reads input.
+            "feed_age_seconds",
+        ] {
+            assert!(
+                body.contains(needle),
+                "map.html missing feed-staleness hook {needle}"
+            );
+        }
+    }
+
     /// `/ws/positions` — WebSocket stream replacing the 2-second poll.
     /// Plain GET without WebSocket upgrade headers must return 4xx (axum's
     /// `WebSocketUpgrade` extractor rejects non-upgrade requests). This pins

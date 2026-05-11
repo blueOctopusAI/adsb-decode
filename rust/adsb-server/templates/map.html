@@ -1,6 +1,29 @@
 <style>
 #map { width: 100%; height: calc(100vh - 41px); }
 
+/* Stale-feed banner. Hidden when the feeder is fresh; shows red when
+   `/api/stats.feed_age_seconds` exceeds the threshold. Pairs with the
+   server-side healthcheck timer + Pi-side crash-on-capture-exit so an
+   operator-visible warning appears within ~60s of any feed drop, not 27h
+   later by eyeballing an empty map (2026-05-04 incident). */
+#feed-stale-banner {
+    position: fixed;
+    top: 41px;
+    left: 0;
+    right: 0;
+    z-index: 1500;
+    background: #7a1a1a;
+    color: #fff;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-bottom: 1px solid #a02020;
+    display: none;
+}
+#feed-stale-banner.visible { display: block; }
+#feed-stale-banner .feed-stale-age { font-variant-numeric: tabular-nums; }
+
 #control-panel {
     position: absolute;
     top: 56px;
@@ -195,6 +218,10 @@ tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
     .ac-popup .popup-row { font-size: 11px; }
 }
 </style>
+<div id="feed-stale-banner" role="status" aria-live="polite">
+    Feed is stale — last frame <span class="feed-stale-age" id="feed-stale-age">--</span> ago.
+    Receiver may be down. <a href="/receivers" style="color:#fff;text-decoration:underline;">Check receivers</a>.
+</div>
 <div id="map"></div>
 <div id="cesium-container"></div>
 <div id="control-panel">
@@ -614,6 +641,32 @@ function centerOnReceiver() {
 }
 
 // --- Stats overlay ---
+// Threshold for the stale-feed banner. Live ADS-B traffic at the ridgeline
+// site produces frames every few hundred ms; >60s of silence almost always
+// means the receiver subprocess died or the network dropped. Server-side
+// auto-recovery normally restarts the receiver within ~10s of the crash
+// (see Pi `adsb-receiver` crash-on-capture-exit, 2026-05-05), so a banner
+// that fires at 60s gives the user-visible signal only when the recovery
+// is also stuck — without spamming on routine reconnects.
+const FEED_STALE_THRESHOLD_SEC = 60;
+
+function formatFeedAge(seconds) {
+    if (seconds < 90) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+    return `${Math.floor(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
+}
+
+function applyFeedFreshness(feedAgeSeconds) {
+    const banner = document.getElementById('feed-stale-banner');
+    if (!banner) return;
+    if (feedAgeSeconds == null || feedAgeSeconds < FEED_STALE_THRESHOLD_SEC) {
+        banner.classList.remove('visible');
+    } else {
+        document.getElementById('feed-stale-age').textContent = formatFeedAge(feedAgeSeconds);
+        banner.classList.add('visible');
+    }
+}
+
 function updateStats() {
     fetch('/api/stats')
         .then(r => r.json())
@@ -626,6 +679,7 @@ function updateStats() {
                 const m = Math.floor((elapsed % 3600) / 60);
                 document.getElementById('so-uptime').textContent = h > 0 ? `${h}h ${m}m` : `${m}m`;
             }
+            applyFeedFreshness(s.feed_age_seconds);
         })
         .catch(() => {});
 }
