@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-05-07 (evening — v0.2.19 deployed, full session 176 chain live).*
+*As of 2026-05-11 (v0.2.20 — dashboard live-refresh restored).*
 
 ---
 
@@ -84,7 +84,7 @@ Engineering-shaped pieces that turn one-off polish into compounding capability.
 | T1.5.3 | **WebSocket position stream (`/ws/positions`).** Replaces the per-tab 30 HTTP requests/min poll with one persistent socket that pushes the same JSON snapshot every 2 seconds. Polling becomes fallback-only — fires when WS isn't available (proxy strips upgrade, network blocks, etc.) or while reconnecting with backoff. Trail-duration slider triggers WS reconnect so live pushes match the user-selected window. | Shipped 2026-05-07 |
 | T1.5.4 | **BDS Comm-B data on aircraft detail page.** Tracker absorbs decoded BDS register payloads onto `AircraftState` per-register slots. `/api/aircraft/<icao>` adds a `comm_b` block when the live tracker has data; detail page renders fields (Selected Alt MCP, True Airspeed, Magnetic Heading, Mach, Roll Angle) as info-grid items. | Shipped 2026-05-07 |
 | T1.5.5 | **Statistical anomaly baseline scorer.** Spatial position-density grid (0.1° cells); hourly background refresh queries `position_density_grid()` over last 7 days; `score(lat, lon)` returns Laplace-smoothed log-probability clamped to [0, 5]. Combined additively with the rules-based scorer in the ingest path before persisting `anomaly_score`. | Shipped 2026-05-07 |
-| T1.5.6 | **WebSocket broadcast topology.** Single `tokio::sync::broadcast` channel for default 5-minute window. One server-side producer ticks every 2s, sends to all subscribers — N clients = 1 snapshot rebuild per tick. Non-default windows fall back to per-connection timer. Producer skips work when no receivers connected. | Shipped 2026-05-07 |
+| T1.5.6 | **WebSocket broadcast topology.** Single `tokio::sync::broadcast` channel for default 5-minute window. One server-side producer ticks every 2s, sends to all subscribers — N clients = 1 snapshot rebuild per tick. Non-default windows fall back to per-connection timer. Producer skips work when no receivers connected. | Shipped 2026-05-07; **disabled 2026-05-11 (v0.2.20)** after the prod producer stopped ticking and froze every dashboard tab on first paint. All clients now use per-connection timers; code retained behind `#[allow(dead_code)]` pending root-cause debug. |
 | T1.5.7 | **Anomaly score on dashboard.** Map popups show an Anomaly line color-coded by tier (low/med/high); table rows get tinted backgrounds + "!" markers when anomalous. AircraftState carries `last_anomaly_score`; `/api/positions` exposes it on every row from the live tracker path. | Shipped 2026-05-07 |
 | T1.5.8 | **`position_count_hourly` continuous aggregate.** TimescaleDB matview precomputes hourly position counts. `/api/stats` 24-hour count is `SUM(cnt)` over 24 rows instead of `COUNT(*)` over millions; real-time aggregates (`materialized_only = false`) cover the partial current hour. Addresses the Mar 14 connection-pool exhaustion incident class. Falls back to direct `COUNT(*)` when matview isn't installed. | Shipped 2026-05-07 |
 
@@ -112,6 +112,12 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 ---
 
 ## Recent
+
+### 2026-05-11 — Dashboard live-refresh fix + WS streaming regression tests (v0.2.20)
+- **Bug.** User reported the public dashboard "not refreshing." Live probe confirmed: `wss://.../ws/positions?minutes=5` sent the initial snapshot and then no further frames. `minutes=10` and `minutes=1` (per-connection-timer path) kept ticking every 2s. Every browser tab opens with `minutes=5`, so every tab froze on first paint. The JS polling fallback only activates on `onclose`; the broken WS stayed open silently.
+- **Fix.** `handle_ws_positions` now routes every client through `handle_ws_via_per_connection_timer`. The shared-broadcast topology (producer in `main::spawn_positions_broadcast`, handler in `routes::handle_ws_via_broadcast`) is left wired but `#[allow(dead_code)]` and idle (receiver count stays 0, the producer skips every tick). Per-connection cost at current traffic is ~one in-memory snapshot rebuild per client per 2s; live-tracker path doesn't hit Postgres.
+- **Why this wasn't caught.** Existing WS coverage pinned protocol (plain GET on `/ws/positions` returns 4xx, the dashboard HTML references `connectPositionsWebSocket`, `collect_positions_snapshot` returns `[]` on empty DB). Nothing crossed the 2s tick boundary to assert "the loop actually loops." Same class as the substring-vs-parse-test lesson from session 170.
+- **New tests (`web::routes::ws_streaming_tests`).** Three async tests boot the full router on a random port via `axum::serve`, connect a real `tokio-tungstenite` client to `/ws/positions?minutes=<X>` with X ∈ {5, 10, 1}, and assert ≥2 `Text` frames arrive within 5.5s (≥ 2× the 2s tick interval). Verified by reverting just the routing change locally — the `minutes=5` test fails with "got 1" exactly as expected; with the fix in place all three pass. Full suite 168/168 green; clippy --workspace clean.
 
 ### 2026-05-07 (evening) — Surfacing + perf: anomaly UI + stats CAGG (v0.2.18 + v0.2.19)
 - **Anomaly score visible on map (v0.2.18).** AircraftState gains `last_anomaly_score`; tracker stores it when emitting PositionUpdate. `/api/positions` live-tracker path includes `anomaly_score` per row. Dashboard `anomalyClass()` helper maps to 3 tiers (low ≥ 0.5, med ≥ 2.0, high ≥ 4.0). Popup adds an Anomaly line color-coded by tier; table rows get tinted backgrounds + "!" marker.

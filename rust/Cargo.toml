@@ -3,7 +3,7 @@ resolver = "2"
 members = ["adsb-core", "adsb-server", "adsb-feeder", "adsb-receiver"]
 
 [workspace.package]
-version = "0.2.19"
+version = "0.2.20"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/blueOctopusAI/adsb-decode"
