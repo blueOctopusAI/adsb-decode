@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-05-11 (v0.2.22 — baseline scorer actually runs in production).*
+*As of 2026-05-11 (v0.2.23 — baseline scorer actually runs in production; v0.2.22 failed fmt-check, no behavioral diff).*
 
 ---
 
