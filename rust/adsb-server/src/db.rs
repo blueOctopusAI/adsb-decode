@@ -398,7 +398,8 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
+                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm,
+                        anomaly_score, timestamp
                  FROM positions WHERE icao = ?1 ORDER BY timestamp DESC LIMIT ?2",
             )
             .unwrap();
@@ -412,12 +413,12 @@ impl Database {
                 speed_kts: r.get(4)?,
                 heading_deg: r.get(5)?,
                 vertical_rate_fpm: r.get(6)?,
-                timestamp: r.get(7)?,
+                anomaly_score: r.get(7)?,
+                timestamp: r.get(8)?,
                 callsign: None,
                 registration: None,
                 country: None,
                 is_military: None,
-                anomaly_score: None,
             })
         })
         .unwrap()
@@ -1043,7 +1044,8 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm, timestamp
+                "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg, vertical_rate_fpm,
+                        anomaly_score, timestamp
                  FROM positions WHERE timestamp >= ?1 ORDER BY timestamp DESC LIMIT ?2",
             )
             .unwrap();
@@ -1057,13 +1059,13 @@ impl Database {
                 speed_kts: r.get(4)?,
                 heading_deg: r.get(5)?,
                 vertical_rate_fpm: r.get(6)?,
-                timestamp: r.get(7)?,
+                anomaly_score: r.get(7)?,
+                timestamp: r.get(8)?,
                 // Live tracker path enriches these at the route level (`/api/positions`).
                 callsign: None,
                 registration: None,
                 country: None,
                 is_military: None,
-                anomaly_score: None,
             })
         })
         .unwrap()
@@ -1246,7 +1248,7 @@ impl Database {
         // deduplicates to the most recent.
         let sql = format!(
             "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg, p.vertical_rate_fpm, p.timestamp,
-                    s_latest.callsign, a.registration, a.country, a.is_military
+                    s_latest.callsign, a.registration, a.country, a.is_military, p.anomaly_score
              FROM positions p
              LEFT JOIN aircraft a ON p.icao = a.icao
              LEFT JOIN (
@@ -1302,7 +1304,7 @@ impl Database {
             .conn
             .prepare(
                 "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg, p.vertical_rate_fpm, p.timestamp,
-                        s_latest.callsign, a.registration, a.country, a.is_military
+                        s_latest.callsign, a.registration, a.country, a.is_military, p.anomaly_score
                  FROM positions p
                  LEFT JOIN aircraft a ON p.icao = a.icao
                  LEFT JOIN (
@@ -1403,7 +1405,7 @@ impl Database {
         // a second round-trip to get registration / military / callsign.
         let sql = format!(
             "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg, p.vertical_rate_fpm, p.timestamp,
-                    s_latest.callsign, a.registration, a.country, a.is_military
+                    s_latest.callsign, a.registration, a.country, a.is_military, p.anomaly_score
              FROM positions p
              LEFT JOIN aircraft a ON p.icao = a.icao
              LEFT JOIN (
@@ -1897,8 +1899,8 @@ mod tests {
     }
 
     /// anomaly_score persists across the INSERT/SELECT roundtrip. Reads the
-    /// column via raw SQL (the typed PositionRow getters don't SELECT it yet)
-    /// so a future regression in the INSERT path can't pass the test silently.
+    /// column via raw SQL so a regression in the INSERT path can't pass the
+    /// test silently even if every typed getter were broken at once.
     #[test]
     fn test_anomaly_score_persists_in_positions_row() {
         let mut db = test_db();
@@ -1926,6 +1928,76 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, Some(2.5));
+    }
+
+    /// Every PositionRow producer surfaces anomaly_score back through the typed
+    /// getter. Catches the v0.2.20 prod gap where the INSERT wrote the column
+    /// but none of the SELECT paths (`get_positions`, `get_recent_positions`,
+    /// `query_positions`, `get_all_positions_ordered`, `export_positions`)
+    /// fetched it — so every dashboard surface saw `None` regardless of what
+    /// was in the DB.
+    #[test]
+    fn test_anomaly_score_surfaces_through_every_select_path() {
+        let mut db = test_db();
+        let icao = icao_from_hex("40621D").unwrap();
+        db.upsert_aircraft(&icao, Some("UK"), None, false, 1.0);
+        let ts = now();
+        db.add_position(
+            &icao,
+            52.25,
+            3.92,
+            Some(38000),
+            Some(420.0),
+            Some(90.0),
+            Some(0),
+            Some(2.5),
+            None,
+            ts,
+        );
+        db.flush();
+
+        let positions = db.get_positions("40621D", 10);
+        assert_eq!(positions.len(), 1, "get_positions: row count");
+        assert_eq!(
+            positions[0].anomaly_score,
+            Some(2.5),
+            "get_positions: anomaly_score must roundtrip"
+        );
+
+        let recent = db.get_recent_positions(60.0, 10);
+        assert_eq!(recent.len(), 1, "get_recent_positions: row count");
+        assert_eq!(
+            recent[0].anomaly_score,
+            Some(2.5),
+            "get_recent_positions: anomaly_score must roundtrip — \
+             this is the path the live dashboard hits via the DB fallback"
+        );
+
+        let queried = db.query_positions(None, None, Some("40621D"), false, 10);
+        assert_eq!(queried.len(), 1, "query_positions: row count");
+        assert_eq!(
+            queried[0].anomaly_score,
+            Some(2.5),
+            "query_positions: anomaly_score must roundtrip — /api/query path"
+        );
+
+        let all = db.get_all_positions_ordered(10, None, None);
+        assert_eq!(all.len(), 1, "get_all_positions_ordered: row count");
+        assert_eq!(
+            all[0].anomaly_score,
+            Some(2.5),
+            "get_all_positions_ordered: anomaly_score must roundtrip — \
+             /api/positions/all (UtilTech correlator + replay)"
+        );
+
+        let exported = db.export_positions(None, Some("40621D"), 10);
+        assert_eq!(exported.len(), 1, "export_positions: row count");
+        assert_eq!(
+            exported[0].anomaly_score,
+            Some(2.5),
+            "export_positions: anomaly_score must roundtrip — \
+             CSV/JSON export consumers"
+        );
     }
 
     /// position_density_grid SQL bucket math matches Rust f64::floor — both

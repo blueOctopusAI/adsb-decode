@@ -420,7 +420,8 @@ impl AdsbDatabase for TimescaleDb {
     async fn get_positions(&self, icao: &str, limit: i64) -> Vec<PositionRow> {
         let rows = sqlx::query(
             "SELECT icao, lat, lon, altitude_ft, speed_kts, heading_deg,
-                    vertical_rate_fpm, EXTRACT(EPOCH FROM time)::double precision as timestamp
+                    vertical_rate_fpm, anomaly_score,
+                    EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM positions WHERE icao = $1 ORDER BY time DESC LIMIT $2",
         )
         .bind(icao)
@@ -437,7 +438,7 @@ impl AdsbDatabase for TimescaleDb {
         // DISTINCT ON deduplicates across multiple receivers — one row per aircraft
         let rows = sqlx::query(
             "SELECT DISTINCT ON (icao) icao, lat, lon, altitude_ft, speed_kts,
-                    heading_deg, vertical_rate_fpm,
+                    heading_deg, vertical_rate_fpm, anomaly_score,
                     EXTRACT(EPOCH FROM time)::double precision as timestamp
              FROM positions
              WHERE time >= NOW() - $1::INTERVAL
@@ -684,7 +685,8 @@ impl AdsbDatabase for TimescaleDb {
         // DISTINCT ON is the Postgres idiom for "one row per ICAO, latest by last_seen".
         let sql = format!(
             "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg,
-                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
+                    p.vertical_rate_fpm, p.anomaly_score,
+                    EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
                     s_latest.callsign, a.registration, a.country, a.is_military
              FROM positions p
              LEFT JOIN aircraft a ON p.icao = a.icao
@@ -731,7 +733,8 @@ impl AdsbDatabase for TimescaleDb {
         // post-flight replay correlation endpoint UtilTech's correlator hits.
         let rows = sqlx::query(
             "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg,
-                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
+                    p.vertical_rate_fpm, p.anomaly_score,
+                    EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
                     s_latest.callsign, a.registration, a.country, a.is_military
              FROM positions p
              LEFT JOIN aircraft a ON p.icao = a.icao
@@ -838,7 +841,8 @@ impl AdsbDatabase for TimescaleDb {
         // a second round-trip per aircraft.
         let sql = format!(
             "SELECT p.icao, p.lat, p.lon, p.altitude_ft, p.speed_kts, p.heading_deg,
-                    p.vertical_rate_fpm, EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
+                    p.vertical_rate_fpm, p.anomaly_score,
+                    EXTRACT(EPOCH FROM p.time)::double precision as timestamp,
                     s_latest.callsign, a.registration, a.country, a.is_military
              FROM positions p
              LEFT JOIN aircraft a ON p.icao = a.icao
