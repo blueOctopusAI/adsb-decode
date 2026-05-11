@@ -352,6 +352,35 @@ pub async fn page_setup() -> Html<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Static assets — JS extracted from inline `<script>` blocks
+// ---------------------------------------------------------------------------
+//
+// The map.html template used to embed ~2,300 lines of JavaScript inline. That
+// made it too easy for a single template edit to silently break the entire
+// dashboard (the prior dashboard-extraction regression on a different repo,
+// session 170, lived for 5 days because substring tests only proved the
+// bytes existed — not that the file parsed). Extracting to a separate file
+// lets `node -c` run on the JS in CI and pins the contract that the JS
+// loads as its own resource.
+//
+// Served via `include_str!` (no `tower-http::ServeDir` dependency) so the
+// asset ships inside the binary like every other template.
+
+/// GET /assets/map.js — the dashboard's behavior layer.
+pub async fn asset_map_js() -> impl IntoResponse {
+    (
+        [
+            ("content-type", "application/javascript; charset=utf-8"),
+            // Short cache so a deploy + hard refresh picks up the new JS,
+            // but tabs don't refetch on every navigation. Same trade-off
+            // as the inline-template path (browsers never cached that either).
+            ("cache-control", "public, max-age=300"),
+        ],
+        include_str!("../../templates/map.js"),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // AI/SEO utility routes
 // ---------------------------------------------------------------------------
 

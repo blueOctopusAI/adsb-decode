@@ -2864,24 +2864,27 @@ mod pages_tests {
     /// Weather radar toggle (B235). Pinned because RainViewer is the only
     /// integration point with a non-Anthropic external service the dashboard
     /// has, and the JS hook names are the contract between the toggle and
-    /// the implementation.
+    /// the implementation. DOM stays in map.html; JS lives in map.js.
     #[tokio::test]
     async fn page_map_has_weather_toggle_and_handlers() {
         let (state, _dir) = empty_state();
-        let (status, _ct, body) = fetch(state, "/").await;
-        assert_eq!(status, StatusCode::OK);
+        let (status_html, _ct, body_html) = fetch(state.clone(), "/").await;
+        assert_eq!(status_html, StatusCode::OK);
         assert!(
-            body.contains("id=\"weather-toggle\""),
-            "weather toggle checkbox missing"
+            body_html.contains("id=\"weather-toggle\""),
+            "weather toggle checkbox missing from map.html"
         );
+
+        let (status_js, _ct_js, body_js) = fetch(state, "/assets/map.js").await;
+        assert_eq!(status_js, StatusCode::OK);
         for needle in ["enableWeather", "disableWeather", "buildWeatherTileUrl"] {
             assert!(
-                body.contains(needle),
-                "weather JS function {needle} missing from map.html"
+                body_js.contains(needle),
+                "weather JS function {needle} missing from map.js"
             );
         }
         assert!(
-            body.contains("api.rainviewer.com"),
+            body_js.contains("api.rainviewer.com"),
             "weather toggle present but RainViewer manifest URL missing"
         );
     }
@@ -2913,16 +2916,13 @@ mod pages_tests {
 
     /// Map page surfaces anomaly_score in popups + table rows. Pin the JS
     /// hook (`anomalyClass`) and one CSS class per tier so a refactor can't
-    /// silently drop one tier of the visual indicator.
+    /// silently drop one tier of the visual indicator. CSS lives in map.html
+    /// (DOM tier classes); JS lives in map.js (anomalyClass + payload read).
     #[tokio::test]
     async fn page_map_renders_anomaly_score_indicators() {
         let (state, _dir) = empty_state();
-        let (status, _ct, body) = fetch(state, "/").await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(
-            body.contains("function anomalyClass"),
-            "map.html missing anomalyClass JS helper"
-        );
+        let (status_html, _ct, body_html) = fetch(state.clone(), "/").await;
+        assert_eq!(status_html, StatusCode::OK);
         for cls in [
             "popup-anomaly-low",
             "popup-anomaly-med",
@@ -2931,21 +2931,29 @@ mod pages_tests {
             "ac-anomaly-med",
             "ac-anomaly-high",
         ] {
-            assert!(body.contains(cls), "map.html missing CSS class {cls}");
+            assert!(body_html.contains(cls), "map.html missing CSS class {cls}");
         }
+
+        let (status_js, _ct_js, body_js) = fetch(state, "/assets/map.js").await;
+        assert_eq!(status_js, StatusCode::OK);
         assert!(
-            body.contains("p.anomaly_score"),
-            "map.html must read anomaly_score off position payload"
+            body_js.contains("function anomalyClass"),
+            "map.js missing anomalyClass JS helper"
+        );
+        assert!(
+            body_js.contains("p.anomaly_score"),
+            "map.js must read anomaly_score off position payload"
         );
     }
 
     /// Map page wires the WS pusher with a polling fallback. Pin both the
     /// connect call and the fallback function name so a refactor can't
-    /// silently drop one of the two paths.
+    /// silently drop one of the two paths. Both live in map.js after the
+    /// 2026-05-11 extraction.
     #[tokio::test]
     async fn page_map_uses_websocket_with_polling_fallback() {
         let (state, _dir) = empty_state();
-        let (status, _ct, body) = fetch(state, "/").await;
+        let (status, _ct, body) = fetch(state, "/assets/map.js").await;
         assert_eq!(status, StatusCode::OK);
         for needle in [
             "connectPositionsWebSocket",
@@ -2953,22 +2961,91 @@ mod pages_tests {
             "startPositionsPollingFallback",
             "/ws/positions",
         ] {
-            assert!(body.contains(needle), "map.html missing WS hook {needle}");
+            assert!(body.contains(needle), "map.js missing WS hook {needle}");
         }
     }
 
-    /// Stale-feed banner — DOM element + JS hook + field-name reference all
-    /// present on the map page. Pairs with the server-side
-    /// `feed_age_seconds` field on `/api/stats`. Without these wires
-    /// connecting, a Pi crash would leave an empty map with no warning
-    /// (the failure mode behind the 27 h silent outage on 2026-05-04).
+    /// `/assets/map.js` parses as valid JavaScript. Catches the failure class
+    /// where a template edit introduces a syntax error and every interactive
+    /// element silently stops working — exactly what session 170's
+    /// dashboard-extraction shipped to prod and lived undetected for 5 days.
+    /// Substring tests can't catch this (the bytes are there); only a parser
+    /// can. Uses `node -c` if available; skips with a message otherwise so
+    /// the suite isn't held hostage to node-on-CI.
+    #[test]
+    fn assets_map_js_parses_as_javascript() {
+        let js_path = concat!(env!("CARGO_MANIFEST_DIR"), "/templates/map.js");
+        let node = match std::process::Command::new("node").arg("--version").output() {
+            Ok(o) if o.status.success() => "node",
+            _ => {
+                eprintln!("node not available — skipping JS parse-validation test");
+                return;
+            }
+        };
+        let out = std::process::Command::new(node)
+            .arg("-c")
+            .arg(js_path)
+            .output()
+            .expect("failed to invoke node");
+        assert!(
+            out.status.success(),
+            "map.js failed to parse as JavaScript.\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `/assets/map.js` is served with the right content-type so browsers
+    /// execute it as JavaScript (and not as text/plain, which Firefox refuses
+    /// to run with strict MIME checking).
     #[tokio::test]
-    async fn page_map_surfaces_feed_staleness_to_user() {
+    async fn assets_map_js_served_with_javascript_content_type() {
+        let (state, _dir) = empty_state();
+        let (status, ct, body) = fetch(state, "/assets/map.js").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            ct.contains("javascript"),
+            "/assets/map.js content-type {ct:?} — browsers may refuse to execute"
+        );
+        assert!(
+            body.len() > 1000,
+            "/assets/map.js body suspiciously short ({} bytes)",
+            body.len()
+        );
+    }
+
+    /// map.html references the extracted JS via `<script src=>`. Without this
+    /// the page loads with zero behavior. A template refactor could drop the
+    /// tag silently.
+    #[tokio::test]
+    async fn page_map_references_external_js_bundle() {
         let (state, _dir) = empty_state();
         let (status, _ct, body) = fetch(state, "/").await;
         assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains(r#"<script src="/assets/map.js""#),
+            "map.html must reference /assets/map.js — without it the dashboard \
+             loads with no JavaScript behavior at all"
+        );
+    }
+
+    /// Stale-feed banner — DOM element on the HTML side, JS handlers on the
+    /// asset side. Pairs with the server-side `feed_age_seconds` field on
+    /// `/api/stats`. Without these wires connecting, a Pi crash would leave
+    /// an empty map with no warning (the failure mode behind the 27 h silent
+    /// outage on 2026-05-04).
+    #[tokio::test]
+    async fn page_map_surfaces_feed_staleness_to_user() {
+        let (state, _dir) = empty_state();
+        let (status_html, _ct, body_html) = fetch(state.clone(), "/").await;
+        assert_eq!(status_html, StatusCode::OK);
+        assert!(
+            body_html.contains("id=\"feed-stale-banner\""),
+            "map.html missing #feed-stale-banner DOM element"
+        );
+
+        let (status_js, _ct_js, body_js) = fetch(state, "/assets/map.js").await;
+        assert_eq!(status_js, StatusCode::OK);
         for needle in [
-            "id=\"feed-stale-banner\"",
             "applyFeedFreshness",
             "FEED_STALE_THRESHOLD_SEC",
             // Verify the JS actually reads the API field — not just defines
@@ -2977,8 +3054,8 @@ mod pages_tests {
             "feed_age_seconds",
         ] {
             assert!(
-                body.contains(needle),
-                "map.html missing feed-staleness hook {needle}"
+                body_js.contains(needle),
+                "map.js missing feed-staleness hook {needle}"
             );
         }
     }

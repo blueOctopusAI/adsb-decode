@@ -80,6 +80,8 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
         )
         .route("/features", axum::routing::get(pages::page_features))
         .route("/setup", axum::routing::get(pages::page_setup))
+        // Static assets
+        .route("/assets/map.js", axum::routing::get(pages::asset_map_js))
         // SEO + AI routes
         .route("/robots.txt", axum::routing::get(pages::robots_txt))
         .route("/sitemap.xml", axum::routing::get(pages::sitemap_xml))
