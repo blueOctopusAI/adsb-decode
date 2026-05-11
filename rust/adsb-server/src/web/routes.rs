@@ -3287,7 +3287,10 @@ mod pages_tests {
              positions, got 0. The 2026-05-11 prod regression had this \
              condition silently holding forever."
         );
-        assert!(cache.cell_count() > 0, "cell_count should be > 0 after refresh");
+        assert!(
+            cache.cell_count() > 0,
+            "cell_count should be > 0 after refresh"
+        );
         assert!(cache.last_refresh > 0.0, "last_refresh should advance");
     }
 }
