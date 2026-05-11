@@ -41,6 +41,16 @@ pub const LOOKBACK_HOURS: f64 = 168.0;
 pub struct BaselineCache {
     cells: HashMap<(i32, i32), u64>,
     total: u64,
+    /// Observation-weighted median of `-ln(p)` across cells, computed at
+    /// `replace()` time. Subtracted from each per-position raw score before
+    /// clamping so a position in a *typical* cell scores 0 — only cells
+    /// significantly rarer than typical traffic contribute positive score.
+    ///
+    /// Without this offset, `-ln(p)` of any non-trivial grid produces scores
+    /// of 2–5 for almost every cell (because traffic spreads across many
+    /// cells), which made every routine commercial flight read as
+    /// "medium/high anomaly" on the dashboard. See v0.2.24 ROADMAP entry.
+    offset: f64,
     /// Unix timestamp of the last successful refresh. 0 if never refreshed.
     pub last_refresh: f64,
 }
@@ -52,7 +62,9 @@ impl BaselineCache {
 
     /// Replace the cell counts. Called from the background refresh task.
     pub fn replace(&mut self, cells: HashMap<(i32, i32), u64>, refreshed_at: f64) {
-        self.total = cells.values().sum();
+        let total: u64 = cells.values().sum();
+        self.offset = observation_weighted_median_neg_log_prob(&cells, total);
+        self.total = total;
         self.cells = cells;
         self.last_refresh = refreshed_at;
     }
@@ -60,6 +72,11 @@ impl BaselineCache {
     /// Score a position. Higher = more unusual under the spatial density
     /// baseline. Returns 0.0 when the cache is empty (no baseline yet) so a
     /// fresh process doesn't penalize every aircraft until the first refresh.
+    ///
+    /// Score is `max(0, -ln(p) - offset)` clamped to [0, MAX_SCORE], where
+    /// `offset` is the observation-weighted median of `-ln(p)` across cells.
+    /// A position in a typical-density cell scores 0; only cells rarer than
+    /// the median observation contribute positive score.
     pub fn score(&self, lat: f64, lon: f64) -> f64 {
         if self.total == 0 {
             return 0.0;
@@ -72,7 +89,7 @@ impl BaselineCache {
         let smoothed_total = self.total + self.cells.len() as u64;
         let probability = (count + 1) as f64 / smoothed_total as f64;
         let raw_score = -probability.ln();
-        raw_score.clamp(0.0, MAX_SCORE)
+        (raw_score - self.offset).clamp(0.0, MAX_SCORE)
     }
 
     /// Number of distinct grid cells with at least one observation.
@@ -97,6 +114,40 @@ pub fn lat_lon_bucket(lat: f64, lon: f64) -> (i32, i32) {
     let lat_b = (lat / GRID_SIZE_DEG).floor() as i32;
     let lon_b = (lon / GRID_SIZE_DEG).floor() as i32;
     (lat_b, lon_b)
+}
+
+/// Observation-weighted median of `-ln(p)` across cells.
+///
+/// "Observation-weighted" means: walk cells in ascending score order,
+/// accumulating their counts, and return the score of the cell that crosses
+/// `total / 2`. The median *observation* — not the median *cell* — sets the
+/// baseline. A cell with 10,000 observations dominates 1,000 cells with one
+/// observation each, which is the right weighting: "typical" means "where
+/// typical aircraft fly," not "what most empty grid squares look like."
+fn observation_weighted_median_neg_log_prob(cells: &HashMap<(i32, i32), u64>, total: u64) -> f64 {
+    if total == 0 || cells.is_empty() {
+        return 0.0;
+    }
+    let smoothed_total = total + cells.len() as u64;
+    let mut scored: Vec<(f64, u64)> = cells
+        .values()
+        .map(|&c| {
+            let p = (c + 1) as f64 / smoothed_total as f64;
+            (-p.ln(), c)
+        })
+        .collect();
+    // Sort by score ascending; ties broken arbitrarily — ties only happen
+    // between equal-count cells which contribute the same score anyway.
+    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let half = total / 2;
+    let mut acc: u64 = 0;
+    for (s, c) in scored {
+        acc = acc.saturating_add(c);
+        if acc >= half {
+            return s;
+        }
+    }
+    0.0
 }
 
 #[cfg(test)]
@@ -143,6 +194,77 @@ mod tests {
         // A cell we've never seen should score in [0, MAX_SCORE], not -inf.
         let score = cache.score(45.0, -120.0);
         assert!((0.0..=MAX_SCORE).contains(&score), "got {score}");
+    }
+
+    /// Recentering pin: a position in the cell where the *median observation*
+    /// lives scores 0, not 2–3. Before v0.2.24 every routine flight through
+    /// the WNC airspace scored 2+ on the dashboard because the raw `-ln(p)` of
+    /// any non-trivial grid is naturally non-zero. The fix subtracts the
+    /// observation-weighted median, so the "typical" cell shows as normal.
+    #[test]
+    fn typical_traffic_cell_scores_zero_after_recentering() {
+        let mut cache = BaselineCache::new();
+        let mut cells = HashMap::new();
+        // Three centerline cells with most of the traffic, plus a handful of
+        // off-centerline cells with moderate traffic. The median observation
+        // sits in a centerline cell — its score should land at 0.
+        cells.insert((350, -820), 20_000u64);
+        cells.insert((350, -821), 15_000u64);
+        cells.insert((351, -820), 10_000u64);
+        cells.insert((352, -825), 500u64); // off-centerline
+        cells.insert((355, -828), 100u64); // sparse
+        cache.replace(cells, 1.0);
+
+        let centerline = cache.score(35.05, -81.95); // (350, -820)
+        assert_eq!(
+            centerline, 0.0,
+            "centerline (densest) cell must score 0 after recentering, got {centerline}"
+        );
+    }
+
+    /// Off-typical-but-still-trafficked cells produce positive but bounded
+    /// scores. This is the "now you can tell signal from noise" case: a
+    /// flight in a less-trafficked corner of the airspace scores above 0
+    /// but well below the genuinely-rare bucket.
+    #[test]
+    fn off_typical_cell_scores_above_zero_below_max() {
+        let mut cache = BaselineCache::new();
+        let mut cells = HashMap::new();
+        cells.insert((350, -820), 20_000u64);
+        cells.insert((350, -821), 15_000u64);
+        cells.insert((351, -820), 10_000u64);
+        cells.insert((352, -825), 500u64);
+        cells.insert((355, -828), 100u64);
+        cache.replace(cells, 1.0);
+
+        let off_typical = cache.score(35.25, -82.45); // (352, -825)
+        assert!(
+            off_typical > 0.0,
+            "off-typical cell must score above 0, got {off_typical}"
+        );
+        assert!(
+            off_typical < MAX_SCORE,
+            "off-typical (still has 500 obs) should not max out, got {off_typical}"
+        );
+    }
+
+    /// Unseen / never-recorded cells score at MAX_SCORE after recentering —
+    /// the offset doesn't suppress the genuinely-rare signal we want to keep.
+    #[test]
+    fn unseen_cell_scores_at_max_after_recentering() {
+        let mut cache = BaselineCache::new();
+        let mut cells = HashMap::new();
+        cells.insert((350, -820), 20_000u64);
+        cells.insert((350, -821), 15_000u64);
+        cells.insert((351, -820), 10_000u64);
+        cells.insert((352, -825), 500u64);
+        cache.replace(cells, 1.0);
+
+        let unseen = cache.score(45.0, -120.0);
+        assert!(
+            unseen >= MAX_SCORE - 0.01,
+            "unseen cell should still flag at ~MAX_SCORE, got {unseen}"
+        );
     }
 
     #[test]
