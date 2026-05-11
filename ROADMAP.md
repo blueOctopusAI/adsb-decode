@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-05-11 (v0.2.20 — dashboard live-refresh restored).*
+*As of 2026-05-11 (v0.2.21 — anomaly visibility restored + stale-feed banner + map JS extracted).*
 
 ---
 
@@ -112,6 +112,12 @@ Tracked in `intelligence-hub/portfolio/implementation-backlog.md` (private):
 ---
 
 ## Recent
+
+### 2026-05-11 — Anomaly visibility + stale-feed banner + map JS extracted (v0.2.21)
+- **Anomaly score was dark in prod (T1.5.2 / T1.5.5 / T1.5.7).** Investigation: `/api/positions/all` over the last hour returned 2638 rows with `anomaly_score` absent from every one; `/api/positions` returned `null` on every row. The INSERT path wrote the value, but every SELECT producer (`get_positions`, `get_recent_positions`, `get_all_positions_ordered`, `query_positions`, `export_positions`) omitted `p.anomaly_score` from the column list. `row_to_position`'s typed getter fell back to `None`, serde dropped the field. Every "visible on map" claim was non-functional. Fix adds the column to every Postgres + SQLite SELECT, plus `test_anomaly_score_surfaces_through_every_select_path` exercising all five read paths against a seeded score of 2.5.
+- **Stale-feed banner on the dashboard.** `feed_age_seconds` shipped on `/api/stats` in `bfad1ac` but no UI surface read it. A Pi crash would leave an empty map with no warning — same failure mode as the 27 h silent outage on 2026-05-04. Banner now appears above the map when `feed_age_seconds > 60`, with a link to `/receivers`. Threshold sits above the ~10s server-side recovery window so routine reconnects don't trigger.
+- **`map.html` inline JS extracted to `templates/map.js`.** The template was 2,644 lines, of which 2,317 were a single `<script>` block — same fragility class as the session-170 dashboard.js regression that shipped a syntax error and lived in prod for 5 days because substring tests can't catch parse failures. New `GET /assets/map.js` handler serves the file with `application/javascript` MIME and 5-minute cache, embedded at compile time via `include_str!` (no new dep). Three new tests: `assets_map_js_parses_as_javascript` runs `node -c` on the file (skips when node missing), `assets_map_js_served_with_javascript_content_type` pins the MIME, `page_map_references_external_js_bundle` pins the HTML reference. Existing JS-symbol substring tests updated to fetch the asset, with DOM/CSS checks left against `/`.
+- 173/173 default tests green; clippy --workspace clean.
 
 ### 2026-05-11 — Dashboard live-refresh fix + WS streaming regression tests (v0.2.20)
 - **Bug.** User reported the public dashboard "not refreshing." Live probe confirmed: `wss://.../ws/positions?minutes=5` sent the initial snapshot and then no further frames. `minutes=10` and `minutes=1` (per-connection-timer path) kept ticking every 2s. Every browser tab opens with `minutes=5`, so every tab froze on first paint. The JS polling fallback only activates on `onclose`; the broken WS stayed open silently.
