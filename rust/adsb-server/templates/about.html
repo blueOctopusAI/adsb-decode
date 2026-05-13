@@ -27,6 +27,14 @@
 .about-page .cta a.cta-btn:hover { background: #00cc6a; }
 .about-page .tech-stack { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
 .about-page .tech-tag { background: #1a1a1a; border: 1px solid #333; padding: 4px 12px; border-radius: 16px; font-size: 12px; color: #ccc; }
+.about-page .operator { display: grid; grid-template-columns: 1fr; gap: 24px; margin: 40px 0; padding: 24px; background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 8px; align-items: center; }
+@media (min-width: 700px) { .about-page .operator { grid-template-columns: 280px 1fr; gap: 32px; } }
+.about-page .operator img { width: 100%; height: auto; border-radius: 6px; border: 1px solid #2a2a2a; display: block; }
+.about-page .operator h2 { color: #00ff88; font-size: 18px; margin: 0 0 8px; border: none; padding: 0; }
+.about-page .operator .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; margin: 0 0 6px; }
+.about-page .operator p { margin: 8px 0; }
+.about-page .operator a.meet-link { color: #00ff88; text-decoration: none; font-weight: bold; display: inline-block; margin-top: 8px; }
+.about-page .operator a.meet-link:hover { text-decoration: underline; }
 </style>
 
 <div class="hero">
@@ -79,6 +87,18 @@
 </div>
 
 <p>Full source code, protocol documentation, and build instructions on <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener">GitHub</a>.</p>
+
+<div class="operator">
+    <img src="https://www.blueoctopustechnology.com/images/octo/octo-adsb-console.png"
+         alt="Octo at an ADS-B live aircraft tracking console — the operator behind Blue Octopus Technology"
+         loading="lazy">
+    <div>
+        <p class="label">The operator</p>
+        <h2>Octo watches the skies.</h2>
+        <p>The character that runs Blue Octopus Technology runs this project too. ADS-B feeds in, Octo monitors — live aircraft, callsigns, altitudes, anomalies. Same workshop, different console.</p>
+        <a href="https://www.blueoctopustechnology.com/campaigns/meet-octo" class="meet-link" target="_blank" rel="noopener">Meet Octo &rarr;</a>
+    </div>
+</div>
 
 <div class="cta">
     <h2>Built by Blue Octopus Technology</h2>
