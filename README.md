@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="rust/adsb-server/static/wordmark.png" alt="adsb-decode" width="420">
+</p>
+
 # adsb-decode
 
 ADS-B radio protocol decoder — from raw 1090 MHz radio signals to identified aircraft on a map.

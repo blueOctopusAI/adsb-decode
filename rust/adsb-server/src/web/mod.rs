@@ -87,6 +87,7 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
         .route("/sitemap.xml", axum::routing::get(pages::sitemap_xml))
         .route("/llms.txt", axum::routing::get(pages::llms_txt))
         .route("/og-image.png", axum::routing::get(pages::og_image))
+        .route("/wordmark.png", axum::routing::get(pages::wordmark))
         // API routes
         .route("/api/aircraft", axum::routing::get(routes::api_aircraft))
         .route(
