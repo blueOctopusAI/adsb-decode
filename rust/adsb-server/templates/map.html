@@ -329,6 +329,7 @@ tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
             <div style="margin-top:4px;">
                 <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="receiver-toggle"> Receivers</label>
                 <label style="cursor:pointer;font-size:11px;margin-left:8px;"><input type="checkbox" id="splatlas-toggle" checked> Splatlas</label>
+                <label style="cursor:pointer;font-size:11px;margin-left:8px;" title="Show Starlink satellites — orbital positions propagated from CelesTrak TLEs"><input type="checkbox" id="sat-toggle"> 🛰 Sats</label>
             </div>
             <div style="margin-top:6px;">
                 <span style="font-size:10px;color:#888;">Trail:</span>
@@ -388,4 +389,7 @@ tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<!-- satellite.js v5 — SGP4 propagator. Drives the satellite layer using
+     TLE data from /api/v1/tle/:group (same source Splatlas uses). -->
+<script src="https://unpkg.com/satellite.js@5.0.0/dist/satellite.min.js"></script>
 <script src="/assets/map.js"></script>

@@ -861,6 +861,103 @@ function renderSplatlasScenes() {
 document.getElementById('splatlas-toggle').addEventListener('change', renderSplatlasScenes);
 renderSplatlasScenes();
 
+// --- Satellite layer ---
+// Renders satellite ground-track positions on the map using TLE data
+// from /api/v1/tle/:group + SGP4 propagation via satellite.js (loaded
+// in map.html). Same data source Splatlas uses; one canonical feeds
+// service feeds both surfaces.
+//
+// Performance budget: TLE refresh every 6h, position propagation every
+// 5s. Default group: starlink (200 active satellites).
+const SAT_GROUP = 'starlink';
+const SAT_REFRESH_MS = 6 * 60 * 60 * 1000;
+const SAT_TICK_MS = 5000;
+let satLayer = L.layerGroup().addTo(map);
+let satEnabled = false;
+let satrecs = []; // [{ name, satrec }]
+let satTickTimer = null;
+let satRefreshTimer = null;
+
+const satIcon = L.divIcon({
+    className: 'sat-icon',
+    html: `<svg width="14" height="14" viewBox="0 0 14 14">
+        <circle cx="7" cy="7" r="4" fill="#b89aff" stroke="#0a0a0a" stroke-width="1"/>
+        <circle cx="7" cy="7" r="1.5" fill="#0a0a0a"/>
+    </svg>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+});
+
+async function fetchSatelliteTles() {
+    try {
+        const res = await fetch(`/api/v1/tle/${SAT_GROUP}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        const lines = text.split(/\r?\n/);
+        const parsed = [];
+        for (let i = 0; i + 2 < lines.length; i++) {
+            const name = lines[i];
+            const tle1 = lines[i + 1];
+            const tle2 = lines[i + 2];
+            if (tle1?.startsWith('1 ') && tle2?.startsWith('2 ')) {
+                try {
+                    const rec = satellite.twoline2satrec(tle1, tle2);
+                    if (!rec.error) parsed.push({ name: name.trim(), satrec: rec });
+                } catch (_) {}
+                i += 2;
+            }
+        }
+        satrecs = parsed;
+        console.log(`[sat] loaded ${parsed.length} TLEs`);
+    } catch (e) {
+        console.warn(`[sat] TLE fetch failed: ${e.message}`);
+    }
+}
+
+function propagateSatellites() {
+    if (!satEnabled || satrecs.length === 0) return;
+    satLayer.clearLayers();
+    const now = new Date();
+    const gmst = satellite.gstime(now);
+    // Only render sats within ~30° of the map center to keep marker count
+    // manageable at low zoom levels. At high zoom, the map bounds prune
+    // naturally.
+    const center = map.getCenter();
+    const visibleBounds = map.getBounds().pad(0.1);
+    for (const { name, satrec } of satrecs) {
+        const pv = satellite.propagate(satrec, now);
+        if (!pv?.position) continue;
+        const gd = satellite.eciToGeodetic(pv.position, gmst);
+        const lat = satellite.degreesLat(gd.latitude);
+        const lon = satellite.degreesLong(gd.longitude);
+        if (!visibleBounds.contains([lat, lon])) continue;
+        const altKm = gd.height;
+        const marker = L.marker([lat, lon], { icon: satIcon, interactive: true });
+        marker.bindTooltip(`🛰 ${esc(name)}<br>${Math.round(altKm)} km`, {
+            className: 'dark-tooltip', direction: 'right',
+        });
+        marker.addTo(satLayer);
+    }
+}
+
+document.getElementById('sat-toggle')?.addEventListener('change', async (e) => {
+    satEnabled = e.target.checked;
+    if (satEnabled) {
+        if (satrecs.length === 0) await fetchSatelliteTles();
+        propagateSatellites();
+        satTickTimer = setInterval(propagateSatellites, SAT_TICK_MS);
+        satRefreshTimer = setInterval(fetchSatelliteTles, SAT_REFRESH_MS);
+    } else {
+        satLayer.clearLayers();
+        clearInterval(satTickTimer);
+        clearInterval(satRefreshTimer);
+        satTickTimer = null;
+        satRefreshTimer = null;
+    }
+});
+// Re-propagate when the map view changes so sats outside the new bounds drop.
+map.on('moveend', () => { if (satEnabled) propagateSatellites(); });
+
 // --- Heatmap layer ---
 let heatLayer = null;
 let heatmapEnabled = false;
