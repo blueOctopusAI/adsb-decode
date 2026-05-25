@@ -821,7 +821,23 @@ function renderSplatlasScenes() {
                 <a href="${SPLATLAS_BASE_URL}" target="_blank" rel="noopener">splatlas.blueoctopustechnology.com</a>
             </div>
         </div>`;
-        // Draw the scene perimeter polygon FIRST so the marker sits on top.
+        // Observation dome — translucent copper circle showing the
+        // ~150 km airspace coverage radius the scene's dome can light.
+        // Drawn FIRST + below the perimeter polygon so the captured
+        // scene reads as the focal point and the dome reads as "this
+        // is what the watch point can see overhead."
+        const domeRadiusM = (scene.dome_radius_km || 150) * 1000;
+        L.circle([scene.lat, scene.lon], {
+            radius: domeRadiusM,
+            color: '#ff914d',
+            weight: 1.5,
+            opacity: 0.45,
+            dashArray: '2 5',
+            fillColor: '#ff914d',
+            fillOpacity: 0.025,
+            interactive: false,
+        }).addTo(splatlasLayer);
+        // Draw the scene perimeter polygon NEXT so the marker sits on top.
         // Dashed copper outline + light fill — atlas register, doesn't fight
         // other map layers but clearly demarcates the captured envelope.
         if (scene.polygon_latlon && scene.polygon_latlon.length >= 3) {
