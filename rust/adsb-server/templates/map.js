@@ -821,20 +821,32 @@ function renderSplatlasScenes() {
                 <a href="${SPLATLAS_BASE_URL}" target="_blank" rel="noopener">splatlas.blueoctopustechnology.com</a>
             </div>
         </div>`;
-        // Observation dome — translucent copper circle showing the
-        // ~150 km airspace coverage radius the scene's dome can light.
-        // Drawn FIRST + below the perimeter polygon so the captured
-        // scene reads as the focal point and the dome reads as "this
-        // is what the watch point can see overhead."
+        // Observation dome — three concentric copper rings reading as a
+        // hemisphere from above, not just a flat ring. Outer = max
+        // detection radius (~150 km), middle = primary coverage,
+        // inner = high-confidence zone close to the watch point.
+        // Filled at successively higher opacity so visually it reads
+        // "denser at the center, fading outward" — dome-from-above.
         const domeRadiusM = (scene.dome_radius_km || 150) * 1000;
         L.circle([scene.lat, scene.lon], {
             radius: domeRadiusM,
-            color: '#ff914d',
-            weight: 1.5,
-            opacity: 0.45,
+            color: '#ff914d', weight: 1.5, opacity: 0.5,
             dashArray: '2 5',
-            fillColor: '#ff914d',
-            fillOpacity: 0.025,
+            fillColor: '#ff914d', fillOpacity: 0.04,
+            interactive: false,
+        }).addTo(splatlasLayer);
+        L.circle([scene.lat, scene.lon], {
+            radius: domeRadiusM * 0.66,
+            color: '#ff914d', weight: 1, opacity: 0.4,
+            dashArray: '2 4',
+            fillColor: '#ff914d', fillOpacity: 0.06,
+            interactive: false,
+        }).addTo(splatlasLayer);
+        L.circle([scene.lat, scene.lon], {
+            radius: domeRadiusM * 0.33,
+            color: '#ff914d', weight: 1, opacity: 0.35,
+            dashArray: '2 4',
+            fillColor: '#ff914d', fillOpacity: 0.09,
             interactive: false,
         }).addTo(splatlasLayer);
         // Draw the scene perimeter polygon NEXT so the marker sits on top.
@@ -914,30 +926,32 @@ async function fetchSatelliteTles() {
     }
 }
 
+// Latest satellite positions snapshot (lat/lon/alt) for the right-panel
+// table. Re-computed every propagation tick.
+let satSnapshot = [];
+
 function propagateSatellites() {
     if (!satEnabled || satrecs.length === 0) return;
     satLayer.clearLayers();
     const now = new Date();
     const gmst = satellite.gstime(now);
-    // Only render sats within ~30° of the map center to keep marker count
-    // manageable at low zoom levels. At high zoom, the map bounds prune
-    // naturally.
-    const center = map.getCenter();
-    const visibleBounds = map.getBounds().pad(0.1);
+    satSnapshot = [];
     for (const { name, satrec } of satrecs) {
         const pv = satellite.propagate(satrec, now);
         if (!pv?.position) continue;
         const gd = satellite.eciToGeodetic(pv.position, gmst);
         const lat = satellite.degreesLat(gd.latitude);
         const lon = satellite.degreesLong(gd.longitude);
-        if (!visibleBounds.contains([lat, lon])) continue;
         const altKm = gd.height;
+        // Render every sat (Leaflet culls off-screen markers cheaply).
         const marker = L.marker([lat, lon], { icon: satIcon, interactive: true });
         marker.bindTooltip(`🛰 ${esc(name)}<br>${Math.round(altKm)} km`, {
             className: 'dark-tooltip', direction: 'right',
         });
         marker.addTo(satLayer);
+        satSnapshot.push({ name, lat, lon, altKm });
     }
+    renderSatTable();
 }
 
 document.getElementById('sat-toggle')?.addEventListener('change', async (e) => {
@@ -957,6 +971,30 @@ document.getElementById('sat-toggle')?.addEventListener('change', async (e) => {
 });
 // Re-propagate when the map view changes so sats outside the new bounds drop.
 map.on('moveend', () => { if (satEnabled) propagateSatellites(); });
+
+// Render the satellite table on the right panel (closest-overhead sorted)
+function renderSatTable() {
+    const tbody = document.querySelector('#sat-table tbody');
+    const countEl = document.getElementById('sat-count-tab');
+    if (!tbody) return;
+    // Sort by altitude (lowest first) — closer to overhead first
+    const sorted = [...satSnapshot].sort((a, b) => a.altKm - b.altKm);
+    tbody.innerHTML = sorted.map((s) =>
+        `<tr><td>${esc(s.name)}</td><td>${Math.round(s.altKm)}</td><td>${s.lat.toFixed(2)}</td><td>${s.lon.toFixed(2)}</td></tr>`
+    ).join('');
+    if (countEl) countEl.textContent = satSnapshot.length;
+}
+
+// Right-panel tab switching: Aircraft / Sats
+document.querySelectorAll('.list-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+        const target = tab.dataset.tab;
+        document.querySelectorAll('.list-tab').forEach((t) => t.classList.toggle('active', t === tab));
+        document.querySelectorAll('.list-table').forEach((tbl) => {
+            tbl.classList.toggle('hidden', tbl.dataset.tabTarget !== target);
+        });
+    });
+});
 
 // --- Heatmap layer ---
 let heatLayer = null;

@@ -62,6 +62,32 @@
 #ac-list-section table { width: 100%; }
 #ac-list-section td { padding: 2px 5px; }
 #ac-list-section td a { cursor: pointer; }
+/* Tabs — switch between Aircraft and Satellites in the right panel. */
+.list-tabs { display: flex; gap: 4px; margin: 4px 0 6px; }
+.list-tab {
+    flex: 1;
+    background: #1a1a1a;
+    color: #888;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+}
+.list-tab:hover { color: #ccc; }
+.list-tab.active {
+    background: rgba(0, 255, 136, 0.15);
+    border-color: #00ff88;
+    color: #00ff88;
+}
+.list-tab[data-tab="sats"].active {
+    background: rgba(184, 154, 255, 0.18);
+    border-color: #b89aff;
+    color: #b89aff;
+}
+.list-table.hidden { display: none; }
 
 .leaflet-container { background: #0a0a0a; }
 
@@ -364,10 +390,19 @@ tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
             </div>
         </div>
         <div id="ac-list-section">
-            <h3>Aircraft (<span id="ac-count">0</span>)</h3>
-            <table id="ac-table">
+            <div class="list-tabs">
+                <button class="list-tab active" data-tab="aircraft">Aircraft (<span id="ac-count">0</span>)</button>
+                <button class="list-tab" data-tab="sats">🛰 Sats (<span id="sat-count-tab">0</span>)</button>
+            </div>
+            <table id="ac-table" class="list-table" data-tab-target="aircraft">
                 <thead>
                     <tr><th>ICAO</th><th>Call</th><th>Alt</th><th>Spd</th><th>Hdg</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            <table id="sat-table" class="list-table hidden" data-tab-target="sats">
+                <thead>
+                    <tr><th>Satellite</th><th>Alt (km)</th><th>Lat</th><th>Lon</th></tr>
                 </thead>
                 <tbody></tbody>
             </table>
