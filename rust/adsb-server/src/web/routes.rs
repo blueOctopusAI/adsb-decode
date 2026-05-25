@@ -980,8 +980,14 @@ pub async fn api_tle(
             // (room for many users). Server cache is 6h; this is just for
             // intermediate layers.
             let headers = [
-                (axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8"),
-                (axum::http::header::CACHE_CONTROL, "public, max-age=300, s-maxage=900"),
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                ),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "public, max-age=300, s-maxage=900",
+                ),
                 (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             ];
             (StatusCode::OK, headers, body).into_response()
@@ -1280,7 +1286,7 @@ mod tests {
                 ollama_url: None,
                 baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
                 positions_broadcast: tokio::sync::broadcast::channel(8).0,
-            tle_cache: crate::tle_cache::TleCache::new(),
+                tle_cache: crate::tle_cache::TleCache::new(),
             }),
             None,
         );

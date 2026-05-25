@@ -21,13 +21,7 @@ use tokio::sync::RwLock;
 /// Groups we accept. CelesTrak supports many more; whitelisted here so we
 /// don't accept arbitrary user input that becomes a server-side fetch.
 const ALLOWED_GROUPS: &[&str] = &[
-    "starlink",
-    "gps-ops",
-    "stations",
-    "active",
-    "visual",
-    "weather",
-    "oneweb",
+    "starlink", "gps-ops", "stations", "active", "visual", "weather", "oneweb",
 ];
 
 const REFRESH_AFTER: Duration = Duration::from_secs(6 * 60 * 60); // 6 hours
@@ -108,9 +102,7 @@ async fn fetch_from_celestrak(group: &str) -> Result<String, TleError> {
     if !group.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return Err(TleError::UnknownGroup(group.to_string()));
     }
-    let url = format!(
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP={group}&FORMAT=tle"
-    );
+    let url = format!("https://celestrak.org/NORAD/elements/gp.php?GROUP={group}&FORMAT=tle");
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
         .user_agent(USER_AGENT)

@@ -151,10 +151,7 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
         // satellite orbital elements. Cached server-side, refreshed ~every
         // 6h. Adds satellites to the "live data sources of record" the
         // server tracks alongside ADS-B and AIS.
-        .route(
-            "/api/v1/tle/:group",
-            axum::routing::get(routes::api_tle),
-        )
+        .route("/api/v1/tle/:group", axum::routing::get(routes::api_tle))
         .with_state(state)
         .layer(DefaultBodyLimit::max(512 * 1024)); // 512 KB max request body
 
@@ -207,7 +204,7 @@ pub async fn serve(
         ollama_url,
         baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         positions_broadcast: tokio::sync::broadcast::channel(8).0,
-            tle_cache: crate::tle_cache::TleCache::new(),
+        tle_cache: crate::tle_cache::TleCache::new(),
     });
 
     // Spawn the spatial-baseline refresh task. Without this, `BaselineCache`

@@ -2020,7 +2020,7 @@ async fn cmd_serve_demo(
         ollama_url,
         baseline: Arc::new(RwLock::new(baseline::BaselineCache::new())),
         positions_broadcast: tokio::sync::broadcast::channel(8).0,
-            tle_cache: crate::tle_cache::TleCache::new(),
+        tle_cache: crate::tle_cache::TleCache::new(),
     });
 
     let app = web::build_router(state, cors_origin.as_deref());
