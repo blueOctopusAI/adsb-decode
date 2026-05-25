@@ -1006,6 +1006,42 @@ pub async fn api_tle(
     }
 }
 
+/// POST /api/v1/tle/:group
+///
+/// Operator seed path. CelesTrak rate-limits the VPS IP; this endpoint
+/// lets a permitted machine (the developer's laptop, a residential IP)
+/// fetch TLEs and push them into the server cache. Body = raw TLE text.
+/// Auth: bearer token if state.auth_token is set, otherwise open
+/// (matches the rest of this API's posture).
+pub async fn api_tle_set(
+    State(state): State<Arc<AppState>>,
+    Path(group): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> impl IntoResponse {
+    if let Some(expected) = &state.auth_token {
+        let ok = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .is_some_and(|t| t == expected);
+        if !ok {
+            return (StatusCode::UNAUTHORIZED, "missing or invalid bearer").into_response();
+        }
+    }
+    match state.tle_cache.set(&group, body).await {
+        Ok(()) => (StatusCode::NO_CONTENT, "").into_response(),
+        Err(e) => {
+            let status = match e {
+                crate::tle_cache::TleError::UnknownGroup(_) => StatusCode::BAD_REQUEST,
+                crate::tle_cache::TleError::Malformed(_) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, format!("set failed: {e}")).into_response()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

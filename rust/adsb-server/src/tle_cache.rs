@@ -13,6 +13,7 @@
 //! logs a row to `tle_fetches` for historical audit.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -34,18 +35,124 @@ struct CacheEntry {
     fetched_at: SystemTime,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TleCache {
     inner: Arc<RwLock<HashMap<String, CacheEntry>>>,
+    /// On-disk persistence path. CelesTrak rate-limits cloud-provider IPs;
+    /// when our VPS is in the doghouse, disk-cache keeps serving the last
+    /// good TLEs (~2 weeks of useful accuracy). Set via env var
+    /// ADSB_TLE_CACHE_DIR or defaults to ./tle-cache.
+    cache_dir: Option<PathBuf>,
+}
+
+impl Default for TleCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TleCache {
     pub fn new() -> Self {
-        Self::default()
+        let cache_dir = std::env::var("ADSB_TLE_CACHE_DIR")
+            .ok()
+            .or_else(|| Some("./tle-cache".into()))
+            .map(PathBuf::from);
+        let cache = Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            cache_dir,
+        };
+        cache.load_from_disk();
+        cache
     }
 
     pub fn is_allowed_group(group: &str) -> bool {
         ALLOWED_GROUPS.contains(&group)
+    }
+
+    /// Walks the cache dir and loads any *.tle files found into memory.
+    /// Best-effort — failures are logged + ignored.
+    fn load_from_disk(&self) {
+        let Some(dir) = &self.cache_dir else {
+            return;
+        };
+        if !dir.exists() {
+            let _ = std::fs::create_dir_all(dir);
+            return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(it) => it,
+            Err(e) => {
+                eprintln!("[tle] cache dir read failed: {e}");
+                return;
+            }
+        };
+        let inner = self.inner.clone();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if path.extension().and_then(|s| s.to_str()) != Some("tle") {
+                continue;
+            }
+            if !ALLOWED_GROUPS.contains(&stem) {
+                continue;
+            }
+            let body = match std::fs::read_to_string(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[tle] failed reading {}: {e}", path.display());
+                    continue;
+                }
+            };
+            let fetched_at = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            tokio::task::block_in_place(|| {
+                let mut w = inner.blocking_write();
+                w.insert(stem.to_string(), CacheEntry { body, fetched_at });
+            });
+            eprintln!("[tle] loaded {stem} from disk");
+        }
+    }
+
+    fn save_to_disk(&self, group: &str, body: &str) {
+        let Some(dir) = &self.cache_dir else {
+            return;
+        };
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("[tle] cache dir create failed: {e}");
+            return;
+        }
+        let path = dir.join(format!("{group}.tle"));
+        if let Err(e) = std::fs::write(&path, body) {
+            eprintln!("[tle] save {} failed: {e}", path.display());
+        }
+    }
+
+    /// Manually set the cached body for a group (operator seed path).
+    /// Used by the POST /api/v1/tle/:group endpoint so a permitted IP
+    /// can refresh CelesTrak-blocked groups out-of-band.
+    pub async fn set(&self, group: &str, body: String) -> Result<(), TleError> {
+        if !Self::is_allowed_group(group) {
+            return Err(TleError::UnknownGroup(group.to_string()));
+        }
+        if body.len() < 500 || (!body.contains("\n1 ") && !body.starts_with("1 ")) {
+            return Err(TleError::Malformed(body.chars().take(200).collect()));
+        }
+        let mut w = self.inner.write().await;
+        w.insert(
+            group.to_string(),
+            CacheEntry {
+                body: body.clone(),
+                fetched_at: SystemTime::now(),
+            },
+        );
+        drop(w);
+        self.save_to_disk(group, &body);
+        eprintln!("[tle] {group} seeded manually ({} bytes)", body.len());
+        Ok(())
     }
 
     /// Return the TLE block for `group`, fetching/refreshing as needed.
@@ -77,6 +184,8 @@ impl TleCache {
                         fetched_at: SystemTime::now(),
                     },
                 );
+                drop(w);
+                self.save_to_disk(group, &body);
                 Ok(body)
             }
             Err(e) => {
