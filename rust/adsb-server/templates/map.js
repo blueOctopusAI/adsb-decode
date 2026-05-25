@@ -723,6 +723,75 @@ setInterval(() => {
     }
 }, 30000);
 
+// --- Splatlas layer ---
+// Pinned 3DGS scenes that pair with Splatlas (splatlas.blueoctopustechnology.com).
+// Click a pin → opens the viewer at that scene with the canonical "first ref point"
+// vantage. Lit hexes on the Splatlas dome show ADS-B traffic overhead from that
+// real-world location, in real time.
+//
+// Scene list is hardcoded here for v1. When >3 scenes exist this should move to
+// /api/v1/splatlas/scenes.
+const SPLATLAS_BASE_URL = 'https://splatlas.blueoctopustechnology.com';
+const SPLATLAS_SCENES = [
+    {
+        id: 'parkerMeadows',
+        name: 'Parker Meadows',
+        location: 'Franklin, NC',
+        lat: 35.15326,
+        lon: -83.45595,
+        captured: '2026-05-21',
+        description: 'Ballfield complex — pavilion tower as observer point. Watch live aircraft fly overhead the real captured scene.',
+        observation_points: [
+            { id: 'pavilion-top', name: 'Top of the pavilion tower' },
+            { id: 'complex-overhead', name: 'Overhead — full complex' },
+            { id: 'pavilion-aerial', name: 'Pavilion aerial' },
+            { id: 'diamond-3-4', name: 'Approach to the SE diamond' },
+        ],
+    },
+];
+
+let splatlasLayer = L.layerGroup().addTo(map);
+
+const splatlasIcon = L.divIcon({
+    className: '',
+    html: `<svg width="22" height="28" viewBox="0 0 22 28">
+        <path d="M11 0 C5 0 0 5 0 11 C0 17 11 28 11 28 C11 28 22 17 22 11 C22 5 17 0 11 0 Z" fill="#ff914d" opacity="0.95"/>
+        <circle cx="11" cy="11" r="4" fill="#0a0a0a"/>
+        <circle cx="11" cy="11" r="2" fill="#ff914d"/>
+    </svg>`,
+    iconSize: [22, 28],
+    iconAnchor: [11, 28],
+});
+
+function renderSplatlasScenes() {
+    splatlasLayer.clearLayers();
+    if (!document.getElementById('splatlas-toggle').checked) return;
+    SPLATLAS_SCENES.forEach(scene => {
+        if (scene.lat == null || scene.lon == null) return;
+        const vantageButtons = scene.observation_points.map(p =>
+            `<a href="${SPLATLAS_BASE_URL}/?scene=${encodeURIComponent(scene.id)}&vantage=${encodeURIComponent(p.id)}" target="_blank" rel="noopener" style="display:block;padding:6px 8px;margin:3px 0;background:#1a1a1a;color:#ff914d;border:1px solid #444;border-radius:3px;text-decoration:none;font-size:11px;">→ ${esc(p.name)}</a>`
+        ).join('');
+        const popupContent = `<div class="ac-popup" style="min-width:220px;">
+            <div class="popup-title" style="color:#ff914d;font-size:13px;">${esc(scene.name)}</div>
+            <div class="popup-row"><span class="popup-label">Location</span><span class="popup-value">${esc(scene.location)}</span></div>
+            <div class="popup-row"><span class="popup-label">Captured</span><span class="popup-value">${esc(scene.captured)}</span></div>
+            <div style="font-size:11px;color:#999;margin:6px 0 3px;">${esc(scene.description)}</div>
+            <div style="margin-top:6px;">
+                <div style="font-size:10px;color:#888;text-transform:uppercase;margin-bottom:3px;">Enter from</div>
+                ${vantageButtons}
+            </div>
+            <div style="font-size:10px;color:#666;margin-top:6px;">Powered by <a href="${SPLATLAS_BASE_URL}" target="_blank" rel="noopener" style="color:#ff914d;">Splatlas</a></div>
+        </div>`;
+        L.marker([scene.lat, scene.lon], { icon: splatlasIcon, interactive: true })
+            .bindTooltip(esc(scene.name) + ' (Splatlas)', { permanent: false, direction: 'right', className: 'dark-tooltip' })
+            .bindPopup(popupContent, { maxWidth: 280 })
+            .addTo(splatlasLayer);
+    });
+}
+
+document.getElementById('splatlas-toggle').addEventListener('change', renderSplatlasScenes);
+renderSplatlasScenes();
+
 // --- Heatmap layer ---
 let heatLayer = null;
 let heatmapEnabled = false;
