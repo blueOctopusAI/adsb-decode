@@ -741,6 +741,15 @@ const SPLATLAS_SCENES = [
         lon: -83.45595,
         captured: '2026-05-21',
         description: 'Ballfield complex — pavilion tower as observer point. Watch live aircraft fly overhead the real captured scene.',
+        // Scene perimeter in lat/lon, clockwise from NW. Generated from
+        // Splatlas manifest precomputed_bbox via splatlas.getScenePerimeter().
+        // Re-run that helper to refresh after retraining.
+        polygon_latlon: [
+            [35.15438478853976, -83.45693942913589], // NW
+            [35.15438478853976, -83.45496057086412], // NE
+            [35.15213521146025, -83.45496057086412], // SE
+            [35.15213521146025, -83.45693942913589], // SW
+        ],
         observation_points: [
             { id: 'pavilion-top', name: 'Top of the pavilion tower' },
             { id: 'complex-overhead', name: 'Overhead — full complex' },
@@ -782,6 +791,20 @@ function renderSplatlasScenes() {
             </div>
             <div style="font-size:10px;color:#666;margin-top:6px;">Powered by <a href="${SPLATLAS_BASE_URL}" target="_blank" rel="noopener" style="color:#ff914d;">Splatlas</a></div>
         </div>`;
+        // Draw the scene perimeter polygon FIRST so the marker sits on top.
+        // Polygon corners come from the manifest's precomputed_bbox via
+        // splatlas.getScenePerimeter() — the same envelope the viewer's
+        // camera is fenced inside.
+        if (scene.polygon_latlon && scene.polygon_latlon.length >= 3) {
+            L.polygon(scene.polygon_latlon, {
+                color: '#ff914d',
+                weight: 2,
+                opacity: 0.85,
+                fillColor: '#ff914d',
+                fillOpacity: 0.12,
+                interactive: false,
+            }).addTo(splatlasLayer);
+        }
         L.marker([scene.lat, scene.lon], { icon: splatlasIcon, interactive: true })
             .bindTooltip(esc(scene.name) + ' (Splatlas)', { permanent: false, direction: 'right', className: 'dark-tooltip' })
             .bindPopup(popupContent, { maxWidth: 280 })
