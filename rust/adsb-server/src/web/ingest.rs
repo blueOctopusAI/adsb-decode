@@ -651,6 +651,7 @@ mod tests {
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         (state, dir)
     }
@@ -670,6 +671,7 @@ mod tests {
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         (state, dir)
     }

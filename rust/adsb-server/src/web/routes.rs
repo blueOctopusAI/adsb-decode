@@ -961,6 +961,46 @@ pub async fn api_vessel_positions_latest(
 }
 
 // ---------------------------------------------------------------------------
+// TLE feed (satellite orbital elements)
+// ---------------------------------------------------------------------------
+
+/// GET /api/v1/tle/:group
+///
+/// Returns CelesTrak TLE text for the requested satellite group, cached
+/// server-side and served to downstream consumers (primarily Splatlas).
+/// CelesTrak rate-limits cloud-platform IPs; routing through this VPS
+/// keeps the satellite layer reliable across all our clients.
+pub async fn api_tle(
+    State(state): State<Arc<AppState>>,
+    Path(group): Path<String>,
+) -> impl IntoResponse {
+    match state.tle_cache.get(&group).await {
+        Ok(body) => {
+            // Browser cache 5 min (small per-tab cost), CDN/edge cache 15 min
+            // (room for many users). Server cache is 6h; this is just for
+            // intermediate layers.
+            let headers = [
+                (axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (axum::http::header::CACHE_CONTROL, "public, max-age=300, s-maxage=900"),
+                (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            ];
+            (StatusCode::OK, headers, body).into_response()
+        }
+        Err(e) => {
+            eprintln!("[tle] {group} error: {e}");
+            let status = match e {
+                crate::tle_cache::TleError::UnknownGroup(_) => StatusCode::BAD_REQUEST,
+                crate::tle_cache::TleError::Upstream(s) => {
+                    StatusCode::from_u16(s).unwrap_or(StatusCode::BAD_GATEWAY)
+                }
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            (status, format!("tle fetch failed: {e}")).into_response()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1017,6 +1057,7 @@ mod tests {
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         (state, dir)
     }
@@ -1160,6 +1201,7 @@ mod tests {
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
 
         // Create geofence
@@ -1238,6 +1280,7 @@ mod tests {
                 ollama_url: None,
                 baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
                 positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
             }),
             None,
         );
@@ -1756,6 +1799,7 @@ mod tests {
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         (state, dir)
     }
@@ -2259,6 +2303,7 @@ mod consumer_contract_tests {
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         (state, dir)
     }
@@ -2669,6 +2714,7 @@ mod pages_tests {
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         (state, dir)
     }
@@ -3335,6 +3381,7 @@ mod ws_streaming_tests {
             ollama_url: None,
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         let app = crate::web::build_router(state, None);
 

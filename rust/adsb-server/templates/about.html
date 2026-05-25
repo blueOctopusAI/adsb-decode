@@ -35,6 +35,14 @@
 .about-page .operator p { margin: 8px 0; }
 .about-page .operator a.meet-link { color: #00ff88; text-decoration: none; font-weight: bold; display: inline-block; margin-top: 8px; }
 .about-page .operator a.meet-link:hover { text-decoration: underline; }
+/* Sibling-project card — Splatlas. Distinct copper border so the eye reads it as a separate product, not part of adsb-decode itself. */
+.about-page .sibling { margin: 40px 0; padding: 28px; background: linear-gradient(135deg, #1a1108, #110d08); border: 1px solid #ff914d; border-radius: 8px; }
+.about-page .sibling .label { color: #ff914d; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; margin: 0 0 6px; }
+.about-page .sibling h2 { color: #ff914d; font-size: 22px; margin: 0 0 16px; border: none; padding: 0; }
+.about-page .sibling p { margin: 12px 0; line-height: 1.6; }
+.about-page .sibling strong { color: #ffb070; }
+.about-page .sibling .cta-btn-secondary { display: inline-block; margin-top: 12px; padding: 10px 28px; background: #ff914d; color: #0a0a0a; text-decoration: none; font-weight: bold; border-radius: 4px; font-size: 14px; }
+.about-page .sibling .cta-btn-secondary:hover { background: #ffb070; }
 </style>
 
 <div class="hero">
@@ -98,6 +106,15 @@
         <p>The character that runs Blue Octopus Technology runs this project too. ADS-B feeds in, Octo monitors — live aircraft, callsigns, altitudes, anomalies. Same workshop, different console.</p>
         <a href="https://www.blueoctopustechnology.com/campaigns/meet-octo" class="meet-link" target="_blank" rel="noopener">Meet Octo &rarr;</a>
     </div>
+</div>
+
+<div class="sibling">
+    <p class="label">Sibling project</p>
+    <h2>Splatlas &mdash; ground truth for the airspace.</h2>
+    <p><strong>adsb-decode shows you what's flying overhead. <a href="https://splatlas.blueoctopustechnology.com" target="_blank" rel="noopener">Splatlas</a> shows you what's flying overhead a real place.</strong></p>
+    <p>3D Gaussian splat reconstructions of scanned sites &mdash; ballfields, properties, sensor pads &mdash; with live ADS-B and Starlink traffic rendered as laser vectors from a fixed observer point up to the hexagonal sky dome above. Walk three steps in the captured scene and the line-of-sight changes &mdash; trees, buildings, and ridgelines actually block the aircraft hexes you can't see from this exact ground position. No 2D map can show that.</p>
+    <p>Captured Splatlas scenes appear as pins on the map above. Click a pin to enter the viewer. As more places are scanned, they accumulate as an atlas of inhabited airspace.</p>
+    <a href="https://splatlas.blueoctopustechnology.com" target="_blank" rel="noopener" class="cta-btn cta-btn-secondary">Open Splatlas &rarr;</a>
 </div>
 
 <div class="cta">

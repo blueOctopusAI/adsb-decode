@@ -1,7 +1,22 @@
 // --- Map initialization ---
+// URL params: ?lat=X&lon=Y&zoom=Z optionally with &focus=<splatlas-scene-id>
+// drive an initial view. Splatlas deep-links into this map using those params
+// so users can hop from a captured 3D scene to the live airspace context
+// around it. mapCentered is set if params override the default so later
+// auto-centering doesn't fight the deep-link.
+let mapCentered = false;
+const _params = new URLSearchParams(window.location.search);
+const _paramLat = parseFloat(_params.get('lat'));
+const _paramLon = parseFloat(_params.get('lon'));
+const _paramZoom = parseFloat(_params.get('zoom'));
+const _initCenter = (Number.isFinite(_paramLat) && Number.isFinite(_paramLon))
+    ? [_paramLat, _paramLon] : [35.18, -83.38];
+const _initZoom = Number.isFinite(_paramZoom) ? _paramZoom : 7;
+if (Number.isFinite(_paramLat) && Number.isFinite(_paramLon)) mapCentered = true;
+
 const map = L.map('map', {
-    center: [35.18, -83.38],
-    zoom: 7,
+    center: _initCenter,
+    zoom: _initZoom,
     zoomControl: true,
     preferCanvas: true,  // Render polylines on canvas instead of SVG DOM nodes
 });
@@ -79,7 +94,8 @@ setMapStyle('dark');
 
 const markers = {};
 const trailLines = {};
-let mapCentered = false;
+// mapCentered already declared at top of file (URL-param init block); the
+// historical re-declaration here moved into the init block above.
 
 // --- Aircraft type classification ---
 function classifyAircraft(p) {
@@ -761,15 +777,25 @@ const SPLATLAS_SCENES = [
 
 let splatlasLayer = L.layerGroup().addTo(map);
 
+// Splatlas marker — pin shape with a dome glyph inside + two staggered
+// pulse rings (CSS) to signal "this is an active capture site, not a
+// regular receiver pin." Reads as premium / atlas-tier.
 const splatlasIcon = L.divIcon({
-    className: '',
-    html: `<svg width="22" height="28" viewBox="0 0 22 28">
-        <path d="M11 0 C5 0 0 5 0 11 C0 17 11 28 11 28 C11 28 22 17 22 11 C22 5 17 0 11 0 Z" fill="#ff914d" opacity="0.95"/>
-        <circle cx="11" cy="11" r="4" fill="#0a0a0a"/>
-        <circle cx="11" cy="11" r="2" fill="#ff914d"/>
-    </svg>`,
-    iconSize: [22, 28],
-    iconAnchor: [11, 28],
+    className: 'splatlas-icon',
+    html: `<div class="splatlas-icon-pulse"></div>
+           <div class="splatlas-icon-pulse delay-1"></div>
+           <svg width="26" height="32" viewBox="0 0 26 32" style="position:relative;display:block;">
+             <path d="M13 0 C6 0 0 6 0 13 C0 20 13 32 13 32 C13 32 26 20 26 13 C26 6 20 0 13 0 Z"
+                   fill="#ff914d" opacity="0.95" stroke="#0a0a0a" stroke-width="1"/>
+             <!-- dome glyph: hemisphere arc + observer dot -->
+             <path d="M5 14 Q13 4 21 14" stroke="#0a0a0a" stroke-width="1.5" fill="none"/>
+             <circle cx="13" cy="14" r="1.8" fill="#0a0a0a"/>
+             <!-- two tick marks reading as 'sensor rays' -->
+             <line x1="13" y1="14" x2="7" y2="9"  stroke="#0a0a0a" stroke-width="1"/>
+             <line x1="13" y1="14" x2="19" y2="9" stroke="#0a0a0a" stroke-width="1"/>
+           </svg>`,
+    iconSize: [26, 32],
+    iconAnchor: [13, 32],
 });
 
 function renderSplatlasScenes() {
@@ -778,36 +804,40 @@ function renderSplatlasScenes() {
     SPLATLAS_SCENES.forEach(scene => {
         if (scene.lat == null || scene.lon == null) return;
         const vantageButtons = scene.observation_points.map(p =>
-            `<a href="${SPLATLAS_BASE_URL}/?scene=${encodeURIComponent(scene.id)}&vantage=${encodeURIComponent(p.id)}" target="_blank" rel="noopener" style="display:block;padding:6px 8px;margin:3px 0;background:#1a1a1a;color:#ff914d;border:1px solid #444;border-radius:3px;text-decoration:none;font-size:11px;">→ ${esc(p.name)}</a>`
+            `<a href="${SPLATLAS_BASE_URL}/?scene=${encodeURIComponent(scene.id)}&vantage=${encodeURIComponent(p.id)}" target="_blank" rel="noopener">→ ${esc(p.name)}</a>`
         ).join('');
-        const popupContent = `<div class="ac-popup" style="min-width:220px;">
-            <div class="popup-title" style="color:#ff914d;font-size:13px;">${esc(scene.name)}</div>
+        const popupContent = `<div class="splatlas-popup" style="min-width:240px;">
+            <div class="splatlas-popup-eyebrow">Splatlas · Captured Scene</div>
+            <div class="splatlas-popup-title">${esc(scene.name)}</div>
             <div class="popup-row"><span class="popup-label">Location</span><span class="popup-value">${esc(scene.location)}</span></div>
             <div class="popup-row"><span class="popup-label">Captured</span><span class="popup-value">${esc(scene.captured)}</span></div>
-            <div style="font-size:11px;color:#999;margin:6px 0 3px;">${esc(scene.description)}</div>
-            <div style="margin-top:6px;">
-                <div style="font-size:10px;color:#888;text-transform:uppercase;margin-bottom:3px;">Enter from</div>
+            <div style="font-size:11px;color:#aaa;margin:8px 0 4px;line-height:1.4;">${esc(scene.description)}</div>
+            <div class="splatlas-popup-actions" style="margin-top:8px;">
+                <div style="font-size:9px;color:#888;text-transform:uppercase;letter-spacing:0.18em;margin-bottom:4px;">Enter from</div>
                 ${vantageButtons}
             </div>
-            <div style="font-size:10px;color:#666;margin-top:6px;">Powered by <a href="${SPLATLAS_BASE_URL}" target="_blank" rel="noopener" style="color:#ff914d;">Splatlas</a></div>
+            <div class="splatlas-popup-footer">
+                3D Gaussian Splat + live ADS-B + line-of-sight occlusion ·
+                <a href="${SPLATLAS_BASE_URL}" target="_blank" rel="noopener">splatlas.blueoctopustechnology.com</a>
+            </div>
         </div>`;
         // Draw the scene perimeter polygon FIRST so the marker sits on top.
-        // Polygon corners come from the manifest's precomputed_bbox via
-        // splatlas.getScenePerimeter() — the same envelope the viewer's
-        // camera is fenced inside.
+        // Dashed copper outline + light fill — atlas register, doesn't fight
+        // other map layers but clearly demarcates the captured envelope.
         if (scene.polygon_latlon && scene.polygon_latlon.length >= 3) {
             L.polygon(scene.polygon_latlon, {
                 color: '#ff914d',
                 weight: 2,
-                opacity: 0.85,
+                opacity: 0.95,
+                dashArray: '6 4',
                 fillColor: '#ff914d',
-                fillOpacity: 0.12,
+                fillOpacity: 0.08,
                 interactive: false,
             }).addTo(splatlasLayer);
         }
         L.marker([scene.lat, scene.lon], { icon: splatlasIcon, interactive: true })
-            .bindTooltip(esc(scene.name) + ' (Splatlas)', { permanent: false, direction: 'right', className: 'dark-tooltip' })
-            .bindPopup(popupContent, { maxWidth: 280 })
+            .bindTooltip(esc(scene.name) + ' · Splatlas', { permanent: false, direction: 'right', className: 'dark-tooltip' })
+            .bindPopup(popupContent, { maxWidth: 300, className: 'splatlas-popup-wrapper' })
             .addTo(splatlasLayer);
     });
 }

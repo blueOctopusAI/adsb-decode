@@ -59,6 +59,7 @@ mod db;
 mod db_pg;
 mod demo;
 mod notification;
+mod tle_cache;
 mod web;
 
 #[derive(Parser)]
@@ -801,6 +802,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
             ollama_url: opts.ollama_url.clone(),
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
@@ -1097,6 +1099,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
             ollama_url: opts.ollama_url.clone(),
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
@@ -1390,6 +1393,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
             ollama_url: opts.ollama_url.clone(),
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
         });
         web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
@@ -2016,6 +2020,7 @@ async fn cmd_serve_demo(
         ollama_url,
         baseline: Arc::new(RwLock::new(baseline::BaselineCache::new())),
         positions_broadcast: tokio::sync::broadcast::channel(8).0,
+            tle_cache: crate::tle_cache::TleCache::new(),
     });
 
     let app = web::build_router(state, cors_origin.as_deref());

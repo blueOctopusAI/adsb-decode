@@ -139,6 +139,69 @@ tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
 .ac-ghost td { opacity: 0.45; }
 .ac-ghost td a { color: #667; }
 
+/* --- Splatlas marker — premium treatment so capture sites read distinctly
+       from regular receivers/aircraft and the atlas register comes through. */
+.splatlas-icon {
+  position: relative;
+}
+.splatlas-icon-pulse {
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  border: 1.5px solid #ff914d;
+  opacity: 0.6;
+  animation: splatlas-pulse 2.8s ease-out infinite;
+  pointer-events: none;
+}
+.splatlas-icon-pulse.delay-1 { animation-delay: 1.4s; }
+@keyframes splatlas-pulse {
+  0%   { transform: scale(0.6); opacity: 0.85; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+.splatlas-popup .splatlas-popup-title {
+  color: #ff914d;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.splatlas-popup .splatlas-popup-eyebrow {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #888;
+  margin-bottom: 6px;
+}
+.splatlas-popup .splatlas-popup-actions a {
+  display: block;
+  padding: 7px 10px;
+  margin: 3px 0;
+  background: linear-gradient(180deg, rgba(255,145,77,0.10), rgba(255,145,77,0.04));
+  color: #ffb070;
+  border: 1px solid rgba(255,145,77,0.35);
+  border-radius: 3px;
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  transition: background 0.12s, border-color 0.12s;
+}
+.splatlas-popup .splatlas-popup-actions a:hover {
+  background: rgba(255,145,77,0.18);
+  border-color: rgba(255,145,77,0.75);
+}
+.splatlas-popup .splatlas-popup-footer {
+  font-size: 10px;
+  color: #777;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.splatlas-popup .splatlas-popup-footer a {
+  color: #ff914d;
+  text-decoration: none;
+}
+
 .panel-handle { display: none; text-align: center; padding: 8px; cursor: pointer; user-select: none; flex-shrink: 0; }
 .panel-handle .handle-bar { display: block; width: 40px; height: 4px; background: rgba(255,255,255,0.3); border-radius: 2px; margin: 0 auto 4px; }
 .panel-handle .handle-text { font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 1px; }
