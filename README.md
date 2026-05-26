@@ -236,6 +236,8 @@ Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 - **Aircraft detail** — Split-screen view. Left: captured trail map, events, position history. Right: external intel from hexdb.io (manufacturer, type, owner), link cards to ADSBExchange/Planespotters/FlightAware/FlightRadar24/FAA Registry/OpenSky, altitude profile chart.
 - **Airport overlay** — 3,642 US airports with Major/Medium/Small toggles. Click for details + AirNav/SkyVector links. Works in both 2D (Leaflet markers) and 3D (Cesium billboards).
 - **Heatmap** — Position density visualization. 2D uses Leaflet heat layer; 3D renders colored density rectangles on the globe.
+- **🛰 Satellites** — Toggle to overlay Starlink positions on the map. SGP4 propagation client-side via satellite.js; 5s tick. TLEs from the server's `/api/v1/tle/:group` endpoint (disk-persistent cache + operator POST seed). Right-panel tabs switch between Aircraft and Sats.
+- **Splatlas integration** — Captured 3D Gaussian splat scenes (from [Splatlas](https://splatlas.blueoctopustechnology.com/)) appear as pulse-ring markers with concentric copper dome circles showing the observation airspace radius. Click a marker → vantage buttons deep-link into the 3D viewer with a cinematic fly-in animation.
 - **Weather radar** — Live precipitation overlay via RainViewer (free, key-less). 5-minute auto-refresh. Works on both 2D map and 3D globe.
 - **Map styles** — Dark, Satellite, Topo, Streets, Dark Matter, Voyager (persisted in localStorage)
 - **Events dashboard** — Color-coded events with type filters, auto-enriched with aircraft type/owner from hexdb.io
@@ -243,6 +245,28 @@ Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 - **4D replay** — Pick a historical time range and scrub through it. Toggle between 2D Leaflet (flat ground track) and 3D Cesium (aircraft at true altitude with trails). Same time slider, speed multiplier, and event markers drive both modes.
 - **Receiver management** — Connected feeders with coverage circles
 - **Table view** — Sortable aircraft list with detail pages
+
+## Satellite TLE Feed
+
+`/api/v1/tle/:group` serves Two-Line Element sets cached server-side. Same canonical source the Splatlas viewer + the on-page 🛰 Sats layer consume. Disk-persistent (survives restarts), graceful stale fallback if upstream refresh fails.
+
+Allowed groups: `starlink`, `gps-ops`, `stations`, `active`, `visual`, `weather`, `oneweb`.
+
+```bash
+curl https://adsb.blueoctopustechnology.com/api/v1/tle/starlink | head -3
+```
+
+**Why server-side cache**: CelesTrak rate-limits cloud-provider IPs to 1 successful query per dataset per IP per 2 hours. The cache + the seed-tle.sh helper script work around this:
+
+```bash
+# Run from a residential IP (Mac, not the VPS). Pulls fresh TLEs from
+# CelesTrak and POSTs them into the server cache. Suggested weekly cron.
+bash scripts/seed-tle.sh                       # default: starlink + gps-ops + stations
+bash scripts/seed-tle.sh starlink              # one group
+ADSB_TOKEN=... bash scripts/seed-tle.sh        # if server has auth_token set
+```
+
+Cache files live under `ADSB_TLE_CACHE_DIR` (default `./tle-cache/`).
 
 ## Multi-Receiver Network
 
