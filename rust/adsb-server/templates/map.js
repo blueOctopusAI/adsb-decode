@@ -773,6 +773,18 @@ const SPLATLAS_SCENES = [
             { id: 'diamond-3-4', name: 'Approach to the SE diamond' },
         ],
     },
+    {
+        id: 'cyberTruck',
+        name: 'Cybertruck',
+        location: 'Franklin, NC',
+        lat: 35.18,
+        lon: -83.38,
+        captured: '2026-05-19',
+        description: 'The ADS-B receiver site itself — the antenna feeding this whole map sits right here, captured as a 3D scan. This pin marks the signal source.',
+        observation_points: [
+            { id: '', name: 'Enter the Cybertruck scan' },
+        ],
+    },
 ];
 
 let splatlasLayer = L.layerGroup().addTo(map);
