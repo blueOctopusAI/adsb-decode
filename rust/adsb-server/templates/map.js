@@ -775,6 +775,7 @@ const SPLATLAS_SCENES = [
     },
     {
         id: 'cyberTruck',
+        kind: 'receiver',
         name: 'Cybertruck',
         location: 'Franklin, NC',
         lat: 35.18,
@@ -810,6 +811,23 @@ const splatlasIcon = L.divIcon({
     iconAnchor: [13, 32],
 });
 
+// Receiver-site marker — distinct from a captured-scene pin: cyan (vs copper)
+// with an antenna-mast + broadcast-arc glyph. Reads as "this is the signal
+// source," not "this is a dome scene."
+const receiverIcon = L.divIcon({
+    className: 'splatlas-icon',
+    html: `<svg width="26" height="32" viewBox="0 0 26 32" style="position:relative;display:block;">
+             <path d="M13 0 C6 0 0 6 0 13 C0 20 13 32 13 32 C13 32 26 20 26 13 C26 6 20 0 13 0 Z"
+                   fill="#4fc3f7" opacity="0.95" stroke="#0a0a0a" stroke-width="1"/>
+             <line x1="13" y1="18" x2="13" y2="10" stroke="#0a0a0a" stroke-width="1.6"/>
+             <circle cx="13" cy="9.5" r="1.7" fill="#0a0a0a"/>
+             <path d="M9.5 13 Q13 8.5 16.5 13" stroke="#0a0a0a" stroke-width="1.2" fill="none"/>
+             <path d="M7 15 Q13 6 19 15" stroke="#0a0a0a" stroke-width="1" fill="none" opacity="0.65"/>
+           </svg>`,
+    iconSize: [26, 32],
+    iconAnchor: [13, 32],
+});
+
 function renderSplatlasScenes() {
     splatlasLayer.clearLayers();
     if (!document.getElementById('splatlas-toggle').checked) return;
@@ -819,7 +837,7 @@ function renderSplatlasScenes() {
             `<a href="${SPLATLAS_BASE_URL}/?scene=${encodeURIComponent(scene.id)}&vantage=${encodeURIComponent(p.id)}" target="_blank" rel="noopener">→ ${esc(p.name)}</a>`
         ).join('');
         const popupContent = `<div class="splatlas-popup" style="min-width:240px;">
-            <div class="splatlas-popup-eyebrow">Splatlas · Captured Scene</div>
+            <div class="splatlas-popup-eyebrow">${scene.kind === 'receiver' ? 'Splatlas · Receiver Site' : 'Splatlas · Captured Scene'}</div>
             <div class="splatlas-popup-title">${esc(scene.name)}</div>
             <div class="popup-row"><span class="popup-label">Location</span><span class="popup-value">${esc(scene.location)}</span></div>
             <div class="popup-row"><span class="popup-label">Captured</span><span class="popup-value">${esc(scene.captured)}</span></div>
@@ -839,6 +857,9 @@ function renderSplatlasScenes() {
         // inner = high-confidence zone close to the watch point.
         // Filled at successively higher opacity so visually it reads
         // "denser at the center, fading outward" — dome-from-above.
+        // Receiver pins mark a point antenna (the signal source) — no big
+        // coverage rings, which would overlap messily with a nearby scene dome.
+        if (scene.kind !== 'receiver') {
         const domeRadiusM = (scene.dome_radius_km || 150) * 1000;
         L.circle([scene.lat, scene.lon], {
             radius: domeRadiusM,
@@ -861,6 +882,7 @@ function renderSplatlasScenes() {
             fillColor: '#ff914d', fillOpacity: 0.09,
             interactive: false,
         }).addTo(splatlasLayer);
+        }
         // Draw the scene perimeter polygon NEXT so the marker sits on top.
         // Dashed copper outline + light fill — atlas register, doesn't fight
         // other map layers but clearly demarcates the captured envelope.
@@ -875,7 +897,7 @@ function renderSplatlasScenes() {
                 interactive: false,
             }).addTo(splatlasLayer);
         }
-        L.marker([scene.lat, scene.lon], { icon: splatlasIcon, interactive: true })
+        L.marker([scene.lat, scene.lon], { icon: scene.kind === 'receiver' ? receiverIcon : splatlasIcon, interactive: true })
             .bindTooltip(esc(scene.name) + ' · Splatlas', { permanent: false, direction: 'right', className: 'dark-tooltip' })
             .bindPopup(popupContent, { maxWidth: 300, className: 'splatlas-popup-wrapper' })
             .addTo(splatlasLayer);
