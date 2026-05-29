@@ -814,7 +814,7 @@ const splatlasIcon = L.divIcon({
 // Receiver-site marker — distinct from a captured-scene pin: cyan (vs copper)
 // with an antenna-mast + broadcast-arc glyph. Reads as "this is the signal
 // source," not "this is a dome scene."
-const receiverIcon = L.divIcon({
+const receiverSiteIcon = L.divIcon({
     className: 'splatlas-icon',
     html: `<svg width="26" height="32" viewBox="0 0 26 32" style="position:relative;display:block;">
              <path d="M13 0 C6 0 0 6 0 13 C0 20 13 32 13 32 C13 32 26 20 26 13 C26 6 20 0 13 0 Z"
@@ -897,7 +897,7 @@ function renderSplatlasScenes() {
                 interactive: false,
             }).addTo(splatlasLayer);
         }
-        L.marker([scene.lat, scene.lon], { icon: scene.kind === 'receiver' ? receiverIcon : splatlasIcon, interactive: true })
+        L.marker([scene.lat, scene.lon], { icon: scene.kind === 'receiver' ? receiverSiteIcon : splatlasIcon, interactive: true })
             .bindTooltip(esc(scene.name) + ' · Splatlas', { permanent: false, direction: 'right', className: 'dark-tooltip' })
             .bindPopup(popupContent, { maxWidth: 300, className: 'splatlas-popup-wrapper' })
             .addTo(splatlasLayer);
