@@ -368,15 +368,34 @@ pub async fn page_setup() -> Html<String> {
 
 /// GET /assets/map.js — the dashboard's behavior layer.
 pub async fn asset_map_js() -> impl IntoResponse {
+    // Inject the Cesium Ion token (enables 3D World Terrain) from the
+    // environment at serve time so the secret never lives in the committed JS.
+    // Unset/empty CESIUM_ION_TOKEN = flat globe (the placeholder default in
+    // map.js). The value is filtered to the JWT charset so it cannot break out
+    // of the JS string literal.
+    const JS: &str = include_str!("../../templates/map.js");
+    let body = match std::env::var("CESIUM_ION_TOKEN") {
+        Ok(tok) if !tok.is_empty() => {
+            let safe: String = tok
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                .collect();
+            JS.replacen(
+                "const CESIUM_ION_TOKEN = '';",
+                &format!("const CESIUM_ION_TOKEN = '{safe}';"),
+                1,
+            )
+        }
+        _ => JS.to_string(),
+    };
     (
         [
             ("content-type", "application/javascript; charset=utf-8"),
             // Short cache so a deploy + hard refresh picks up the new JS,
-            // but tabs don't refetch on every navigation. Same trade-off
-            // as the inline-template path (browsers never cached that either).
+            // but tabs don't refetch on every navigation.
             ("cache-control", "public, max-age=300"),
         ],
-        include_str!("../../templates/map.js"),
+        body,
     )
 }
 
