@@ -724,7 +724,7 @@ function renderReceivers() {
             .bindPopup(popupContent, { maxWidth: 280 })
             .addTo(receiverLayer);
     });
-    renderReceivers3D();
+    try { renderReceivers3D(); } catch (e) {}
 }
 
 document.getElementById('receiver-toggle').addEventListener('change', () => {
@@ -911,7 +911,9 @@ function renderSplatlasScenes() {
             .bindPopup(popupContent, { maxWidth: 300, className: 'splatlas-popup-wrapper' })
             .addTo(splatlasLayer);
     });
-    renderSplats3D();
+    // try/catch: this also runs once at page-load, before `cesiumViewer`/`is3DMode`
+    // (declared lower in the file) are initialized — swallow that load-time TDZ.
+    try { renderSplats3D(); } catch (e) {}
 }
 
 document.getElementById('splatlas-toggle').addEventListener('change', renderSplatlasScenes);
