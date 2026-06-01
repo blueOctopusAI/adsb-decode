@@ -4,7 +4,7 @@
 // Empty = flat globe (the prior behavior).
 const CESIUM_ION_TOKEN = '';
 // Aircraft model for the 3D globe (banking planes). Ships with Cesium on the CDN.
-const CESIUM_AIR_GLB = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/Apps/SampleData/models/CesiumAir/Cesium_Air.glb';
+const CESIUM_AIR_GLB = 'https://cdn.jsdelivr.net/gh/CesiumGS/cesium@1.119/Apps/SampleData/models/CesiumAir/Cesium_Air.glb';
 // If the model nose points the wrong way after deploy, nudge this (e.g. 90 / -90).
 const MODEL_HEADING_OFFSET = 0;
 
@@ -933,6 +933,13 @@ let satEnabled = false;
 let satrecs = []; // [{ name, satrec }]
 let satTickTimer = null;
 let satRefreshTimer = null;
+let satRafId = null;
+// Sats glide smoothly: circleMarkers on a shared canvas renderer move cheaply
+// every frame (divIcons would thrash the DOM). satTracked = the in-view subset
+// the rAF loop animates; refreshSatViewport() rebuilds it as sats enter/leave.
+const satRenderer = L.canvas({ padding: 0.5 });
+let satMarkers = new Map();   // name -> L.circleMarker
+let satTracked = [];          // [{ name, satrec, marker }]
 
 const satIcon = L.divIcon({
     className: 'sat-icon',
@@ -974,17 +981,18 @@ async function fetchSatelliteTles() {
 // table. Re-computed every propagation tick.
 let satSnapshot = [];
 
-function propagateSatellites() {
+// Rebuild the in-view marker set (add sats that entered view, drop those that
+// left) + table + 3D. Runs on toggle, moveend, and a slow timer — NOT per frame.
+// Starlink is ~6,000 birds worldwide; the viewport filter keeps it to the sats
+// actually overhead (e.g. "over the USA" when you're looking at the USA).
+function refreshSatViewport() {
     if (!satEnabled || satrecs.length === 0) return;
-    satLayer.clearLayers();
     const now = new Date();
     const gmst = satellite.gstime(now);
-    // Only propagate/render sats currently in the map view. Starlink alone is
-    // ~6,000 birds worldwide; rendering all of them buried the map and the
-    // table. Filtering to the viewport keeps it to the sats actually overhead
-    // (e.g. "over the USA" when you're looking at the USA). moveend re-runs this.
     const bounds = map.getBounds();
-    satSnapshot = [];
+    const inView = new Set();
+    const tracked = [];
+    const snap = [];
     for (const { name, satrec } of satrecs) {
         const pv = satellite.propagate(satrec, now);
         if (!pv?.position) continue;
@@ -992,16 +1000,47 @@ function propagateSatellites() {
         const lat = satellite.degreesLat(gd.latitude);
         const lon = satellite.degreesLong(gd.longitude);
         if (!bounds.contains([lat, lon])) continue;
-        const altKm = gd.height;
-        const marker = L.marker([lat, lon], { icon: satIcon, interactive: true });
-        marker.bindTooltip(`🛰 ${esc(name)}<br>${Math.round(altKm)} km`, {
-            className: 'dark-tooltip', direction: 'right',
-        });
-        marker.addTo(satLayer);
-        satSnapshot.push({ name, lat, lon, altKm });
+        inView.add(name);
+        let m = satMarkers.get(name);
+        if (!m) {
+            m = L.circleMarker([lat, lon], {
+                renderer: satRenderer, radius: 3,
+                color: '#0a0a0a', weight: 1, fillColor: '#b89aff', fillOpacity: 1,
+            }).bindTooltip(`🛰 ${esc(name)}`, { className: 'dark-tooltip', direction: 'right' });
+            m.addTo(satLayer);
+            satMarkers.set(name, m);
+        }
+        tracked.push({ name, satrec, marker: m });
+        snap.push({ name, lat, lon, altKm: gd.height });
     }
+    for (const [name, m] of satMarkers) {
+        if (!inView.has(name)) { satLayer.removeLayer(m); satMarkers.delete(name); }
+    }
+    satTracked = tracked;
+    satSnapshot = snap;
     renderSatTable();
     if (is3DMode) renderCesiumSats();
+}
+
+// Per-frame glide: propagate the in-view sats to "now" and move their markers.
+// SGP4 is pure math (microseconds each), so propagating dozens of sats per frame
+// is cheap; canvas circleMarkers redraw in one batch -> smooth motion.
+function animateSats() {
+    if (!satEnabled) { satRafId = null; return; }
+    const now = new Date();
+    const gmst = satellite.gstime(now);
+    const snap = [];
+    for (const t of satTracked) {
+        const pv = satellite.propagate(t.satrec, now);
+        if (!pv?.position) continue;
+        const gd = satellite.eciToGeodetic(pv.position, gmst);
+        const lat = satellite.degreesLat(gd.latitude);
+        const lon = satellite.degreesLong(gd.longitude);
+        t.marker.setLatLng([lat, lon]);
+        snap.push({ name: t.name, lat, lon, altKm: gd.height });
+    }
+    satSnapshot = snap;
+    satRafId = requestAnimationFrame(animateSats);
 }
 
 // 3D satellites — the 2D layer above is a hidden Leaflet layer in 3D mode, so
@@ -1036,11 +1075,15 @@ document.getElementById('sat-toggle')?.addEventListener('change', async (e) => {
     satEnabled = e.target.checked;
     if (satEnabled) {
         if (satrecs.length === 0) await fetchSatelliteTles();
-        propagateSatellites();
-        satTickTimer = setInterval(propagateSatellites, SAT_TICK_MS);
+        refreshSatViewport();
+        if (!satRafId) satRafId = requestAnimationFrame(animateSats);   // smooth glide
+        satTickTimer = setInterval(refreshSatViewport, 1500);           // viewport add/remove + table
         satRefreshTimer = setInterval(fetchSatelliteTles, SAT_REFRESH_MS);
     } else {
+        if (satRafId) { cancelAnimationFrame(satRafId); satRafId = null; }
         satLayer.clearLayers();
+        satMarkers.clear();
+        satTracked = [];
         clearCesiumSats();
         clearInterval(satTickTimer);
         clearInterval(satRefreshTimer);
@@ -1049,7 +1092,7 @@ document.getElementById('sat-toggle')?.addEventListener('change', async (e) => {
     }
 });
 // Re-propagate when the map view changes so sats outside the new bounds drop.
-map.on('moveend', () => { if (satEnabled) propagateSatellites(); });
+map.on('moveend', () => { if (satEnabled) refreshSatViewport(); });
 
 // Render the satellite table on the right panel (closest-overhead sorted)
 function renderSatTable() {
