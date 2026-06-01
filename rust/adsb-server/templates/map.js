@@ -969,6 +969,11 @@ function propagateSatellites() {
     satLayer.clearLayers();
     const now = new Date();
     const gmst = satellite.gstime(now);
+    // Only propagate/render sats currently in the map view. Starlink alone is
+    // ~6,000 birds worldwide; rendering all of them buried the map and the
+    // table. Filtering to the viewport keeps it to the sats actually overhead
+    // (e.g. "over the USA" when you're looking at the USA). moveend re-runs this.
+    const bounds = map.getBounds();
     satSnapshot = [];
     for (const { name, satrec } of satrecs) {
         const pv = satellite.propagate(satrec, now);
@@ -976,8 +981,8 @@ function propagateSatellites() {
         const gd = satellite.eciToGeodetic(pv.position, gmst);
         const lat = satellite.degreesLat(gd.latitude);
         const lon = satellite.degreesLong(gd.longitude);
+        if (!bounds.contains([lat, lon])) continue;
         const altKm = gd.height;
-        // Render every sat (Leaflet culls off-screen markers cheaply).
         const marker = L.marker([lat, lon], { icon: satIcon, interactive: true });
         marker.bindTooltip(`🛰 ${esc(name)}<br>${Math.round(altKm)} km`, {
             className: 'dark-tooltip', direction: 'right',
@@ -986,6 +991,35 @@ function propagateSatellites() {
         satSnapshot.push({ name, lat, lon, altKm });
     }
     renderSatTable();
+    if (is3DMode) renderCesiumSats();
+}
+
+// 3D satellites — the 2D layer above is a hidden Leaflet layer in 3D mode, so
+// sats were invisible on the Cesium globe. Render satSnapshot (already
+// viewport-filtered) as points at true altitude. Clear+rebuild each tick;
+// after filtering the count is small.
+let cesiumSatEntities = [];
+function clearCesiumSats() {
+    if (!cesiumViewer) return;
+    cesiumSatEntities.forEach(e => cesiumViewer.entities.remove(e));
+    cesiumSatEntities = [];
+}
+function renderCesiumSats() {
+    if (!is3DMode || !cesiumViewer) return;
+    clearCesiumSats();
+    satSnapshot.forEach(s => {
+        cesiumSatEntities.push(cesiumViewer.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat, s.altKm * 1000),
+            point: {
+                pixelSize: 5,
+                color: Cesium.Color.fromCssColorString('#b89aff'),
+                outlineColor: Cesium.Color.fromCssColorString('#1a0a2a'),
+                outlineWidth: 1,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+            description: `<div style="font:12px monospace;">🛰 ${esc(s.name)}<br>${Math.round(s.altKm)} km</div>`,
+        }));
+    });
 }
 
 document.getElementById('sat-toggle')?.addEventListener('change', async (e) => {
@@ -997,6 +1031,7 @@ document.getElementById('sat-toggle')?.addEventListener('change', async (e) => {
         satRefreshTimer = setInterval(fetchSatelliteTles, SAT_REFRESH_MS);
     } else {
         satLayer.clearLayers();
+        clearCesiumSats();
         clearInterval(satTickTimer);
         clearInterval(satRefreshTimer);
         satTickTimer = null;
@@ -1625,10 +1660,18 @@ async function initCesiumViewer() {
         timeline: true,
         requestRenderMode: false,
         skyBox: false,
-        skyAtmosphere: false,
+        skyAtmosphere: true,
     });
 
-    cesiumViewer.scene.globe.showGroundAtmosphere = false;
+    // Cinematic depth (Air Loom borrow): horizon sky-glow + ground-atmosphere
+    // haze + distance fog so the globe reads as a real atmosphere instead of a
+    // flat dark ball. Sun lighting is left OFF on purpose so the night side
+    // stays readable for a 24/7 traffic dashboard.
+    const scene = cesiumViewer.scene;
+    scene.globe.showGroundAtmosphere = true;
+    scene.fog.enabled = true;
+    scene.fog.density = 0.0006;
+    if (scene.skyAtmosphere) { scene.skyAtmosphere.show = true; scene.skyAtmosphere.brightnessShift = 0.2; }
 
     const style = document.getElementById('map-style').value;
     await setCesiumMapStyle(style);
@@ -1684,6 +1727,7 @@ async function activate3D() {
     if (airspaceEnabled && airspaceData) renderAirspace3D(airspaceData);
     if (vesselsEnabled && vesselData) renderVessels3D(vesselData);
     if (weatherEnabled && weatherFrameUrl) applyWeatherTileUrl(weatherFrameUrl);
+    if (satEnabled) renderCesiumSats();
 }
 
 function updateCesium3D() {
@@ -1737,10 +1781,12 @@ function updateCesium3D() {
                     },
                     polyline: (trailsEnabled && trailPositions.length > 1) ? {
                         positions: trailPositions,
-                        width: 2,
-                        material: new Cesium.ColorMaterialProperty(
-                            Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 180)
-                        ),
+                        width: 4,
+                        material: new Cesium.PolylineGlowMaterialProperty({
+                            glowPower: 0.2,
+                            taperPower: 0.4,
+                            color: Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 235),
+                        }),
                         clampToGround: false,
                     } : undefined,
                     description: `<div style="font:12px monospace;">
@@ -1788,10 +1834,12 @@ function updateCesium3D() {
                     } else {
                         entity.polyline = new Cesium.PolylineGraphics({
                             positions: trailPositions,
-                            width: 2,
-                            material: new Cesium.ColorMaterialProperty(
-                                Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 180)
-                            ),
+                            width: 4,
+                            material: new Cesium.PolylineGlowMaterialProperty({
+                                glowPower: 0.2,
+                                taperPower: 0.4,
+                                color: Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 235),
+                            }),
                             clampToGround: false,
                         });
                     }
