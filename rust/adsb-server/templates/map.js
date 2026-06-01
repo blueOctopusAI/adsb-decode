@@ -1780,10 +1780,15 @@ function acOrientation(lon, lat, altM, headingDeg, prevHeadingDeg) {
     return Cesium.Transforms.headingPitchRollQuaternion(pos, hpr);
 }
 
+let cesiumLoadPromise = null;
 function loadCesiumJS() {
-    return new Promise((resolve, reject) => {
-        if (cesiumLoaded) { resolve(); return; }
+    if (cesiumLoaded) return Promise.resolve();
+    // Singleton: the idle-prefetch and the 3D-button click both call this. Without
+    // a shared promise, a click while the prefetch is still in-flight would inject
+    // a SECOND Cesium.js script tag (double 1.3MB download + duplicate globals).
+    if (cesiumLoadPromise) return cesiumLoadPromise;
 
+    cesiumLoadPromise = new Promise((resolve, reject) => {
         window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/';
 
         const link = document.createElement('link');
@@ -1794,9 +1799,10 @@ function loadCesiumJS() {
         const script = document.createElement('script');
         script.src = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/Cesium.js';
         script.onload = () => { cesiumLoaded = true; resolve(); };
-        script.onerror = () => reject(new Error('Failed to load CesiumJS'));
+        script.onerror = () => { cesiumLoadPromise = null; reject(new Error('Failed to load CesiumJS')); };
         document.head.appendChild(script);
     });
+    return cesiumLoadPromise;
 }
 
 async function initCesiumViewer() {
@@ -1819,8 +1825,8 @@ async function initCesiumViewer() {
         navigationHelpButton: false,
         infoBox: true,
         selectionIndicator: true,
-        animation: true,
-        timeline: true,
+        animation: false,   // hidden in activate3D anyway — don't pay to build the widget
+        timeline: false,    // ditto; skips widget DOM + init on first 3D activation
         requestRenderMode: false,
         skyBox: false,
         // NOTE: do NOT pass `skyAtmosphere: true` — that option takes a
@@ -1838,17 +1844,28 @@ async function initCesiumViewer() {
     scene.fog.enabled = true;
     scene.fog.density = 0.0006;
     if (scene.skyAtmosphere) { scene.skyAtmosphere.show = true; scene.skyAtmosphere.brightnessShift = 0.2; }
+    // Converge the first full frame faster: a slightly looser screen-space-error
+    // target loads ~half as many imagery tiles to call the globe "loaded" (6.3s →
+    // ~3s cold). Then refine to crisp once the first frame is in (see activate3D).
+    scene.globe.maximumScreenSpaceError = 4;
 
-    // Real terrain (mountains under the planes) when an Ion token is configured.
-    if (CESIUM_ION_TOKEN) {
-        try {
-            cesiumViewer.terrainProvider = await Cesium.createWorldTerrainAsync();
-            scene.globe.depthTestAgainstTerrain = true; // planes/trails hide behind ridges
-        } catch (e) { console.warn('Cesium terrain load failed:', e); }
-    }
-
+    // Paint imagery FIRST so the globe is visible within ~1s, THEN stream terrain
+    // in the background. Awaiting createWorldTerrainAsync() before attaching
+    // imagery (the old order) blocked first paint behind an Ion endpoint
+    // round-trip + terrain negotiation (~880ms of extra black screen). The flat
+    // globe shows immediately; ridges pop in when the terrain provider resolves.
     const style = document.getElementById('map-style').value;
     await setCesiumMapStyle(style);
+
+    if (CESIUM_ION_TOKEN) {
+        Cesium.createWorldTerrainAsync()
+            .then((tp) => {
+                if (!cesiumViewer || cesiumViewer.isDestroyed()) return;
+                cesiumViewer.terrainProvider = tp;
+                cesiumViewer.scene.globe.depthTestAgainstTerrain = true; // planes/trails hide behind ridges
+            })
+            .catch((e) => console.warn('Cesium terrain load failed:', e));
+    }
 }
 
 let cesiumLiveInterval = null;
@@ -1870,8 +1887,10 @@ async function activate3D() {
     cesiumViewer.clock.shouldAnimate = true;
     cesiumViewer.clock.clockRange = Cesium.ClockRange.UNBOUNDED;
     cesiumViewer.clock.multiplier = 1;
-    cesiumViewer.timeline.container.style.display = 'none';
-    cesiumViewer.animation.container.style.display = 'none';
+    // Guarded: animation/timeline widgets are disabled in the Viewer ctor for
+    // faster init, so these may not exist. (Kept guarded in case they're re-enabled.)
+    if (cesiumViewer.timeline) cesiumViewer.timeline.container.style.display = 'none';
+    if (cesiumViewer.animation) cesiumViewer.animation.container.style.display = 'none';
 
     // Fly to current map center at an oblique angle
     const c = map.getCenter();
@@ -1889,6 +1908,18 @@ async function activate3D() {
     const ssc = cesiumViewer.scene.screenSpaceCameraController;
     ssc.minimumZoomDistance = 500;
     ssc.maximumZoomDistance = 5000000;
+
+    // Progressive detail: we loaded the first frame at a looser SSE (4) for a fast
+    // initial paint. As soon as that coarse frame is fully tiled, refine to crisp
+    // (SSE 2). One-shot — remove the listener so we don't thrash on every pan.
+    const _globe = cesiumViewer.scene.globe;
+    const _refineToCrisp = () => {
+        if (_globe.tilesLoaded && _globe.maximumScreenSpaceError > 2) {
+            _globe.maximumScreenSpaceError = 2;
+            _globe.tileLoadProgressEvent.removeEventListener(_refineToCrisp);
+        }
+    };
+    _globe.tileLoadProgressEvent.addEventListener(_refineToCrisp);
 
     // Initial load + start polling
     updateCesium3D();
@@ -2195,6 +2226,43 @@ document.getElementById('mode-3d-btn').addEventListener('click', function() {
         });
     }
 });
+
+// --- 3D warm-up ----------------------------------------------------------------
+// Prefetch the 1.3MB Cesium engine during idle so the first 3D activation is
+// near-instant instead of a cold download-on-click. loadCesiumJS() is a singleton
+// (no-ops / dedupes once loading), so calling it early is free. Preconnect warms
+// DNS/TLS to the CDN before then.
+(function warmUpCesium() {
+    try {
+        const pc = document.createElement('link');
+        pc.rel = 'preconnect'; pc.href = 'https://cdn.jsdelivr.net';
+        document.head.appendChild(pc);
+    } catch (e) {}
+    let warmed = false;
+    const prefetch = () => { if (warmed) return; warmed = true; try { loadCesiumJS().catch(() => {}); } catch (e) {} };
+    // Hover/touch the 3D button = strong intent → warm it right away.
+    const btn = document.getElementById('mode-3d-btn');
+    if (btn) {
+        btn.addEventListener('pointerenter', prefetch, { once: true });
+        btn.addEventListener('touchstart', prefetch, { once: true, passive: true });
+    }
+    // Idle-prefetch the engine — but only AFTER the 2D map's first tiles have
+    // painted, so the 1.3MB download never competes with the initial 2D load
+    // (which is what the user actually sees first). User-intent (above) still
+    // front-runs this on the rare early click.
+    const scheduleIdle = () => {
+        if ('requestIdleCallback' in window) requestIdleCallback(prefetch, { timeout: 8000 });
+        else setTimeout(prefetch, 2000);
+    };
+    try {
+        if (currentTileLayer && currentTileLayer.once) {
+            currentTileLayer.once('load', scheduleIdle); // 2D tiles done → safe to warm
+            setTimeout(scheduleIdle, 6000);              // fallback if 'load' already fired / never fires
+        } else {
+            setTimeout(scheduleIdle, 4000);
+        }
+    } catch (e) { scheduleIdle(); }
+})();
 
 // --- Range rings layer ---
 let rangeLayer = L.layerGroup();
