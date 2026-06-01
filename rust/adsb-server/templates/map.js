@@ -6,7 +6,7 @@ const CESIUM_ION_TOKEN = '';
 // Aircraft model for the 3D globe (banking planes). Ships with Cesium on the CDN.
 const CESIUM_AIR_GLB = 'https://cdn.jsdelivr.net/gh/CesiumGS/cesium@1.119/Apps/SampleData/models/CesiumAir/Cesium_Air.glb';
 // If the model nose points the wrong way after deploy, nudge this (e.g. 90 / -90).
-const MODEL_HEADING_OFFSET = 0;
+const MODEL_HEADING_OFFSET = 90;  // Cesium_Air nose is authored along +X (east); +90 aligns it to true heading. Verified via a static heading-90 test plane (pointed north w/ offset 0).
 
 // --- Map initialization ---
 // URL params: ?lat=X&lon=Y&zoom=Z optionally with &focus=<splatlas-scene-id>
@@ -1939,11 +1939,11 @@ function updateCesium3D() {
                     orientation: acOrientation(p.lon, p.lat, altM, p.heading_deg, null),
                     model: {
                         uri: CESIUM_AIR_GLB,
-                        minimumPixelSize: 36,
+                        minimumPixelSize: 60,
                         maximumScale: 12000,
                         color: Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 255),
                         colorBlendMode: Cesium.ColorBlendMode.MIX,
-                        colorBlendAmount: 0.7,
+                        colorBlendAmount: 0.4,
                         silhouetteColor: Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 255),
                         silhouetteSize: 1.0,
                     },
