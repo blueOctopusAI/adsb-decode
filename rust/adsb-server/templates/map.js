@@ -52,7 +52,7 @@ const mapThemes = {
 let activeTheme = mapThemes['dark'];
 const cesiumTiles = {
     'dark':        { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', subs: ['a','b','c','d'], max: 19 },
-    'satellite':   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', subs: undefined, max: 19 },
+    'satellite':   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', subs: undefined, max: 17 },
     'topo':        { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', subs: ['a','b','c'], max: 17 },
     'streets':     { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', subs: ['a','b','c'], max: 19 },
     'dark-matter': { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png', subs: ['a','b','c','d'], max: 19 },
@@ -63,19 +63,17 @@ async function setCesiumMapStyle(style) {
     if (!cesiumViewer) return;
     try {
         cesiumViewer.imageryLayers.removeAll();
-        let imagery;
-        if (style === 'satellite') {
-            imagery = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
-                'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
-            );
-        } else {
-            const ct = cesiumTiles[style] || cesiumTiles['dark'];
-            imagery = new Cesium.UrlTemplateImageryProvider({
-                url: ct.url,
-                subdomains: ct.subs,
-                maximumLevel: ct.max,
-            });
-        }
+        // All styles (incl. satellite) go through UrlTemplate with a capped
+        // maximumLevel. ESRI World_Imagery only has tiles to ~level 17 in rural
+        // areas (e.g. WNC); past that the ArcGIS provider fetched "Zoom Level
+        // Not Supported" placeholder tiles that papered over the terrain. The
+        // cap makes Cesium upsample the last good level instead.
+        const ct = cesiumTiles[style] || cesiumTiles['dark'];
+        const imagery = new Cesium.UrlTemplateImageryProvider({
+            url: ct.url,
+            subdomains: ct.subs,
+            maximumLevel: ct.max,
+        });
         cesiumViewer.imageryLayers.addImageryProvider(imagery);
         const isDark = (mapThemes[style] || mapThemes['dark']).bg === 'dark';
         cesiumViewer.scene.backgroundColor = Cesium.Color.fromCssColorString(isDark ? '#0a0a0a' : '#d0d8e0');
@@ -726,6 +724,7 @@ function renderReceivers() {
             .bindPopup(popupContent, { maxWidth: 280 })
             .addTo(receiverLayer);
     });
+    renderReceivers3D();
 }
 
 document.getElementById('receiver-toggle').addEventListener('change', () => {
@@ -912,10 +911,99 @@ function renderSplatlasScenes() {
             .bindPopup(popupContent, { maxWidth: 300, className: 'splatlas-popup-wrapper' })
             .addTo(splatlasLayer);
     });
+    renderSplats3D();
 }
 
 document.getElementById('splatlas-toggle').addEventListener('change', renderSplatlasScenes);
 renderSplatlasScenes();
+
+// --- 3D (Cesium) splat + receiver pins ---
+// Mirror the 2D Splatlas pins, receiver-site pins, and receiver-layer antennas
+// onto the Cesium globe (clamp-to-ground billboards + a dome ring for scenes).
+// try/catch so a render glitch can never take down the whole globe.
+let cesiumSplatEntities = [];
+let cesiumReceiverEntities = [];
+function svgUri(svg) { return 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" ' + svg.slice(4)); }
+const splatlasPinSvg3D = '<svg width="26" height="32" viewBox="0 0 26 32"><path d="M13 0 C6 0 0 6 0 13 C0 20 13 32 13 32 C13 32 26 20 26 13 C26 6 20 0 13 0 Z" fill="#ff914d" opacity="0.95" stroke="#0a0a0a" stroke-width="1"/><path d="M5 14 Q13 4 21 14" stroke="#0a0a0a" stroke-width="1.5" fill="none"/><circle cx="13" cy="14" r="1.8" fill="#0a0a0a"/></svg>';
+const receiverSitePinSvg3D = '<svg width="26" height="32" viewBox="0 0 26 32"><path d="M13 0 C6 0 0 6 0 13 C0 20 13 32 13 32 C13 32 26 20 26 13 C26 6 20 0 13 0 Z" fill="#4fc3f7" opacity="0.95" stroke="#0a0a0a" stroke-width="1"/><line x1="13" y1="18" x2="13" y2="10" stroke="#0a0a0a" stroke-width="1.6"/><circle cx="13" cy="9.5" r="1.7" fill="#0a0a0a"/><path d="M9.5 13 Q13 8.5 16.5 13" stroke="#0a0a0a" stroke-width="1.2" fill="none"/></svg>';
+function rxAntennaSvg3D(online) { const c = online ? '#00ff88' : '#666'; return `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="${c}" stroke-width="2"/><circle cx="8" cy="8" r="2.5" fill="${c}"/></svg>`; }
+function clearCesiumSplats() { cesiumSplatEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); }); cesiumSplatEntities = []; }
+function clearCesiumReceivers() { cesiumReceiverEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); }); cesiumReceiverEntities = []; }
+
+function renderSplats3D() {
+    if (!cesiumViewer) return;
+    clearCesiumSplats();
+    if (!is3DMode || !document.getElementById('splatlas-toggle').checked) return;
+    try {
+        SPLATLAS_SCENES.forEach(scene => {
+            if (scene.lat == null || scene.lon == null) return;
+            const isRx = scene.kind === 'receiver';
+            cesiumSplatEntities.push(cesiumViewer.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(scene.lon, scene.lat, 0),
+                billboard: {
+                    image: svgUri(isRx ? receiverSitePinSvg3D : splatlasPinSvg3D),
+                    scale: 0.9, verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+                label: {
+                    text: scene.name, font: '10px monospace',
+                    fillColor: Cesium.Color.fromCssColorString(isRx ? '#4fc3f7' : '#ff914d'),
+                    outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
+                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                    pixelOffset: new Cesium.Cartesian2(0, -34), scale: 0.8,
+                    distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 400000),
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+            }));
+            if (!isRx) {
+                const r = (scene.dome_radius_km || 150) * 1000;
+                cesiumSplatEntities.push(cesiumViewer.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(scene.lon, scene.lat, 0),
+                    ellipse: {
+                        semiMajorAxis: r, semiMinorAxis: r,
+                        material: Cesium.Color.fromCssColorString('#ff914d').withAlpha(0.05),
+                        outline: true,
+                        outlineColor: Cesium.Color.fromCssColorString('#ff914d').withAlpha(0.5),
+                        outlineWidth: 1.5,
+                        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                    },
+                }));
+            }
+        });
+        cesiumViewer.scene.requestRender();
+    } catch (e) { console.warn('renderSplats3D failed:', e); }
+}
+
+function renderReceivers3D() {
+    if (!cesiumViewer) return;
+    clearCesiumReceivers();
+    if (!is3DMode || !receiverData || !document.getElementById('receiver-toggle').checked) return;
+    try {
+        receiverData.forEach(rx => {
+            if (rx.lat == null || rx.lon == null) return;
+            cesiumReceiverEntities.push(cesiumViewer.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(rx.lon, rx.lat, 0),
+                billboard: {
+                    image: svgUri(rxAntennaSvg3D(rx.online)),
+                    scale: 1.0, verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+                label: {
+                    text: rx.name || 'Receiver', font: '10px monospace',
+                    fillColor: Cesium.Color.fromCssColorString(rx.online ? '#00ff88' : '#888'),
+                    outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
+                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                    pixelOffset: new Cesium.Cartesian2(0, -14), scale: 0.8,
+                    distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 300000),
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+            }));
+        });
+        cesiumViewer.scene.requestRender();
+    } catch (e) { console.warn('renderReceivers3D failed:', e); }
+}
 
 // --- Satellite layer ---
 // Renders satellite ground-track positions on the map using TLE data
@@ -1812,6 +1900,8 @@ async function activate3D() {
     if (vesselsEnabled && vesselData) renderVessels3D(vesselData);
     if (weatherEnabled && weatherFrameUrl) applyWeatherTileUrl(weatherFrameUrl);
     if (satEnabled) renderCesiumSats();
+    renderSplats3D();
+    renderReceivers3D();
 }
 
 function updateCesium3D() {
