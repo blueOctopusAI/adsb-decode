@@ -1,3 +1,13 @@
+// --- 3D globe config ---
+// Paste a FREE Cesium Ion token (cesium.com/ion -> Access Tokens) here to turn on
+// real elevation (mountains under the planes) + sun-shaded relief in the 3D globe.
+// Empty = flat globe (the prior behavior).
+const CESIUM_ION_TOKEN = '';
+// Aircraft model for the 3D globe (banking planes). Ships with Cesium on the CDN.
+const CESIUM_AIR_GLB = 'https://cdn.jsdelivr.net/npm/cesium@1.119/Build/Cesium/Apps/SampleData/models/CesiumAir/Cesium_Air.glb';
+// If the model nose points the wrong way after deploy, nudge this (e.g. 90 / -90).
+const MODEL_HEADING_OFFSET = 0;
+
 // --- Map initialization ---
 // URL params: ?lat=X&lon=Y&zoom=Z optionally with &focus=<splatlas-scene-id>
 // drive an initial view. Splatlas deep-links into this map using those params
@@ -1617,6 +1627,26 @@ function buildCZML(positions) {
     return doc;
 }
 
+// Build a model orientation from heading + a bank roll derived from turn-rate
+// (change in heading between ticks). pitch=0; bank exaggerated + clamped for
+// visibility, so the planes roll into their turns.
+function acOrientation(lon, lat, altM, headingDeg, prevHeadingDeg) {
+    let bankDeg = 0;
+    if (prevHeadingDeg != null && headingDeg != null) {
+        let d = headingDeg - prevHeadingDeg;
+        while (d > 180) d -= 360;
+        while (d < -180) d += 360;
+        bankDeg = Math.max(-30, Math.min(30, d * 3));
+    }
+    const pos = Cesium.Cartesian3.fromDegrees(lon, lat, altM);
+    const hpr = new Cesium.HeadingPitchRoll(
+        Cesium.Math.toRadians((headingDeg || 0) + MODEL_HEADING_OFFSET),
+        0,
+        Cesium.Math.toRadians(bankDeg),
+    );
+    return Cesium.Transforms.headingPitchRollQuaternion(pos, hpr);
+}
+
 function loadCesiumJS() {
     return new Promise((resolve, reject) => {
         if (cesiumLoaded) { resolve(); return; }
@@ -1639,8 +1669,8 @@ function loadCesiumJS() {
 async function initCesiumViewer() {
     if (cesiumViewer) return;
 
-    // Disable Ion to avoid token errors
-    Cesium.Ion.defaultAccessToken = '';
+    // Ion token (top of file) enables Cesium World Terrain. Empty = flat globe.
+    Cesium.Ion.defaultAccessToken = CESIUM_ION_TOKEN || '';
 
     // Cesium 1.107+ removed the `imageryProvider` constructor option. Passing
     // it to `new Viewer({...})` does not attach the layer — the viewer renders
@@ -1672,6 +1702,15 @@ async function initCesiumViewer() {
     scene.fog.enabled = true;
     scene.fog.density = 0.0006;
     if (scene.skyAtmosphere) { scene.skyAtmosphere.show = true; scene.skyAtmosphere.brightnessShift = 0.2; }
+
+    // Real terrain (mountains under the planes) when an Ion token is configured.
+    if (CESIUM_ION_TOKEN) {
+        try {
+            cesiumViewer.terrainProvider = await Cesium.createWorldTerrainAsync({ requestVertexNormals: true });
+            scene.globe.enableLighting = true;          // sun-shaded relief
+            scene.globe.depthTestAgainstTerrain = true; // planes/trails hide behind ridges
+        } catch (e) { console.warn('Cesium terrain load failed:', e); }
+    }
 
     const style = document.getElementById('map-style').value;
     await setCesiumMapStyle(style);
@@ -1760,12 +1799,16 @@ function updateCesium3D() {
                     id: key,
                     name: p.callsign || p.registration || key,
                     position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM),
-                    billboard: {
-                        image: acBillboardUri(acType, color, p.heading_deg),
-                        scale: 0.6,
-                        verticalOrigin: Cesium.VerticalOrigin.CENTER,
-                        heightReference: Cesium.HeightReference.NONE,
-                        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                    orientation: acOrientation(p.lon, p.lat, altM, p.heading_deg, null),
+                    model: {
+                        uri: CESIUM_AIR_GLB,
+                        minimumPixelSize: 36,
+                        maximumScale: 12000,
+                        color: Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 255),
+                        colorBlendMode: Cesium.ColorBlendMode.MIX,
+                        colorBlendAmount: 0.7,
+                        silhouetteColor: Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 255),
+                        silhouetteSize: 1.0,
                     },
                     label: {
                         text: (p.callsign || key) + (p.altitude_ft != null ? '\n' + Math.round(p.altitude_ft / 100) : ''),
@@ -1815,12 +1858,15 @@ function updateCesium3D() {
                     });
                 }
 
+                entity._hdg = p.heading_deg;
                 cesiumEntities[key] = entity;
             } else {
                 // Update existing entity
                 const entity = cesiumEntities[key];
                 entity.position = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM);
-                entity.billboard.image = acBillboardUri(acType, color, p.heading_deg);
+                entity.orientation = acOrientation(p.lon, p.lat, altM, p.heading_deg, entity._hdg);
+                entity._hdg = p.heading_deg;
+                if (entity.model) entity.model.color = Cesium.Color.fromBytes(rgba[0], rgba[1], rgba[2], 255);
                 entity.label.text = (p.callsign || key) + (p.altitude_ft != null ? '\n' + Math.round(p.altitude_ft / 100) : '');
 
                 // Update trail
