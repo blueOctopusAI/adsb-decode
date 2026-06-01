@@ -1690,7 +1690,10 @@ async function initCesiumViewer() {
         timeline: true,
         requestRenderMode: false,
         skyBox: false,
-        skyAtmosphere: true,
+        // NOTE: do NOT pass `skyAtmosphere: true` — that option takes a
+        // SkyAtmosphere instance or `false`; a bare `true` is stored verbatim
+        // and Cesium then calls `true.setDynamicLighting()` every frame and
+        // crashes the renderer. Omitting it lets Cesium build a real one.
     });
 
     // Cinematic depth (Air Loom borrow): horizon sky-glow + ground-atmosphere
@@ -1706,8 +1709,7 @@ async function initCesiumViewer() {
     // Real terrain (mountains under the planes) when an Ion token is configured.
     if (CESIUM_ION_TOKEN) {
         try {
-            cesiumViewer.terrainProvider = await Cesium.createWorldTerrainAsync({ requestVertexNormals: true });
-            scene.globe.enableLighting = true;          // sun-shaded relief
+            cesiumViewer.terrainProvider = await Cesium.createWorldTerrainAsync();
             scene.globe.depthTestAgainstTerrain = true; // planes/trails hide behind ridges
         } catch (e) { console.warn('Cesium terrain load failed:', e); }
     }
