@@ -6,7 +6,7 @@ const CESIUM_ION_TOKEN = '';
 // Aircraft model for the 3D globe (banking planes). Ships with Cesium on the CDN.
 const CESIUM_AIR_GLB = 'https://cdn.jsdelivr.net/gh/CesiumGS/cesium@1.119/Apps/SampleData/models/CesiumAir/Cesium_Air.glb';
 // If the model nose points the wrong way after deploy, nudge this (e.g. 90 / -90).
-const MODEL_HEADING_OFFSET = 90;  // Cesium_Air nose is authored along +X (east); +90 aligns it to true heading. Verified via a static heading-90 test plane (pointed north w/ offset 0).
+const MODEL_HEADING_OFFSET = -90;  // Cesium_Air nose is authored along +X (east); -90 aligns it to true compass heading. Ground-truth: at +90 live planes pointed INTO their trail (the breadcrumb of where they came from = behind them) = 180° backward, so the correct rotation is -90.
 
 // --- Map initialization ---
 // URL params: ?lat=X&lon=Y&zoom=Z optionally with &focus=<splatlas-scene-id>
