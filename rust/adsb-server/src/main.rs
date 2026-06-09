@@ -55,6 +55,9 @@ fn spawn_positions_broadcast(state: Arc<web::AppState>) {
 mod ais;
 mod baseline;
 mod db;
+// Phase-0 A2 raw append-only sink (pure writer; thin wire-in to ingest is the pair step).
+#[allow(dead_code)]
+mod raw_sink;
 #[cfg(feature = "timescaledb")]
 mod db_pg;
 mod demo;
