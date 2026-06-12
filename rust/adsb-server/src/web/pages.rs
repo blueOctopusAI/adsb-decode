@@ -104,6 +104,10 @@ fn render_page_with_meta(title: &str, body: &str, meta: Option<&PageMeta>) -> Ht
     s.push_str("<meta charset=\"UTF-8\">\n");
     s.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
 
+    // Client error -> server logging. Loaded first so it catches everything.
+    // Read: journalctl -u adsb-decode | grep '[clientlog]'
+    s.push_str("<script src=\"/assets/error-report.js\"></script>\n");
+
     const BASE_URL: &str = "https://adsb.blueoctopustechnology.com";
 
     // Favicon (inline SVG — radar sweep icon in brand green)
@@ -396,6 +400,20 @@ pub async fn asset_map_js() -> impl IntoResponse {
             ("cache-control", "public, max-age=300"),
         ],
         body,
+    )
+}
+
+/// GET /assets/error-report.js — client-error reporter, loaded first in <head>.
+/// Captures uncaught browser errors and POSTs them to /api/clientlog so they
+/// surface in the server log. Served via include_str! like map.js.
+pub async fn asset_error_report_js() -> impl IntoResponse {
+    const JS: &str = include_str!("../../templates/error-report.js");
+    (
+        [
+            ("content-type", "application/javascript; charset=utf-8"),
+            ("cache-control", "public, max-age=300"),
+        ],
+        JS,
     )
 }
 

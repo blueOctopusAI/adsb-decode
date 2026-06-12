@@ -1043,6 +1043,125 @@ pub async fn api_tle_set(
 }
 
 // ---------------------------------------------------------------------------
+// Client error sink
+// ---------------------------------------------------------------------------
+//
+// templates/error-report.js POSTs uncaught browser errors here. We validate,
+// size-cap, whitelist fields, per-IP rate-limit, and print ONE greppable line
+// to stdout -> the systemd journal. No storage, no forwarding.
+//
+//   Read the logs:  journalctl -u adsb-decode | grep '\[clientlog\]'
+
+/// Per-IP rate-limit state for /api/clientlog. Map of ip -> POST timestamps
+/// (seconds). Pruned per-request; a "__global__" bucket caps total volume so a
+/// spoofed X-Forwarded-For can't bypass the limit.
+static CLIENTLOG_RATE_LIMIT: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashMap<String, Vec<f64>>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+
+const CLIENTLOG_PER_IP_PER_MIN: usize = 30;
+const CLIENTLOG_GLOBAL_PER_MIN: usize = 600;
+const CLIENTLOG_MAX_BODY: usize = 32 * 1024; // 32 KB
+
+fn clientlog_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Pull a string field, coerce to text, cap length. Drops anything non-stringy.
+fn clientlog_str(v: Option<&Value>, max: usize) -> Option<String> {
+    let v = v?;
+    let s = match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => return None,
+    };
+    if s.len() > max {
+        Some(format!("{}…[truncated]", &s[..max]))
+    } else {
+        Some(s)
+    }
+}
+
+/// POST /api/clientlog — client-error sink. Logs one [clientlog] line; no body.
+pub async fn api_clientlog(
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> impl IntoResponse {
+    // Byte cap (defense-in-depth; the 512 KB global DefaultBodyLimit also applies).
+    if body.len() > CLIENTLOG_MAX_BODY {
+        return StatusCode::PAYLOAD_TOO_LARGE;
+    }
+
+    // Per-IP + global rate limit.
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or("unknown").trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    {
+        let current = clientlog_now();
+        let mut limits = CLIENTLOG_RATE_LIMIT.write().unwrap();
+        if limits.len() > 10_000 {
+            limits.retain(|_, ts| ts.last().is_some_and(|t| current - t < 60.0));
+        }
+        let global = limits.entry("__global__".to_string()).or_default();
+        global.retain(|t| current - t < 60.0);
+        if global.len() >= CLIENTLOG_GLOBAL_PER_MIN {
+            return StatusCode::TOO_MANY_REQUESTS;
+        }
+        let entries = limits.entry(ip).or_default();
+        entries.retain(|t| current - t < 60.0);
+        if entries.len() >= CLIENTLOG_PER_IP_PER_MIN {
+            return StatusCode::TOO_MANY_REQUESTS;
+        }
+        entries.push(current);
+        limits.get_mut("__global__").unwrap().push(current);
+    }
+
+    let parsed: Value = match serde_json::from_str(&body) {
+        Ok(v @ Value::Object(_)) => v,
+        _ => return StatusCode::BAD_REQUEST,
+    };
+
+    let ts = parsed
+        .get("ts")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| (clientlog_now() * 1000.0) as i64);
+
+    let mut clean = serde_json::Map::new();
+    clean.insert("ts".into(), json!(ts));
+    for (key, max) in [
+        ("source", 64usize),
+        ("url", 1024),
+        ("message", 8000),
+        ("name", 128),
+        ("stack", 4000),
+        ("shaderType", 32),
+        ("ua", 1024),
+        ("sessionId", 128),
+    ] {
+        if let Some(s) = clientlog_str(parsed.get(key), max) {
+            clean.insert(key.into(), json!(s));
+        }
+    }
+    if let Some(extra @ Value::Object(_)) = parsed.get("extra") {
+        clean.insert("extra".into(), extra.clone());
+    }
+
+    // The one line that matters: structured, prefixed, greppable.
+    match serde_json::to_string(&Value::Object(clean)) {
+        Ok(line) => println!("[clientlog] {line}"),
+        Err(_) => println!("[clientlog] (unserializable payload)"),
+    }
+
+    StatusCode::NO_CONTENT
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1136,6 +1255,82 @@ mod tests {
             json["feed_age_seconds"].as_f64().is_some(),
             "feed_age_seconds should be a number when positions exist, got {}",
             json["feed_age_seconds"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_clientlog_accepts_valid_payload() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let payload = serde_json::json!({
+            "source": "window-error",
+            "message": "TypeError: x is undefined",
+            "stack": "at foo (map.js:1)",
+            "ua": "Mozilla/5.0",
+            "sessionId": "sid-abc"
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/clientlog")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // 204 No Content — accepted, nothing to return.
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_api_clientlog_rejects_bad_json() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/clientlog")
+                    .body(Body::from("{not valid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_asset_error_report_js_served() {
+        let (state, _dir) = test_state();
+        let app = crate::web::build_router(state, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/error-report.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("javascript"), "wrong content-type: {ct}");
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("/api/clientlog"),
+            "reporter must POST to /api/clientlog"
         );
     }
 

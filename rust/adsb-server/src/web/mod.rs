@@ -86,6 +86,12 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
         .route("/setup", axum::routing::get(pages::page_setup))
         // Static assets
         .route("/assets/map.js", axum::routing::get(pages::asset_map_js))
+        .route(
+            "/assets/error-report.js",
+            axum::routing::get(pages::asset_error_report_js),
+        )
+        // Client-error sink (browser errors -> [clientlog] line in the journal)
+        .route("/api/clientlog", axum::routing::post(routes::api_clientlog))
         // SEO + AI routes
         .route("/robots.txt", axum::routing::get(pages::robots_txt))
         .route("/sitemap.xml", axum::routing::get(pages::sitemap_xml))
