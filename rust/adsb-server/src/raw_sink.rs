@@ -81,7 +81,9 @@ impl RawSink {
         std::env::var("ADSB_RAW_SINK_DIR")
             .ok()
             .filter(|s| !s.is_empty())
-            .map(|s| RawSink { root: PathBuf::from(s) })
+            .map(|s| RawSink {
+                root: PathBuf::from(s),
+            })
     }
 
     /// Append one ADS-B observation. `receiver` is used as the provenance source tag.
@@ -176,7 +178,11 @@ impl std::fmt::Display for LineFault {
             LineFault::NotJson => write!(f, "not valid JSON"),
             LineFault::MissingField(field) => write!(f, "missing required field `{}`", field),
             LineFault::LayerMismatch { expected, found } => {
-                write!(f, "layer mismatch: file is `{}` but record says `{}`", expected, found)
+                write!(
+                    f,
+                    "layer mismatch: file is `{}` but record says `{}`",
+                    expected, found
+                )
             }
             LineFault::UnknownSchemaVersion(v) => write!(f, "unknown schema_version `{}`", v),
         }
@@ -382,7 +388,15 @@ mod tests {
 
     #[test]
     fn missing_coords_serialize_as_null_not_dropped() {
-        let line = ndjson_line("ais", 1.0, None, None, None, &json!({"mmsi": 1}), "ais:stream");
+        let line = ndjson_line(
+            "ais",
+            1.0,
+            None,
+            None,
+            None,
+            &json!({"mmsi": 1}),
+            "ais:stream",
+        );
         let v: Value = serde_json::from_str(&line).unwrap();
         assert!(v["geom"]["lat"].is_null());
         assert!(v["geom"]["lon"].is_null());
@@ -391,8 +405,24 @@ mod tests {
 
     #[test]
     fn deterministic() {
-        let a = ndjson_line("adsb", 5.0, Some(1.0), Some(2.0), None, &json!({"x": 1}), "s");
-        let b = ndjson_line("adsb", 5.0, Some(1.0), Some(2.0), None, &json!({"x": 1}), "s");
+        let a = ndjson_line(
+            "adsb",
+            5.0,
+            Some(1.0),
+            Some(2.0),
+            None,
+            &json!({"x": 1}),
+            "s",
+        );
+        let b = ndjson_line(
+            "adsb",
+            5.0,
+            Some(1.0),
+            Some(2.0),
+            None,
+            &json!({"x": 1}),
+            "s",
+        );
         assert_eq!(a, b);
     }
 
@@ -401,7 +431,10 @@ mod tests {
         let root = Path::new("/mnt/nas/raw");
         // 2024-12-08 16:00:00 UTC
         let p = dated_path(root, "adsb", 1_733_673_600.0);
-        assert_eq!(p, Path::new("/mnt/nas/raw/adsb/2024-12-08/adsb-2024-12-08.ndjson"));
+        assert_eq!(
+            p,
+            Path::new("/mnt/nas/raw/adsb/2024-12-08/adsb-2024-12-08.ndjson")
+        );
     }
 
     #[test]
@@ -436,13 +469,23 @@ mod tests {
     #[test]
     fn raw_sink_write_adsb_creates_dated_ndjson() {
         let dir = tempfile::tempdir().unwrap();
-        let sink = RawSink { root: dir.path().to_path_buf() };
+        let sink = RawSink {
+            root: dir.path().to_path_buf(),
+        };
 
         // 2024-12-08 16:00:00 UTC
         let ts = 1_733_673_600.0_f64;
-        sink.write_adsb("a1b2c3", ts, Some(35.59), Some(-82.55), Some(32000), "pi-01");
+        sink.write_adsb(
+            "a1b2c3",
+            ts,
+            Some(35.59),
+            Some(-82.55),
+            Some(32000),
+            "pi-01",
+        );
 
-        let expected = dir.path()
+        let expected = dir
+            .path()
             .join("adsb")
             .join("2024-12-08")
             .join("adsb-2024-12-08.ndjson");
@@ -463,19 +506,34 @@ mod tests {
     #[test]
     fn raw_sink_appends_multiple_lines() {
         let dir = tempfile::tempdir().unwrap();
-        let sink = RawSink { root: dir.path().to_path_buf() };
+        let sink = RawSink {
+            root: dir.path().to_path_buf(),
+        };
         let ts = 1_733_673_600.0_f64;
 
         sink.write_adsb("aaa111", ts, Some(35.0), Some(-82.0), Some(10000), "rx1");
-        sink.write_adsb("bbb222", ts + 1.0, Some(36.0), Some(-83.0), Some(20000), "rx1");
+        sink.write_adsb(
+            "bbb222",
+            ts + 1.0,
+            Some(36.0),
+            Some(-83.0),
+            Some(20000),
+            "rx1",
+        );
 
-        let expected = dir.path()
+        let expected = dir
+            .path()
             .join("adsb")
             .join("2024-12-08")
             .join("adsb-2024-12-08.ndjson");
         let contents = std::fs::read_to_string(&expected).unwrap();
         let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines.len(), 2, "expected 2 NDJSON lines, got {}", lines.len());
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected 2 NDJSON lines, got {}",
+            lines.len()
+        );
 
         let v0: Value = serde_json::from_str(lines[0]).unwrap();
         let v1: Value = serde_json::from_str(lines[1]).unwrap();
@@ -486,30 +544,46 @@ mod tests {
     #[test]
     fn raw_sink_day_rollover_creates_new_file() {
         let dir = tempfile::tempdir().unwrap();
-        let sink = RawSink { root: dir.path().to_path_buf() };
+        let sink = RawSink {
+            root: dir.path().to_path_buf(),
+        };
 
         // Two different UTC days
         let ts_day1 = 1_733_673_600.0_f64; // 2024-12-08
-        let ts_day2 = ts_day1 + 86_400.0;  // 2024-12-09
+        let ts_day2 = ts_day1 + 86_400.0; // 2024-12-09
 
         sink.write_adsb("day1", ts_day1, None, None, None, "rx");
         sink.write_adsb("day2", ts_day2, None, None, None, "rx");
 
-        let file_day1 = dir.path().join("adsb").join("2024-12-08").join("adsb-2024-12-08.ndjson");
-        let file_day2 = dir.path().join("adsb").join("2024-12-09").join("adsb-2024-12-09.ndjson");
+        let file_day1 = dir
+            .path()
+            .join("adsb")
+            .join("2024-12-08")
+            .join("adsb-2024-12-08.ndjson");
+        let file_day2 = dir
+            .path()
+            .join("adsb")
+            .join("2024-12-09")
+            .join("adsb-2024-12-09.ndjson");
         assert!(file_day1.exists(), "day-1 file missing");
-        assert!(file_day2.exists(), "day-2 file missing: day rollover did not create new file");
+        assert!(
+            file_day2.exists(),
+            "day-2 file missing: day rollover did not create new file"
+        );
     }
 
     #[test]
     fn raw_sink_write_ais_layer_is_ais() {
         let dir = tempfile::tempdir().unwrap();
-        let sink = RawSink { root: dir.path().to_path_buf() };
+        let sink = RawSink {
+            root: dir.path().to_path_buf(),
+        };
         let ts = 1_733_673_600.0_f64;
 
         sink.write_ais("123456789", ts, Some(35.0), Some(-82.0), "ais:stream");
 
-        let expected = dir.path()
+        let expected = dir
+            .path()
             .join("ais")
             .join("2024-12-08")
             .join("ais-2024-12-08.ndjson");
@@ -583,7 +657,15 @@ mod tests {
     #[test]
     fn verify_line_rejects_misfiled_layer() {
         // An `ais` record sitting in an `adsb` file.
-        let line = ndjson_line("ais", 1.0, None, None, None, &json!({"mmsi": "1"}), "ais:stream");
+        let line = ndjson_line(
+            "ais",
+            1.0,
+            None,
+            None,
+            None,
+            &json!({"mmsi": "1"}),
+            "ais:stream",
+        );
         match verify_line(&line, "adsb") {
             Err(LineFault::LayerMismatch { expected, found }) => {
                 assert_eq!(expected, "adsb");
@@ -600,11 +682,20 @@ mod tests {
     #[test]
     fn verify_archive_clean_tree_reports_no_faults() {
         let dir = tempfile::tempdir().unwrap();
-        let sink = RawSink { root: dir.path().to_path_buf() };
+        let sink = RawSink {
+            root: dir.path().to_path_buf(),
+        };
         let ts = 1_733_673_600.0_f64;
 
         sink.write_adsb("aaa111", ts, Some(35.0), Some(-82.0), Some(10000), "rx1");
-        sink.write_adsb("bbb222", ts + 1.0, Some(36.0), Some(-83.0), Some(20000), "rx1");
+        sink.write_adsb(
+            "bbb222",
+            ts + 1.0,
+            Some(36.0),
+            Some(-83.0),
+            Some(20000),
+            "rx1",
+        );
         sink.write_adsb("ccc333", ts + 86_400.0, None, None, None, "rx1"); // next day → 2nd file
         sink.write_ais("123456789", ts, Some(35.0), Some(-82.0), "ais:stream");
 
@@ -618,12 +709,15 @@ mod tests {
     #[test]
     fn verify_archive_catches_a_corrupt_line() {
         let dir = tempfile::tempdir().unwrap();
-        let sink = RawSink { root: dir.path().to_path_buf() };
+        let sink = RawSink {
+            root: dir.path().to_path_buf(),
+        };
         let ts = 1_733_673_600.0_f64;
         sink.write_adsb("good01", ts, Some(35.0), Some(-82.0), Some(10000), "rx1");
 
         // Simulate a torn append: a half-written line at the end of the day file.
-        let path = dir.path()
+        let path = dir
+            .path()
             .join("adsb")
             .join("2024-12-08")
             .join("adsb-2024-12-08.ndjson");
@@ -644,11 +738,14 @@ mod tests {
     #[test]
     fn verify_archive_blank_lines_are_not_counted() {
         let dir = tempfile::tempdir().unwrap();
-        let sink = RawSink { root: dir.path().to_path_buf() };
+        let sink = RawSink {
+            root: dir.path().to_path_buf(),
+        };
         let ts = 1_733_673_600.0_f64;
         sink.write_adsb("good01", ts, None, None, None, "rx1");
 
-        let path = dir.path()
+        let path = dir
+            .path()
             .join("adsb")
             .join("2024-12-08")
             .join("adsb-2024-12-08.ndjson");
@@ -659,7 +756,11 @@ mod tests {
         drop(f);
 
         let report = sink.verify();
-        assert!(report.is_clean(), "blank lines should not be faults: {:?}", report.faults);
+        assert!(
+            report.is_clean(),
+            "blank lines should not be faults: {:?}",
+            report.faults
+        );
         assert_eq!(report.lines, 1);
     }
 
