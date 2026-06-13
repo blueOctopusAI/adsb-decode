@@ -1087,10 +1087,7 @@ fn clientlog_str(v: Option<&Value>, max: usize) -> Option<String> {
 }
 
 /// POST /api/clientlog — client-error sink. Logs one [clientlog] line; no body.
-pub async fn api_clientlog(
-    headers: axum::http::HeaderMap,
-    body: String,
-) -> impl IntoResponse {
+pub async fn api_clientlog(headers: axum::http::HeaderMap, body: String) -> impl IntoResponse {
     // Byte cap (defense-in-depth; the 512 KB global DefaultBodyLimit also applies).
     if body.len() > CLIENTLOG_MAX_BODY {
         return StatusCode::PAYLOAD_TOO_LARGE;
@@ -1162,6 +1159,103 @@ pub async fn api_clientlog(
 }
 
 // ---------------------------------------------------------------------------
+// Splatlas feedback store (baked-in — replaces Vercel KV)
+// ---------------------------------------------------------------------------
+//
+// Splatlas' dev-HUD POSTs feedback here instead of relying on Vercel KV/Blob.
+// Two paths reach us, both fine:
+//   1. cross-origin POST to https://adsb.blueoctopustechnology.com/feedback
+//   2. same-origin POST to /adsb/feedback (Splatlas vercel.json proxy rewrite)
+//
+// We stamp a server_ts at receipt, persist to our own SQLite, and serve
+// /feedback/recent so the intel-hub puller reads sub-second from true arrival.
+// CORS headers are set directly on the responses (like /api/v1/tle) so the
+// browser POST works regardless of the conditional tower-http CORS layer.
+
+/// Permissive CORS headers for the feedback endpoints. The data here is
+/// non-sensitive UX feedback Splatlas itself generates; `*` mirrors the TLE
+/// feed's posture and keeps the dev-HUD working from any Splatlas origin.
+fn feedback_cors() -> [(axum::http::HeaderName, &'static str); 3] {
+    [
+        (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+        (
+            axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+            "POST, GET, OPTIONS",
+        ),
+        (
+            axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+            "content-type",
+        ),
+    ]
+}
+
+/// OPTIONS /feedback and /feedback/recent — CORS preflight.
+pub async fn api_feedback_preflight() -> impl IntoResponse {
+    (StatusCode::NO_CONTENT, feedback_cors(), "").into_response()
+}
+
+/// POST /feedback — receive one canonical Splatlas feedback object, stamp a
+/// server_ts at receipt, persist to our own store. Returns {ok, id, server_ts}.
+pub async fn api_feedback_post(
+    State(state): State<Arc<AppState>>,
+    body: String,
+) -> impl IntoResponse {
+    let parsed: Value = match serde_json::from_str(&body) {
+        Ok(v @ Value::Object(_)) => v,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                feedback_cors(),
+                Json(json!({"ok": false, "error": "invalid payload"})),
+            )
+                .into_response()
+        }
+    };
+
+    match state.feedback.push(parsed).await {
+        Ok((id, server_ts)) => (
+            StatusCode::OK,
+            feedback_cors(),
+            Json(json!({"ok": true, "id": id, "server_ts": server_ts, "store": "baked-in"})),
+        )
+            .into_response(),
+        Err(e) => {
+            eprintln!("[feedback] persist error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                feedback_cors(),
+                Json(json!({"ok": false, "error": e})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FeedbackRecentParams {
+    /// Only return feedback with server_ts strictly greater than this (epoch ms).
+    since: Option<i64>,
+}
+
+/// GET /feedback/recent?since=<ms> — recent feedback newest-first, capped,
+/// deduped, filtered to server_ts > since. Shape `{items:[...]}` so the
+/// intel-hub puller reads it identically to the old Vercel-KV feed.
+pub async fn api_feedback_recent(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<FeedbackRecentParams>,
+) -> impl IntoResponse {
+    let since = params.since.unwrap_or(0).max(0);
+    let items = state.feedback.recent(since).await;
+    let count = items.len();
+    (
+        StatusCode::OK,
+        feedback_cors(),
+        Json(json!({"items": items, "count": count, "since": since})),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1219,6 +1313,7 @@ mod tests {
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         (state, dir)
     }
@@ -1439,6 +1534,7 @@ mod tests {
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
 
         // Create geofence
@@ -1518,6 +1614,7 @@ mod tests {
                 baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
                 positions_broadcast: tokio::sync::broadcast::channel(8).0,
                 tle_cache: crate::tle_cache::TleCache::new(),
+                feedback: crate::feedback::FeedbackStore::open(),
             }),
             None,
         );
@@ -2037,6 +2134,7 @@ mod tests {
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         (state, dir)
     }
@@ -2541,6 +2639,7 @@ mod consumer_contract_tests {
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         (state, dir)
     }
@@ -2952,6 +3051,7 @@ mod pages_tests {
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         (state, dir)
     }
@@ -3619,6 +3719,7 @@ mod ws_streaming_tests {
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         let app = crate::web::build_router(state, None);
 

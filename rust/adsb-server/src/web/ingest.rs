@@ -682,6 +682,7 @@ mod tests {
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         (state, dir)
     }
@@ -702,6 +703,7 @@ mod tests {
             baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         (state, dir)
     }

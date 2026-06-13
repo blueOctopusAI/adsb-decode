@@ -56,11 +56,12 @@ mod ais;
 mod baseline;
 mod db;
 // Phase-0 A2 raw append-only sink — wired into web/ingest.rs (PositionUpdate tee).
-mod raw_sink;
 #[cfg(feature = "timescaledb")]
 mod db_pg;
 mod demo;
+mod feedback;
 mod notification;
+mod raw_sink;
 mod tle_cache;
 mod web;
 
@@ -863,6 +864,7 @@ async fn cmd_track_live(opts: LiveTrackOpts) {
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
@@ -1160,6 +1162,7 @@ async fn cmd_track_live_native(opts: LiveTrackOpts) {
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
@@ -1454,6 +1457,7 @@ async fn cmd_track_live_usb(opts: LiveTrackOpts) {
             baseline: std::sync::Arc::new(std::sync::RwLock::new(baseline::BaselineCache::new())),
             positions_broadcast: tokio::sync::broadcast::channel(8).0,
             tle_cache: crate::tle_cache::TleCache::new(),
+            feedback: crate::feedback::FeedbackStore::open(),
         });
         web::spawn_baseline_refresh(state.clone());
         spawn_positions_broadcast(state.clone());
@@ -2081,6 +2085,7 @@ async fn cmd_serve_demo(
         baseline: Arc::new(RwLock::new(baseline::BaselineCache::new())),
         positions_broadcast: tokio::sync::broadcast::channel(8).0,
         tle_cache: crate::tle_cache::TleCache::new(),
+        feedback: crate::feedback::FeedbackStore::open(),
     });
 
     let app = web::build_router(state, cors_origin.as_deref());

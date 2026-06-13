@@ -47,6 +47,10 @@ pub struct AppState {
     /// rendering — CelesTrak rejects fetches from Vercel IPs, so this
     /// VPS becomes the canonical TLE source-of-record alongside ADS-B.
     pub tle_cache: crate::tle_cache::TleCache,
+    /// Baked-in Splatlas feedback store. Splatlas POSTs dev-HUD feedback here
+    /// (directly via CORS or through its `/adsb/*` proxy); the intel-hub puller
+    /// reads it sub-second from our own SQLite — no Vercel KV, no log scrape.
+    pub feedback: crate::feedback::FeedbackStore,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -92,6 +96,17 @@ pub fn build_router(state: Arc<AppState>, cors_origin: Option<&str>) -> Router {
         )
         // Client-error sink (browser errors -> [clientlog] line in the journal)
         .route("/api/clientlog", axum::routing::post(routes::api_clientlog))
+        // Splatlas feedback store (baked-in — replaces Vercel KV). Splatlas
+        // POSTs here directly (CORS) or via its /adsb/* proxy. The intel-hub
+        // puller GETs /feedback/recent sub-second from our own SQLite.
+        .route(
+            "/feedback",
+            axum::routing::post(routes::api_feedback_post).options(routes::api_feedback_preflight),
+        )
+        .route(
+            "/feedback/recent",
+            axum::routing::get(routes::api_feedback_recent).options(routes::api_feedback_preflight),
+        )
         // SEO + AI routes
         .route("/robots.txt", axum::routing::get(pages::robots_txt))
         .route("/sitemap.xml", axum::routing::get(pages::sitemap_xml))
@@ -214,6 +229,7 @@ pub async fn serve(
         baseline: Arc::new(RwLock::new(crate::baseline::BaselineCache::new())),
         positions_broadcast: tokio::sync::broadcast::channel(8).0,
         tle_cache: crate::tle_cache::TleCache::new(),
+        feedback: crate::feedback::FeedbackStore::open(),
     });
 
     // Spawn the spatial-baseline refresh task. Without this, `BaselineCache`
