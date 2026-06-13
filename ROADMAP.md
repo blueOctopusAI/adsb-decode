@@ -2,7 +2,7 @@
 
 A live snapshot of where adsb-decode is going. The [README](README.md) has the permanent overview; this doc tracks active priorities and updates as they shift.
 
-*As of 2026-06-10 (v0.2.40 on main — Cesium 3D globe + perf overhaul shipped; phase-0 raw-sink/TLE-history + favicon on branch `brand/favicon-integration`, not yet merged).*
+*As of 2026-06-13 (v0.2.40 on main — Cesium 3D globe + perf overhaul shipped; phase-0 A2 raw-sink + A3 TLE-history + favicon + client-error logging now MERGED to main via `3743860`; raw-sink archive verifier added on main (T2.8). DEPLOY of the merged retention work to the production VPS is Jason-gated — tag + push not yet done.)*
 
 ---
 
@@ -75,6 +75,7 @@ Service quality for an API that downstream consumers (and live demos) depend on.
 | T2.5 | **TimescaleDB invariant tests.** `tests/timescale_invariants.rs` parses the SQL constants in `db_pg.rs` and asserts compression interval < retention interval for every hypertable. The 2026-04-14 disk-pressure incident (compression 30d / retention 7d) cannot recur silently. | Shipped 2026-05-05 |
 | T2.6 | **Postgres integration tests.** Seven `#[ignore]`'d tests in `db_pg.rs::pg_integration` exercise the production backend's SQL paths that SQLite tests can't reach — DISTINCT ON enrichment, military filter, vessel position roundtrip. Opt-in via `DATABASE_URL` + `--features timescaledb -- --ignored`. | Shipped 2026-05-05 |
 | T2.7 | **CLI dispatch tests.** `tests/cli_dispatch.rs` covers `adsb decode/stats/history/export` end-to-end via `env!("CARGO_BIN_EXE_adsb")`. Pins the user-facing arg surface (e.g. `--db-path`) that deploy scripts and cron jobs rely on. | Shipped 2026-05-05 |
+| T2.8 | **Raw-sink archive verifier (closes the A2 open-loop).** The A2 raw append-only sink swallows write errors so a NAS hiccup can't kill ingest — the cost is that a torn append, truncation, or misfiled record is silent. `adsb raw-sink [--dir DIR] [--show-faults]` walks the whole `<root>/<layer>/YYYY-MM-DD/*.ndjson` tree and re-parses every line against the envelope contract (valid JSON, required fields, known `schema_version`, layer matches the dir it's filed under). Exits non-zero on any fault so it can gate a cron/CI integrity check. Pure parse/verify fns (`verify_line`, `check_envelope`, `verify_archive`) + `RawSink::verify`; 9 new unit tests (14 total in the module) incl. a torn-append corruption case. | Shipped 2026-06-13 (main) |
 
 ### Tier 3 — Defer
 

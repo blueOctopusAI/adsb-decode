@@ -227,6 +227,22 @@ enum Commands {
 
     /// Interactive setup wizard — configure receiver, database, and server
     Setup,
+
+    /// Verify the raw append-only retention archive (Phase-0 A2 durable moat).
+    ///
+    /// Walks every NDJSON file under the sink root and re-parses each record
+    /// against the envelope contract, reporting any line that doesn't round-trip
+    /// (truncated appends, corruption, misfiled layers, unknown schema versions).
+    /// Exits non-zero when faults are found so it can gate a cron/CI check.
+    RawSink {
+        /// Archive root. Defaults to the `ADSB_RAW_SINK_DIR` env var.
+        #[arg(long, env = "ADSB_RAW_SINK_DIR")]
+        dir: Option<PathBuf>,
+
+        /// Print one line per fault (path:line — reason). Default prints only the summary.
+        #[arg(long)]
+        show_faults: bool,
+    },
 }
 
 /// Accumulated aircraft state from decoded messages.
@@ -565,6 +581,48 @@ async fn main() {
             }
         }
         Commands::Setup => cmd_setup(),
+        Commands::RawSink { dir, show_faults } => cmd_raw_sink_verify(dir, show_faults),
+    }
+}
+
+/// `adsb raw-sink` — verify the raw append-only retention archive. Exits 0 when clean,
+/// 1 when faults are found, 2 when no archive directory is resolvable.
+fn cmd_raw_sink_verify(dir: Option<PathBuf>, show_faults: bool) {
+    let root = match dir {
+        Some(d) => d,
+        None => {
+            eprintln!(
+                "no archive directory: pass --dir or set ADSB_RAW_SINK_DIR (the raw sink is opt-in)"
+            );
+            std::process::exit(2);
+        }
+    };
+    if !root.exists() {
+        eprintln!("archive root does not exist: {}", root.display());
+        std::process::exit(2);
+    }
+
+    let report = raw_sink::verify_archive(&root);
+    println!(
+        "raw-sink verify {}: {} file(s), {} line(s), {} ok, {} fault(s)",
+        root.display(),
+        report.files,
+        report.lines,
+        report.ok,
+        report.faults.len()
+    );
+    if show_faults {
+        for (path, lineno, fault) in &report.faults {
+            println!("  {}:{} — {}", path.display(), lineno, fault);
+        }
+    } else if !report.is_clean() {
+        println!("  (re-run with --show-faults to list each)");
+    }
+
+    if report.is_clean() {
+        println!("OK — archive is intact");
+    } else {
+        std::process::exit(1);
     }
 }
 

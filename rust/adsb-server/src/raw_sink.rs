@@ -147,6 +147,186 @@ impl RawSink {
 }
 
 // ---------------------------------------------------------------------------
+// Verifier — reads the archive back and proves integrity (Phase-0 A2 closes its loop)
+// ---------------------------------------------------------------------------
+//
+// The sink swallows write errors so a NAS hiccup can't kill ingest. The cost of
+// that resilience is that a partial write, a truncated file, or a misfiled record
+// is silent. The verifier is the missing feedback loop: it walks the archive,
+// re-parses every NDJSON line against the envelope contract, and reports any line
+// that doesn't round-trip. Pure (`verify_line`, `check_envelope`) + a thin walker
+// (`RawSink::verify`) so the parse contract is unit-tested without touching disk.
+
+/// Why a single NDJSON line failed verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineFault {
+    /// Not valid JSON at all (truncated / partial append / corruption).
+    NotJson,
+    /// Parsed as JSON but missing a required envelope field.
+    MissingField(&'static str),
+    /// `layer` field doesn't match the layer the file is filed under.
+    LayerMismatch { expected: String, found: String },
+    /// `schema_version` is not a recognized version.
+    UnknownSchemaVersion(String),
+}
+
+impl std::fmt::Display for LineFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LineFault::NotJson => write!(f, "not valid JSON"),
+            LineFault::MissingField(field) => write!(f, "missing required field `{}`", field),
+            LineFault::LayerMismatch { expected, found } => {
+                write!(f, "layer mismatch: file is `{}` but record says `{}`", expected, found)
+            }
+            LineFault::UnknownSchemaVersion(v) => write!(f, "unknown schema_version `{}`", v),
+        }
+    }
+}
+
+/// Schema versions this build knows how to read. Append new versions here as the
+/// envelope evolves; an archived line stamped with a version not in this set is a
+/// fault, which forces a conscious decision rather than a silent skip.
+const KNOWN_SCHEMA_VERSIONS: &[&str] = &["1.0"];
+
+/// Required top-level envelope fields every archived record must carry.
+const REQUIRED_FIELDS: &[&str] = &[
+    "layer",
+    "schema_version",
+    "observed_at",
+    "geom",
+    "payload",
+    "provenance",
+];
+
+/// Validate one already-parsed JSON envelope against the contract, given the
+/// `layer` the containing file is filed under. Pure.
+pub fn check_envelope(v: &Value, expected_layer: &str) -> Result<(), LineFault> {
+    for field in REQUIRED_FIELDS {
+        if v.get(field).is_none() {
+            return Err(LineFault::MissingField(field));
+        }
+    }
+    let schema = v["schema_version"].as_str().unwrap_or("");
+    if !KNOWN_SCHEMA_VERSIONS.contains(&schema) {
+        return Err(LineFault::UnknownSchemaVersion(schema.to_string()));
+    }
+    let layer = v["layer"].as_str().unwrap_or("");
+    if layer != expected_layer {
+        return Err(LineFault::LayerMismatch {
+            expected: expected_layer.to_string(),
+            found: layer.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Parse + validate one raw NDJSON line for a file filed under `expected_layer`. Pure.
+pub fn verify_line(line: &str, expected_layer: &str) -> Result<(), LineFault> {
+    let v: Value = serde_json::from_str(line).map_err(|_| LineFault::NotJson)?;
+    check_envelope(&v, expected_layer)
+}
+
+/// Aggregate result of verifying a span of the archive.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VerifyReport {
+    /// Number of NDJSON files inspected.
+    pub files: usize,
+    /// Total non-blank lines seen across all files.
+    pub lines: usize,
+    /// Lines that passed the envelope contract.
+    pub ok: usize,
+    /// `(path, line_number_1_based, fault)` for every line that failed.
+    pub faults: Vec<(PathBuf, usize, LineFault)>,
+}
+
+impl VerifyReport {
+    /// True when every line round-tripped (no faults).
+    pub fn is_clean(&self) -> bool {
+        self.faults.is_empty()
+    }
+}
+
+impl RawSink {
+    /// Walk the whole archive under `root` and verify every NDJSON line.
+    ///
+    /// The layer a file is filed under is taken from the top-level directory name
+    /// (`<root>/<layer>/YYYY-MM-DD/...`), so a record misfiled into the wrong layer
+    /// is caught as a `LayerMismatch`. Blank lines are skipped (a trailing newline is
+    /// normal). Unreadable files are surfaced as a single `NotJson` fault at line 0
+    /// rather than aborting the walk, so one bad file doesn't hide the rest.
+    ///
+    /// The CLI verifies an arbitrary path via [`verify_archive`]; this method is the
+    /// ergonomic wrapper for an already-constructed sink (used by callers + tests).
+    #[allow(dead_code)]
+    pub fn verify(&self) -> VerifyReport {
+        verify_archive(&self.root)
+    }
+}
+
+/// Verify every `*.ndjson` file under `root`. Standalone (not a method) so the CLI
+/// can verify an arbitrary directory without constructing a `RawSink`.
+pub fn verify_archive(root: &Path) -> VerifyReport {
+    let mut report = VerifyReport::default();
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    collect_ndjson(root, root, &mut files);
+    files.sort();
+    for (layer, path) in files {
+        report.files += 1;
+        let contents = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => {
+                report.faults.push((path.clone(), 0, LineFault::NotJson));
+                continue;
+            }
+        };
+        for (i, line) in contents.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            report.lines += 1;
+            match verify_line(line, &layer) {
+                Ok(()) => report.ok += 1,
+                Err(fault) => report.faults.push((path.clone(), i + 1, fault)),
+            }
+        }
+    }
+    report
+}
+
+/// Recursively gather `*.ndjson` files, tagging each with the layer it's filed under
+/// (the first path component below `root`). Directories that aren't a layer/date tree
+/// are still walked, so a flat directory of files verifies against its own dir name.
+fn collect_ndjson(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ndjson(root, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
+            let layer = layer_of(root, &path);
+            out.push((layer, path));
+        }
+    }
+}
+
+/// The layer a file belongs to = the first path component of `path` relative to `root`.
+/// Falls back to the file's parent dir name when `path` isn't under `root`.
+fn layer_of(root: &Path, path: &Path) -> String {
+    if let Ok(rel) = path.strip_prefix(root) {
+        if let Some(first) = rel.components().next() {
+            return first.as_os_str().to_string_lossy().into_owned();
+        }
+    }
+    path.parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
 // Private date math
 // ---------------------------------------------------------------------------
 
@@ -338,5 +518,157 @@ mod tests {
         let v: Value = serde_json::from_str(contents.trim()).unwrap();
         assert_eq!(v["layer"], "ais");
         assert_eq!(v["payload"]["mmsi"], "123456789");
+    }
+
+    // -----------------------------------------------------------------------
+    // Verifier — pure contract checks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn verify_line_accepts_a_well_formed_record() {
+        let line = ndjson_line(
+            "adsb",
+            1_733_673_600.0,
+            Some(35.59),
+            Some(-82.55),
+            None,
+            &json!({"icao": "a1b2c3", "altitude_ft": 32000}),
+            "receiver:pi-01",
+        );
+        assert_eq!(verify_line(&line, "adsb"), Ok(()));
+    }
+
+    #[test]
+    fn verify_line_rejects_non_json() {
+        assert_eq!(verify_line("{not json", "adsb"), Err(LineFault::NotJson));
+        // A partial append (file truncated mid-line) — classic NAS-hiccup corruption.
+        assert_eq!(
+            verify_line(r#"{"layer":"adsb","schema_ver"#, "adsb"),
+            Err(LineFault::NotJson)
+        );
+    }
+
+    #[test]
+    fn verify_line_rejects_missing_required_field() {
+        // Valid JSON, but no `provenance`.
+        let v = json!({
+            "layer": "adsb",
+            "schema_version": "1.0",
+            "observed_at": 1.0,
+            "geom": { "lat": null, "lon": null, "elev_m": null },
+            "payload": { "icao": "x" },
+        });
+        assert_eq!(
+            verify_line(&v.to_string(), "adsb"),
+            Err(LineFault::MissingField("provenance"))
+        );
+    }
+
+    #[test]
+    fn verify_line_rejects_unknown_schema_version() {
+        let v = json!({
+            "layer": "adsb",
+            "schema_version": "9.9",
+            "observed_at": 1.0,
+            "geom": {},
+            "payload": {},
+            "provenance": {},
+        });
+        match verify_line(&v.to_string(), "adsb") {
+            Err(LineFault::UnknownSchemaVersion(got)) => assert_eq!(got, "9.9"),
+            other => panic!("expected UnknownSchemaVersion, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn verify_line_rejects_misfiled_layer() {
+        // An `ais` record sitting in an `adsb` file.
+        let line = ndjson_line("ais", 1.0, None, None, None, &json!({"mmsi": "1"}), "ais:stream");
+        match verify_line(&line, "adsb") {
+            Err(LineFault::LayerMismatch { expected, found }) => {
+                assert_eq!(expected, "adsb");
+                assert_eq!(found, "ais");
+            }
+            other => panic!("expected LayerMismatch, got {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Verifier — full archive walk over a real temp tree
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn verify_archive_clean_tree_reports_no_faults() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = RawSink { root: dir.path().to_path_buf() };
+        let ts = 1_733_673_600.0_f64;
+
+        sink.write_adsb("aaa111", ts, Some(35.0), Some(-82.0), Some(10000), "rx1");
+        sink.write_adsb("bbb222", ts + 1.0, Some(36.0), Some(-83.0), Some(20000), "rx1");
+        sink.write_adsb("ccc333", ts + 86_400.0, None, None, None, "rx1"); // next day → 2nd file
+        sink.write_ais("123456789", ts, Some(35.0), Some(-82.0), "ais:stream");
+
+        let report = sink.verify();
+        assert!(report.is_clean(), "faults: {:?}", report.faults);
+        assert_eq!(report.files, 3, "two adsb day files + one ais day file");
+        assert_eq!(report.lines, 4);
+        assert_eq!(report.ok, 4);
+    }
+
+    #[test]
+    fn verify_archive_catches_a_corrupt_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = RawSink { root: dir.path().to_path_buf() };
+        let ts = 1_733_673_600.0_f64;
+        sink.write_adsb("good01", ts, Some(35.0), Some(-82.0), Some(10000), "rx1");
+
+        // Simulate a torn append: a half-written line at the end of the day file.
+        let path = dir.path()
+            .join("adsb")
+            .join("2024-12-08")
+            .join("adsb-2024-12-08.ndjson");
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, r#"{{"layer":"adsb","schema_ver"#).unwrap();
+        drop(f);
+
+        let report = sink.verify();
+        assert!(!report.is_clean());
+        assert_eq!(report.ok, 1, "the one good line still verifies");
+        assert_eq!(report.faults.len(), 1);
+        let (fault_path, lineno, fault) = &report.faults[0];
+        assert_eq!(fault_path, &path);
+        assert_eq!(*lineno, 2, "fault is on the second (torn) line, 1-based");
+        assert_eq!(fault, &LineFault::NotJson);
+    }
+
+    #[test]
+    fn verify_archive_blank_lines_are_not_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = RawSink { root: dir.path().to_path_buf() };
+        let ts = 1_733_673_600.0_f64;
+        sink.write_adsb("good01", ts, None, None, None, "rx1");
+
+        let path = dir.path()
+            .join("adsb")
+            .join("2024-12-08")
+            .join("adsb-2024-12-08.ndjson");
+        // Trailing blank lines (a normal artifact of newline handling) must not fault.
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f).unwrap();
+        writeln!(f, "   ").unwrap();
+        drop(f);
+
+        let report = sink.verify();
+        assert!(report.is_clean(), "blank lines should not be faults: {:?}", report.faults);
+        assert_eq!(report.lines, 1);
+    }
+
+    #[test]
+    fn verify_archive_empty_dir_is_clean_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = verify_archive(dir.path());
+        assert!(report.is_clean());
+        assert_eq!(report.files, 0);
+        assert_eq!(report.lines, 0);
     }
 }
