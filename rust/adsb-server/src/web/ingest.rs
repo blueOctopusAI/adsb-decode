@@ -3,9 +3,16 @@
 //! Each feeder identifies by name. The server maintains a tracker per
 //! feeder and merges decoded data into the shared database via the
 //! AdsbDatabase trait.
+//!
+//! **Raw sink tee (Phase-0 A2):** When `ADSB_RAW_SINK_DIR` is set, every
+//! decoded ADS-B position is also appended to a dated NDJSON file under
+//! that directory (`<dir>/adsb/YYYY-MM-DD/adsb-YYYY-MM-DD.ndjson`). This is
+//! the durable off-box record that survives DB compaction and server restarts.
+//! The sink initialises once at startup via `OnceLock`; when the env var is
+//! absent the tee is a no-op and the ingest path is unchanged.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
@@ -19,6 +26,7 @@ use adsb_core::frame::{self, IcaoCache};
 use adsb_core::tracker::{TrackEvent, Tracker};
 use adsb_core::types::icao_to_string;
 
+use crate::raw_sink::RawSink;
 use crate::web::AppState;
 
 // ---------------------------------------------------------------------------
@@ -32,6 +40,14 @@ static FEEDER_TRACKERS: LazyLock<RwLock<HashMap<String, FeederState>>> =
 
 static RECEIVER_STATUS: LazyLock<RwLock<HashMap<String, ReceiverStatus>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Raw append-only sink — initialised once from `ADSB_RAW_SINK_DIR` at startup.
+/// `None` when the env var is absent (no-op path; zero overhead).
+static RAW_SINK: OnceLock<Option<RawSink>> = OnceLock::new();
+
+fn raw_sink() -> Option<&'static RawSink> {
+    RAW_SINK.get_or_init(RawSink::from_env).as_ref()
+}
 
 struct FeederState {
     tracker: Tracker,
@@ -367,6 +383,20 @@ pub async fn api_ingest_frames(
                         *timestamp,
                     )
                     .await;
+
+                // Phase-0 A2: tee to the raw append-only sink when configured.
+                // Fire-and-forget; errors are logged to stderr inside RawSink::append
+                // so a NAS hiccup cannot affect the DB write path above.
+                if let Some(sink) = raw_sink() {
+                    sink.write_adsb(
+                        &icao_str,
+                        *timestamp,
+                        Some(*lat),
+                        Some(*lon),
+                        *altitude_ft,
+                        &body.receiver,
+                    );
+                }
             }
         }
     }

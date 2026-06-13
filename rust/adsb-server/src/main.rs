@@ -55,6 +55,8 @@ fn spawn_positions_broadcast(state: Arc<web::AppState>) {
 mod ais;
 mod baseline;
 mod db;
+// Phase-0 A2 raw append-only sink — wired into web/ingest.rs (PositionUpdate tee).
+mod raw_sink;
 #[cfg(feature = "timescaledb")]
 mod db_pg;
 mod demo;

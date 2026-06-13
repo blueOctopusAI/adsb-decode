@@ -21,8 +21,12 @@
 #   bash scripts/seed-tle.sh starlink gps-ops      # specific groups
 #
 # Env:
-#   ADSB_HOST   = https://adsb.blueoctopustechnology.com  (default)
-#   ADSB_TOKEN  = bearer token if server has auth_token set (optional)
+#   ADSB_HOST       = https://adsb.blueoctopustechnology.com  (default)
+#   ADSB_TOKEN      = bearer token if server has auth_token set (optional)
+#   TLE_ARCHIVE_DIR = dated TLE history root (default ~/tle-archive). Point at
+#                     a NAS mount for the durable home; falls back to the
+#                     default if the mount is absent (never writes into a
+#                     dead /Volumes mount point).
 
 set -euo pipefail
 
@@ -104,6 +108,27 @@ PY
   echo "$bytes"
 }
 
+# Phase-0 A3: dated TLE-history archive. The server cache is last-good-only
+# (tle_cache.rs overwrites <group>.tle), so without this every weekly pull
+# destroys the previous epoch — irreplaceable orbital history. Archive every
+# successful fetch to <root>/YYYY-MM-DD/<group>.tle; history accrues, nothing
+# is overwritten within a day's snapshot. ~MB/day. Spec: phase-0-execution-spec §A3.
+archive_tle() {
+  local group="$1" src="$2"
+  local root="${TLE_ARCHIVE_DIR:-$HOME/tle-archive}"
+  case "$root" in
+    /Volumes/*)
+      if [ ! -d "$(dirname "$root")" ]; then
+        echo "  ⚠ archive mount $(dirname "$root") absent — archiving to ~/tle-archive instead"
+        root="$HOME/tle-archive"
+      fi ;;
+  esac
+  local day; day=$(date -u +%F)
+  mkdir -p "$root/$day"
+  cp "$src" "$root/$day/${group}.tle"
+  echo "  ↳ archived ${group} → $root/$day/${group}.tle"
+}
+
 for group in "$@"; do
   echo "→ ${group}: fetching…"
   tmp=$(mktemp)
@@ -121,6 +146,7 @@ for group in "$@"; do
     rm -f "$tmp"
     continue
   fi
+  archive_tle "$group" "$tmp"
   echo "  ${group}: got ${bytes} bytes from ${source_label}, pushing to ${ADSB_HOST}"
   if [ -n "$ADSB_TOKEN" ]; then
     resp=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' \

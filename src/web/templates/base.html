@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}adsb-decode{% endblock %}</title>
+    <!-- Brand favicon — single source: static/favicon-32.png (cropped from the canonical adsb-decode wordmark fin) -->
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}" />
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
