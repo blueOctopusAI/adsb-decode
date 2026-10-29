@@ -33,12 +33,10 @@ const map = L.map('map', {
 
 // --- Map tile styles ---
 const tileSets = {
-    'dark': { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', attr: '&copy; OSM &copy; CARTO', maxZoom: 19 },
+    'dark': { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attr: 'Tiles &copy; Esri', maxZoom: 16 },
     'satellite': { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr: '&copy; Esri', maxZoom: 19 },
-    'topo': { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attr: '&copy; OSM &copy; OpenTopoMap', maxZoom: 17 },
-    'streets': { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', attr: '&copy; OSM', maxZoom: 19 },
-    'dark-matter': { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', attr: '&copy; OSM &copy; CARTO', maxZoom: 19 },
-    'voyager': { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attr: '&copy; OSM &copy; CARTO', maxZoom: 19 },
+    'topo': { url: 'https://tile.opentopomap.org/{z}/{x}/{y}.png', attr: '&copy; OSM &copy; OpenTopoMap', maxZoom: 17 },
+    'streets': { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attr: '&copy; OSM', maxZoom: 19 },
 };
 let currentTileLayer = null;
 const mapThemes = {
@@ -46,17 +44,13 @@ const mapThemes = {
     satellite:    { bg: 'dark',  civilian: '#00ffcc', military: '#ff6666', trailWeight: 3,   trailMinOpacity: 0.4, outline: '#000', outlineWidth: 0.8 },
     topo:         { bg: 'light', civilian: '#006633', military: '#cc0000', trailWeight: 3,   trailMinOpacity: 0.5, outline: '#fff', outlineWidth: 0.8 },
     streets:      { bg: 'light', civilian: '#006633', military: '#cc0000', trailWeight: 3,   trailMinOpacity: 0.5, outline: '#fff', outlineWidth: 0.8 },
-    'dark-matter': { bg: 'dark', civilian: '#00ff88', military: '#ff4444', trailWeight: 2.5, trailMinOpacity: 0.3, outline: '#000', outlineWidth: 0.5 },
-    voyager:      { bg: 'light', civilian: '#007744', military: '#cc0000', trailWeight: 3,   trailMinOpacity: 0.5, outline: '#fff', outlineWidth: 0.8 },
 };
 let activeTheme = mapThemes['dark'];
 const cesiumTiles = {
-    'dark':        { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', subs: ['a','b','c','d'], max: 19 },
+    'dark':        { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', subs: undefined, max: 16 },
     'satellite':   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', subs: undefined, max: 17 },
-    'topo':        { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', subs: ['a','b','c'], max: 17 },
-    'streets':     { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', subs: ['a','b','c'], max: 19 },
-    'dark-matter': { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png', subs: ['a','b','c','d'], max: 19 },
-    'voyager':     { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', subs: ['a','b','c','d'], max: 19 },
+    'topo':        { url: 'https://tile.opentopomap.org/{z}/{x}/{y}.png', subs: undefined, max: 17 },
+    'streets':     { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', subs: undefined, max: 19 },
 };
 
 async function setCesiumMapStyle(style) {
