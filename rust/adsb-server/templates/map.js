@@ -780,14 +780,16 @@ setInterval(() => {
 }, 30000);
 
 // --- Splatlas layer ---
-// Pinned 3DGS scenes that pair with Splatlas (splatlas.blueoctopustechnology.com).
-// Click a pin → opens the viewer at that scene with the canonical "first ref point"
-// vantage. Lit hexes on the Splatlas dome show ADS-B traffic overhead from that
-// real-world location, in real time.
+// Pinned 3DGS scenes that pair with Splatlas (splatlas.live). Click a pin → opens
+// the scene's canonical page on Splatlas (the guided park tour). Lit hexes on the
+// Splatlas dome show ADS-B traffic overhead from that real-world location, in
+// real time.
 //
 // Scene list is hardcoded here for v1. When >3 scenes exist this should move to
-// /api/v1/splatlas/scenes.
-const SPLATLAS_BASE_URL = 'https://splatlas.blueoctopustechnology.com';
+// /api/v1/splatlas/scenes. The former Cybertruck receiver-site scan was retired
+// from the public map on 2026-10-29.
+const SPLATLAS_BASE_URL = 'https://splatlas.live';
+const SPLATLAS_HOST_LABEL = 'splatlas.live';
 const SPLATLAS_SCENES = [
     {
         id: 'parkerMeadows',
@@ -806,25 +808,11 @@ const SPLATLAS_SCENES = [
             [35.15213521146025, -83.45496057086412], // SE
             [35.15213521146025, -83.45693942913589], // SW
         ],
-        observation_points: [
-            { id: 'pavilion-top', name: 'Top of the pavilion tower' },
-            { id: 'complex-overhead', name: 'Overhead — full complex' },
-            { id: 'pavilion-aerial', name: 'Pavilion aerial' },
-            { id: 'diamond-3-4', name: 'Approach to the SE diamond' },
-        ],
-    },
-    {
-        id: 'cyberTruck',
-        kind: 'receiver',
-        name: 'Cybertruck',
-        location: 'Franklin, NC',
-        lat: 35.18,
-        lon: -83.38,
-        captured: '2026-05-19',
-        description: 'The ADS-B receiver site itself — the antenna feeding this whole map sits right here, captured as a 3D scan. This pin marks the signal source.',
-        observation_points: [
-            { id: '', name: 'Enter the Cybertruck scan' },
-        ],
+        // Canonical Splatlas page for the scene (the guided park tour). Splatlas
+        // does not take a vantage query, so one honest link replaces the old
+        // per-vantage buttons.
+        url: '/parker-meadows',
+        enter_label: 'Step inside the park tour',
     },
 ];
 
@@ -873,9 +861,7 @@ function renderSplatlasScenes() {
     if (!document.getElementById('splatlas-toggle').checked) return;
     SPLATLAS_SCENES.forEach(scene => {
         if (scene.lat == null || scene.lon == null) return;
-        const vantageButtons = scene.observation_points.map(p =>
-            `<a href="${SPLATLAS_BASE_URL}/?scene=${encodeURIComponent(scene.id)}&vantage=${encodeURIComponent(p.id)}" target="_blank" rel="noopener">→ ${esc(p.name)}</a>`
-        ).join('');
+        const enterLink = `<a href="${SPLATLAS_BASE_URL}${scene.url || '/'}" target="_blank" rel="noopener">→ ${esc(scene.enter_label || 'Open in Splatlas')}</a>`;
         const popupContent = `<div class="splatlas-popup" style="min-width:240px;">
             <div class="splatlas-popup-eyebrow">${scene.kind === 'receiver' ? 'Splatlas · Receiver Site' : 'Splatlas · Captured Scene'}</div>
             <div class="splatlas-popup-title">${esc(scene.name)}</div>
@@ -883,12 +869,12 @@ function renderSplatlasScenes() {
             <div class="popup-row"><span class="popup-label">Captured</span><span class="popup-value">${esc(scene.captured)}</span></div>
             <div style="font-size:11px;color:#aaa;margin:8px 0 4px;line-height:1.4;">${esc(scene.description)}</div>
             <div class="splatlas-popup-actions" style="margin-top:8px;">
-                <div style="font-size:9px;color:#888;text-transform:uppercase;letter-spacing:0.18em;margin-bottom:4px;">Enter from</div>
-                ${vantageButtons}
+                <div style="font-size:9px;color:#888;text-transform:uppercase;letter-spacing:0.18em;margin-bottom:4px;">Enter</div>
+                ${enterLink}
             </div>
             <div class="splatlas-popup-footer">
                 3D Gaussian Splat + live ADS-B + line-of-sight occlusion ·
-                <a href="${SPLATLAS_BASE_URL}" target="_blank" rel="noopener">splatlas.blueoctopustechnology.com</a>
+                <a href="${SPLATLAS_BASE_URL}" target="_blank" rel="noopener">${SPLATLAS_HOST_LABEL}</a>
             </div>
         </div>`;
         // Observation dome — three concentric copper rings reading as a
