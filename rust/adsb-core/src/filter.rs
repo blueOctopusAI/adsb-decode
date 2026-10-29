@@ -100,8 +100,11 @@ impl FilterEngine {
             geofences: Vec::new(),
             low_altitude_ft: LOW_ALTITUDE_THRESHOLD,
             rapid_descent_fpm: RAPID_DESCENT_THRESHOLD,
-            proximity_nm: 5.0,
-            proximity_ft: 1000,
+            // Standard IFR separation is 3–5 nm laterally or 1,000 ft vertically,
+            // so a 5 nm / 1,000 ft rule flagged ordinary cruise traffic all day.
+            // Alert only inside both minima: that is a real loss of separation.
+            proximity_nm: 1.0,
+            proximity_ft: 500,
             emitted: HashSet::new(),
         }
     }

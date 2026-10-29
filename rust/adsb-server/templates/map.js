@@ -32,6 +32,13 @@ const map = L.map('map', {
 });
 
 // --- Map tile styles ---
+// Empty-sky state: when nothing is in range, say so and say why, instead of a
+// blank map. The copy is the About page's lead, condensed.
+function updateEmptySky(count) {
+    const el = document.getElementById('empty-sky');
+    if (el) el.classList.toggle('show', !count);
+}
+
 const tileSets = {
     'dark': { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attr: 'Tiles &copy; Esri', maxZoom: 16 },
     'satellite': { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr: '&copy; Esri', maxZoom: 19 },
@@ -404,7 +411,7 @@ function applyPositions(posData) {
     if (!Array.isArray(posData)) return;
     {
         document.getElementById('ac-count').textContent = posData.length;
-        document.getElementById('so-aircraft').textContent = posData.length;
+        document.getElementById('so-aircraft').textContent = posData.length; updateEmptySky(posData.length);
         const tbody = document.querySelector('#ac-table tbody');
         tbody.innerHTML = '';
 
@@ -505,7 +512,7 @@ function applyPositions(posData) {
 
         // Update aircraft count to include historical
         document.getElementById('ac-count').textContent = seen.size;
-        document.getElementById('so-aircraft').textContent = seen.size;
+        document.getElementById('so-aircraft').textContent = seen.size; updateEmptySky(seen.size);
 
         // Update route predictions
         drawPredictions(posData);
@@ -2920,6 +2927,13 @@ function reconnectPositionsWebSocket() {
 
 // --- Initialize ---
 restoreState();
+// Defaults that ship checked in the markup (military highlight, receiver, range)
+// only take effect through their change handlers, so fire them once on load.
+// Each handler is idempotent, so a restored preference is not undone.
+['military-highlight', 'receiver-toggle', 'range-toggle'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.checked) el.dispatchEvent(new Event('change'));
+});
 centerOnReceiver();
 updateMap();
 updateTrails();

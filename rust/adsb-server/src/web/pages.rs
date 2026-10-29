@@ -23,7 +23,9 @@ tr:hover { background: #111; }
 .stat-card { display: inline-block; background: #111; border: 1px solid #333; padding: 16px 24px; margin: 8px; border-radius: 4px; }
 .stat-card .value { font-size: 32px; color: #00ff88; font-weight: bold; }
 .stat-card .label { font-size: 12px; color: #888; margin-top: 4px; }
-a { color: #00aaff; }
+/* One accent for live data (green); red/orange are reserved for alerts. */
+a { color: #00ff88; }
+a:hover { text-decoration: underline; }
 .nav-hamburger { display: none; background: none; border: none; color: #888; font-size: 22px; cursor: pointer; padding: 4px 8px; line-height: 1; }
 .nav-hamburger:hover { color: #00ff88; }
 .nav-links { display: contents; }
@@ -55,16 +57,11 @@ const NAV_HTML: &str = r#"<nav>
     <button class="nav-hamburger" onclick="document.querySelector('.nav-links').classList.toggle('open')" aria-label="Toggle navigation">&#9776;</button>
     <div class="nav-links">
         <a href="/">Map</a>
-        <a href="/table">Table</a>
-        <a href="/events">Events</a>
-        <a href="/query">Query</a>
         <a href="/replay">Replay</a>
         <a href="/receivers">Receivers</a>
-        <a href="/stats">Stats</a>
         <a href="/about">About</a>
         <div class="nav-right">
-            <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener" title="GitHub" style="color:#888;">GitHub</a>
-            <a href="/register" style="color:#00ff88;">Register</a>
+            <a href="https://github.com/blueOctopusAI/adsb-decode" target="_blank" rel="noopener" title="GitHub">GitHub</a>
         </div>
     </div>
 </nav>"#;

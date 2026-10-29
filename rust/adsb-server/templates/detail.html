@@ -311,7 +311,13 @@ fetch(`/api/aircraft/${icao}`)
         // External links
         const links = document.getElementById('ext-links');
         const encIcao = encodeURIComponent(icao);
-        let linkHtml = `<a class="ext-link" href="https://globe.adsbexchange.com/?icao=${encIcao}" target="_blank" rel="noopener">
+        // Ride it on Splatlas: the live atlas starts a chase on this aircraft as
+        // soon as it is in the feed (it waits if the plane is not up yet).
+        let linkHtml = `<a class="ext-link ext-ride" href="https://splatlas.live/?ride=${encIcao}" target="_blank" rel="noopener">
+            <div class="ext-name">Ride on Splatlas</div>
+            <div class="ext-desc">Fly with this aircraft live, in the cockpit, on the wing or overhead</div>
+        </a>`;
+        linkHtml += `<a class="ext-link" href="https://globe.adsbexchange.com/?icao=${encIcao}" target="_blank" rel="noopener">
             <div class="ext-name">ADSBExchange</div>
             <div class="ext-desc">Live global tracking, full history</div>
         </a>`;

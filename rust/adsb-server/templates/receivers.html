@@ -1,30 +1,40 @@
 <style>
-#rx-map { width: 100%; height: 300px; margin: 16px 0; border: 1px solid #333; }
-.rx-card {
-    display: inline-block;
-    background: #111;
-    border: 1px solid #333;
-    padding: 16px;
-    margin: 8px;
-    border-radius: 4px;
-    min-width: 250px;
-    vertical-align: top;
-}
-.rx-name { font-size: 16px; font-weight: bold; margin-bottom: 8px; }
+.rx-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.rx-head h2 { color: #00ff88; }
+.rx-add { font-size: 12px; }
+#rx-map { width: 100%; height: 320px; margin: 12px 0 16px; border: 1px solid #333; }
+.rx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.rx-card { background: #111; border: 1px solid #333; padding: 16px; border-radius: 4px; }
+.rx-card.is-degraded { border-color: #ffaa00; }
+.rx-card.is-offline { border-color: #ff4444; }
+.rx-status { font-size: 20px; font-weight: bold; letter-spacing: .04em; }
 .rx-online { color: #00ff88; }
 .rx-degraded { color: #ffaa00; }
 .rx-offline { color: #ff4444; }
-.rx-hint { font-size: 11px; color: #ffaa00; margin: 4px 0 8px; }
-.rx-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+.rx-name { font-size: 13px; color: #bbb; margin-top: 2px; }
+.rx-hint { font-size: 12px; color: #ffaa00; margin: 8px 0 4px; line-height: 1.5; }
+.rx-rows { margin-top: 10px; }
+.rx-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; border-top: 1px solid #1a1a1a; }
 .rx-label { color: #888; }
 .rx-value { color: #e0e0e0; }
+.rx-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.rx-stats .stat-card { margin: 0; padding: 12px 18px; }
+.rx-stats .stat-card .value { font-size: 24px; }
 .empty-state { color: #888; text-align: center; padding: 40px 20px; font-size: 13px; line-height: 1.6; }
 .empty-state code { color: #00ff88; background: #111; padding: 2px 6px; border-radius: 3px; }
 </style>
 <div class="container">
-    <h2 style="color:#00ff88; margin-bottom:12px;">Receivers</h2>
+    <div class="rx-head">
+        <h2>Receivers</h2>
+        <a class="rx-add" href="/register">Add a receiver →</a>
+    </div>
+    <div class="rx-grid" id="rx-cards"></div>
     <div id="rx-map"></div>
-    <div id="rx-cards"></div>
+    <div class="rx-stats">
+        <div class="stat-card"><div class="value" id="stat-aircraft">-</div><div class="label">Aircraft seen</div></div>
+        <div class="stat-card"><div class="value" id="stat-positions">-</div><div class="label">Positions stored</div></div>
+        <div class="stat-card"><div class="value" id="stat-events">-</div><div class="label">Events</div></div>
+    </div>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -36,78 +46,7 @@ const rxMap = L.map('rx-map', { zoomControl: true });
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
     attribution: 'Tiles &copy; Esri', maxZoom: 16,
 }).addTo(rxMap);
-
-function loadReceivers() {
-    // Try live feeder status first, fall back to DB receivers
-    Promise.all([
-        fetch('/api/v1/receivers').then(r => r.json()).catch(() => []),
-        fetch('/api/stats').then(r => r.json()).catch(() => ({})),
-    ]).then(([feeders, stats]) => {
-        const cards = document.getElementById('rx-cards');
-        const mapDiv = document.getElementById('rx-map');
-        cards.innerHTML = '';
-
-        if (feeders.length === 0 && (!stats.receivers || stats.receivers <= 1)) {
-            // Single local receiver, no remote feeders
-            mapDiv.style.display = 'none';
-            cards.innerHTML = `<div class="empty-state">
-                <div style="font-size:24px;margin-bottom:12px;">📡</div>
-                <div>Running with <strong style="color:#00ff88;">local receiver</strong> — no remote feeders connected.</div>
-                <div style="margin-top:12px;">To add remote receivers, run <code>adsb-receiver</code> on another device<br>pointed at this server.</div>
-                <div style="margin-top:16px;font-size:11px;color:#555;">
-                    <code>adsb-receiver --server http://THIS_HOST:8080 --name pi-station</code>
-                </div>
-            </div>`;
-            return;
-        }
-
-        mapDiv.style.display = '';
-        const bounds = [];
-
-        feeders.forEach(rx => {
-            // Three states, not two: a receiver whose agent heartbeats but whose
-            // dongle has gone silent is DEGRADED, never ONLINE (2026-10-05 incident).
-            const health = receiverHealth(rx);
-            const status = health === 'online' ? '<span class="rx-online">ONLINE</span>'
-                : health === 'degraded' ? '<span class="rx-degraded">DEGRADED</span>'
-                : '<span class="rx-offline">OFFLINE</span>';
-            const hint = health === 'degraded'
-                ? `<div class="rx-hint">Heartbeats arriving but no frames for ${formatAge(rx.frames_age_seconds)} — dongle silent?</div>`
-                : '';
-            const heartbeat = rx.last_heartbeat ? new Date(rx.last_heartbeat * 1000).toLocaleTimeString() : 'Never';
-            const lastFrames = rx.last_frames_at ? new Date(rx.last_frames_at * 1000).toLocaleTimeString() : 'Never';
-            const uptime = rx.uptime_sec ? formatUptime(rx.uptime_sec) : '-';
-            cards.innerHTML += `<div class="rx-card">
-                <div class="rx-name">${esc(rx.name)} ${status}</div>
-                ${hint}
-                <div class="rx-row"><span class="rx-label">Location</span><span class="rx-value">${rx.lat ? rx.lat.toFixed(4) + ', ' + rx.lon.toFixed(4) : 'Unknown'}</span></div>
-                <div class="rx-row"><span class="rx-label">Last Heartbeat</span><span class="rx-value">${heartbeat}</span></div>
-                <div class="rx-row"><span class="rx-label">Last Frames</span><span class="rx-value">${lastFrames}</span></div>
-                <div class="rx-row"><span class="rx-label">Active Aircraft</span><span class="rx-value">${rx.active_aircraft || 0}</span></div>
-                <div class="rx-row"><span class="rx-label">Frames Captured</span><span class="rx-value">${(rx.frames_captured || 0).toLocaleString()}</span></div>
-                <div class="rx-row"><span class="rx-label">Uptime</span><span class="rx-value">${uptime}</span></div>
-            </div>`;
-
-            if (rx.lat && rx.lon) {
-                bounds.push([rx.lat, rx.lon]);
-                const color = health === 'online' ? '#00ff88' : health === 'degraded' ? '#ffaa00' : '#ff4444';
-                L.circleMarker([rx.lat, rx.lon], {
-                    radius: 8, color: color, fillColor: color, fillOpacity: 0.8, weight: 1,
-                }).addTo(rxMap).bindTooltip(rx.name, { permanent: true, direction: 'right' });
-
-                L.circle([rx.lat, rx.lon], {
-                    radius: 185000, color: color, fillOpacity: 0.05, weight: 1, dashArray: '4 4',
-                }).addTo(rxMap);
-            }
-        });
-
-        if (bounds.length > 0) {
-            rxMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 8 });
-        } else {
-            rxMap.setView([35.18, -83.38], 6);
-        }
-    });
-}
+const rxLayer = L.layerGroup().addTo(rxMap);
 
 // Server sends `status` ("online" | "degraded" | "offline"); older hubs only
 // send `online`, so fall back to that rather than render everything offline.
@@ -116,7 +55,6 @@ function receiverHealth(rx) {
     if (rx.degraded) return 'degraded';
     return rx.online ? 'online' : 'offline';
 }
-
 function formatAge(sec) {
     if (sec == null) return 'ever';
     if (sec < 60) return Math.floor(sec) + 's';
@@ -124,14 +62,92 @@ function formatAge(sec) {
     if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
     return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
 }
+function formatUptime(sec) { return formatAge(sec); }
+function haversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371, toRad = (d) => d * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+}
 
-function formatUptime(sec) {
-    if (sec < 60) return sec + 's';
-    if (sec < 3600) return Math.floor(sec / 60) + 'm';
-    if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
-    return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
+function loadReceivers() {
+    Promise.all([
+        fetch('/api/v1/receivers').then(r => r.json()).catch(() => []),
+        fetch('/api/stats').then(r => r.json()).catch(() => ({})),
+        fetch('/api/positions').then(r => r.json()).catch(() => []),
+    ]).then(([feeders, stats, positions]) => {
+        const cards = document.getElementById('rx-cards');
+        const mapDiv = document.getElementById('rx-map');
+        cards.innerHTML = '';
+        rxLayer.clearLayers();
+        document.getElementById('stat-aircraft').textContent = (stats.aircraft || 0).toLocaleString();
+        document.getElementById('stat-positions').textContent = (stats.positions || 0).toLocaleString();
+        document.getElementById('stat-events').textContent = (stats.events || 0).toLocaleString();
+
+        if (!feeders.length) {
+            mapDiv.style.display = 'none';
+            cards.innerHTML = `<div class="empty-state">
+                <div style="font-size:24px;margin-bottom:12px;">📡</div>
+                <div>No receivers are reporting. Run <code>adsb-receiver</code> on a device with an RTL-SDR dongle, pointed at this server.</div>
+                <div style="margin-top:12px;"><a href="/register">Register a receiver →</a></div>
+            </div>`;
+            return;
+        }
+
+        mapDiv.style.display = '';
+        const live = Array.isArray(positions) ? positions : (positions.positions || []);
+        const bounds = [];
+
+        feeders.forEach(rx => {
+            // Three states, not two: a receiver whose agent heartbeats but whose
+            // dongle has gone silent is DEGRADED, never ONLINE (2026-10-05 incident).
+            const health = receiverHealth(rx);
+            const statusText = health.toUpperCase();
+            const hint = health === 'degraded'
+                ? `<div class="rx-hint">Heartbeats are arriving but no frames for ${formatAge(rx.frames_age_seconds)}. The agent restarts itself after 10 minutes of silence; if this persists, check the dongle and its USB cable.</div>`
+                : health === 'offline' ? `<div class="rx-hint">No heartbeat for ${formatAge(rx.heartbeat_age_seconds ?? rx.frames_age_seconds)}.</div>` : '';
+            const lastFrames = rx.frames_age_seconds != null ? formatAge(rx.frames_age_seconds) + ' ago' : (rx.last_frames_at ? new Date(rx.last_frames_at * 1000).toLocaleTimeString() : 'Never');
+            const heartbeat = rx.last_heartbeat ? new Date(rx.last_heartbeat * 1000).toLocaleTimeString() : 'Never';
+            // Live range: the farthest aircraft this hub is hearing right now, as a
+            // ring on the map and a number on the card. Honest, not a fixed radius.
+            let farthestKm = 0;
+            if (rx.lat && rx.lon) for (const p of live) {
+                if (typeof p.lat === 'number' && typeof p.lon === 'number') farthestKm = Math.max(farthestKm, haversineKm(rx.lat, rx.lon, p.lat, p.lon));
+            }
+            const rangeNm = farthestKm ? Math.round(farthestKm / 1.852) : 0;
+            cards.innerHTML += `<div class="rx-card is-${health}">
+                <div class="rx-status rx-${health}">${statusText}</div>
+                <div class="rx-name">${esc(rx.name)}</div>
+                ${hint}
+                <div class="rx-rows">
+                    <div class="rx-row"><span class="rx-label">Last frames</span><span class="rx-value">${lastFrames}</span></div>
+                    <div class="rx-row"><span class="rx-label">Aircraft now</span><span class="rx-value">${rx.active_aircraft || 0}</span></div>
+                    <div class="rx-row"><span class="rx-label">Live range</span><span class="rx-value">${rangeNm ? rangeNm + ' nm' : '-'}</span></div>
+                    <div class="rx-row"><span class="rx-label">Frames since start</span><span class="rx-value">${(rx.frames_captured || 0).toLocaleString()}</span></div>
+                    <div class="rx-row"><span class="rx-label">Agent uptime</span><span class="rx-value">${rx.uptime_sec ? formatUptime(rx.uptime_sec) : '-'}</span></div>
+                    <div class="rx-row"><span class="rx-label">Last heartbeat</span><span class="rx-value">${heartbeat}</span></div>
+                    <div class="rx-row"><span class="rx-label">Location</span><span class="rx-value">${rx.lat ? rx.lat.toFixed(3) + ', ' + rx.lon.toFixed(3) : 'Unknown'}</span></div>
+                </div>
+            </div>`;
+
+            if (rx.lat && rx.lon) {
+                bounds.push([rx.lat, rx.lon]);
+                const color = health === 'online' ? '#00ff88' : health === 'degraded' ? '#ffaa00' : '#ff4444';
+                L.circleMarker([rx.lat, rx.lon], { radius: 7, color, fillColor: color, fillOpacity: 0.9, weight: 1 })
+                    .addTo(rxLayer).bindTooltip(rx.name, { permanent: true, direction: 'right' });
+                if (farthestKm > 1) {
+                    L.circle([rx.lat, rx.lon], { radius: farthestKm * 1000, color, fillOpacity: 0.04, weight: 1, dashArray: '4 4' })
+                        .addTo(rxLayer).bindTooltip(`Live range ${rangeNm} nm`, { direction: 'top' });
+                    bounds.push([rx.lat + farthestKm / 111, rx.lon], [rx.lat - farthestKm / 111, rx.lon]);
+                }
+            }
+        });
+
+        if (bounds.length) rxMap.fitBounds(bounds, { padding: [30, 30], maxZoom: 9 });
+        else rxMap.setView([35.18, -83.38], 6);
+    });
 }
 
 loadReceivers();
-setInterval(loadReceivers, 30000);
+setInterval(loadReceivers, 15000);
 </script>

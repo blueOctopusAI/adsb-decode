@@ -105,6 +105,10 @@
     flex-direction: column;
     align-items: flex-start;
 }
+#empty-sky { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); z-index: 850; width: min(460px, 86vw); padding: 18px 22px; background: rgba(10,10,10,0.82); border: 1px solid #2a2a2a; border-radius: 6px; text-align: center; display: none; pointer-events: none; }
+#empty-sky.show { display: block; }
+#empty-sky .empty-sky-title { color: #00ff88; font-weight: bold; font-size: 15px; margin-bottom: 8px; }
+#empty-sky .empty-sky-body { color: #bbb; font-size: 12px; line-height: 1.6; }
 #alt-legend .legend-title { color: #888; margin-bottom: 6px; font-size: 10px; text-transform: uppercase; }
 #alt-legend .legend-body { display: flex; align-items: stretch; }
 #alt-legend .legend-bar {
@@ -312,6 +316,10 @@ tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
     Receiver may be down. <a href="/receivers" style="color:#fff;text-decoration:underline;">Check receivers</a>.
 </div>
 <div id="map"></div>
+<div id="empty-sky" aria-live="polite">
+    <div class="empty-sky-title">Nothing in range right now.</div>
+    <div class="empty-sky-body">Every aircraft broadcasts its identity, position, altitude and velocity on 1090 MHz. This receiver decodes those signals itself, from the raw radio samples. The sky over Franklin is quiet at the moment; the first aircraft it hears will appear here.</div>
+</div>
 <div id="cesium-container"></div>
 <div id="control-panel">
     <div class="panel-handle" onclick="document.getElementById('control-panel').classList.toggle('expanded')">
@@ -329,78 +337,72 @@ tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
     </div>
     <div id="panel-body">
         <div id="controls-section">
-            <div style="display:flex;gap:10px;">
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="trail-toggle" checked> Trails</label>
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="predict-toggle"> Predict</label>
-            </div>
-            <div id="predict-dur-row" style="margin-top:4px;display:none;">
-                <span style="font-size:10px;color:#888;">Predict:</span>
-                <span style="font-size:11px;color:#00aaff;float:right;" id="predict-dur-label">10 min</span>
-                <input type="range" id="predict-dur-slider" min="0" max="4" value="1" style="width:100%;accent-color:#00aaff;margin-top:2px;">
-            </div>
-            <div id="heatmap-dur-row" style="margin-top:4px;display:none;">
-                <span style="font-size:10px;color:#888;">Heatmap:</span>
-                <span style="font-size:11px;color:#ff8800;float:right;" id="heatmap-dur-label">24h</span>
-                <input type="range" id="heatmap-dur-slider" min="0" max="7" value="5" style="width:100%;accent-color:#ff8800;margin-top:2px;">
-            </div>
-            <div style="margin-top:5px;">
-                <span style="font-size:10px;color:#888;text-transform:uppercase;">Airports:</span>
-                <span style="display:inline-flex;gap:8px;margin-left:6px;">
-                    <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="apt-large"> Major</label>
-                    <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="apt-medium"> Medium</label>
-                    <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="apt-small"> Small</label>
-                </span>
-            </div>
-            <div style="margin-top:4px;">
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="receiver-toggle"> Receivers</label>
-                <label style="cursor:pointer;font-size:11px;margin-left:8px;"><input type="checkbox" id="splatlas-toggle" checked> Splatlas</label>
-                <label style="cursor:pointer;font-size:11px;margin-left:8px;" title="Show Starlink satellites — orbital positions propagated from CelesTrak TLEs"><input type="checkbox" id="sat-toggle"> 🛰 Sats</label>
+            <!-- Three things first: trails, military, the receiver and its range. Everything else is a layer you ask for. -->
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="trail-toggle" checked> Trails</label>
+                <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="military-highlight" checked> Military</label>
+                <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="receiver-toggle" checked> Receiver</label>
+                <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="range-toggle" checked> Range</label>
             </div>
             <div style="margin-top:6px;">
-                <span style="font-size:10px;color:#888;">Trail:</span>
-                <span style="font-size:11px;color:#00ff88;float:right;" id="trail-dur-label">5m</span>
+                <span style="font-size:11px;color:#888;">Trail:</span>
+                <span style="font-size:12px;color:#00ff88;float:right;" id="trail-dur-label">5m</span>
                 <input type="range" id="trail-dur-slider" min="0" max="3" value="0" style="width:100%;accent-color:#00ff88;margin-top:2px;">
             </div>
-            <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="notify-toggle"> Alerts</label>
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="audio-toggle"> Sound</label>
-                <button id="add-geofence-btn" style="font-size:10px;padding:2px 6px;background:#222;color:#00ff88;border:1px solid #444;border-radius:3px;cursor:pointer;" title="Click map to place geofence">+ Fence</button>
-            </div>
-            <div id="geofence-list" style="margin-top:4px;font-size:10px;color:#888;max-height:60px;overflow-y:auto;"></div>
-            <div style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;">
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="events-toggle"> Events</label>
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="military-highlight"> Military</label>
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="range-toggle"> Range</label>
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="airspace-toggle"> Airspace</label>
-                <label style="cursor:pointer;font-size:11px;"><input type="checkbox" id="vessel-toggle"> Vessels</label>
-                <label style="cursor:pointer;font-size:11px;" title="Live precipitation radar via RainViewer"><input type="checkbox" id="weather-toggle"> Weather</label>
-            </div>
-            <div style="margin-top:6px;display:flex;align-items:center;">
-                <span style="font-size:10px;color:#888;text-transform:uppercase;">Map:</span>
-                <select id="map-style" style="font-size:11px;background:#222;color:#ccc;border:1px solid #444;border-radius:3px;padding:1px 4px;margin-left:4px;">
-                    <option value="dark">Dark</option>
-                    <option value="satellite">Satellite</option>
-                    <option value="topo">Topo</option>
-                    <option value="streets">Streets</option>
-                </select>
-                <button id="mode-3d-btn" style="font-size:10px;padding:2px 6px;background:#222;color:#00aaff;border:1px solid #444;border-radius:3px;cursor:pointer;margin-left:auto;" title="Switch to 3D globe view">3D</button>
-            </div>
+            <details id="more-layers" style="margin-top:8px;">
+                <summary style="cursor:pointer;font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.08em;">More layers</summary>
+                <div style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap;">
+                    <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="heatmap-toggle"> Heatmap</label>
+                    <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="predict-toggle"> Predict</label>
+                    <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="events-toggle"> Events</label>
+                    <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="airspace-toggle"> Airspace</label>
+                    <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="vessel-toggle"> Vessels</label>
+                    <label style="cursor:pointer;font-size:12px;" title="Live precipitation radar via RainViewer"><input type="checkbox" id="weather-toggle"> Weather</label>
+                    <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="splatlas-toggle" checked> Splatlas</label>
+                </div>
+                <div id="predict-dur-row" style="margin-top:4px;display:none;">
+                    <span style="font-size:11px;color:#888;">Predict:</span>
+                    <span style="font-size:12px;color:#00aaff;float:right;" id="predict-dur-label">10 min</span>
+                    <input type="range" id="predict-dur-slider" min="0" max="4" value="1" style="width:100%;accent-color:#00aaff;margin-top:2px;">
+                </div>
+                <div id="heatmap-dur-row" style="margin-top:4px;display:none;">
+                    <span style="font-size:11px;color:#888;">Heatmap:</span>
+                    <span style="font-size:12px;color:#ff8800;float:right;" id="heatmap-dur-label">24h</span>
+                    <input type="range" id="heatmap-dur-slider" min="0" max="7" value="5" style="width:100%;accent-color:#ff8800;margin-top:2px;">
+                </div>
+                <div style="margin-top:6px;">
+                    <span style="font-size:11px;color:#888;text-transform:uppercase;">Airports:</span>
+                    <span style="display:inline-flex;gap:8px;margin-left:6px;">
+                        <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="apt-large"> Major</label>
+                        <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="apt-medium"> Medium</label>
+                        <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="apt-small"> Small</label>
+                    </span>
+                </div>
+                <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
+                    <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="notify-toggle"> Alerts</label>
+                    <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="audio-toggle"> Sound</label>
+                    <button id="add-geofence-btn" style="font-size:11px;padding:2px 6px;background:#222;color:#00ff88;border:1px solid #444;border-radius:3px;cursor:pointer;" title="Click map to place geofence">+ Fence</button>
+                </div>
+                <div id="geofence-list" style="margin-top:4px;font-size:11px;color:#888;max-height:60px;overflow-y:auto;"></div>
+                <div style="margin-top:6px;display:flex;align-items:center;">
+                    <span style="font-size:11px;color:#888;text-transform:uppercase;">Map:</span>
+                    <select id="map-style" style="font-size:12px;background:#222;color:#ccc;border:1px solid #444;border-radius:3px;padding:1px 4px;margin-left:4px;">
+                        <option value="dark">Dark</option>
+                        <option value="satellite">Satellite</option>
+                        <option value="topo">Topo</option>
+                        <option value="streets">Streets</option>
+                    </select>
+                    <button id="mode-3d-btn" style="font-size:11px;padding:2px 6px;background:#222;color:#00aaff;border:1px solid #444;border-radius:3px;cursor:pointer;margin-left:auto;" title="Switch to 3D globe view">3D</button>
+                </div>
+            </details>
         </div>
         <div id="ac-list-section">
             <div class="list-tabs">
                 <button class="list-tab active" data-tab="aircraft">Aircraft (<span id="ac-count">0</span>)</button>
-                <button class="list-tab" data-tab="sats">🛰 Sats (<span id="sat-count-tab">0</span>)</button>
             </div>
             <table id="ac-table" class="list-table" data-tab-target="aircraft">
                 <thead>
                     <tr><th>ICAO</th><th>Call</th><th>Alt</th><th>Spd</th><th>Hdg</th></tr>
-                </thead>
-                <tbody></tbody>
-            </table>
-            <table id="sat-table" class="list-table hidden" data-tab-target="sats">
-                <thead>
-                    <tr><th>Satellite</th><th>Alt (km)</th><th>Lat</th><th>Lon</th></tr>
                 </thead>
                 <tbody></tbody>
             </table>
