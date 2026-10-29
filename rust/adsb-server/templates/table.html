@@ -50,20 +50,25 @@ let liveIcaos = new Set();
 let sortCol = 'last_seen';
 let sortAsc = false;
 
-// Fetch live aircraft set (from tracker if running)
-fetch('/api/aircraft?live=true')
+// Live aircraft are the ones in the positions window right now.
+fetch('/api/positions')
     .then(r => r.json())
     .then(data => {
-        data.forEach(ac => liveIcaos.add(ac.icao));
+        const live = Array.isArray(data) ? data : (data.positions || []);
+        live.forEach(ac => liveIcaos.add(ac.icao));
+        renderTable();
     })
     .catch(() => {});
 
-// Fetch all aircraft from DB
-fetch('/api/aircraft')
+// The catalog endpoint is paginated: { aircraft, total, offset, limit }.
+// Ask for a large page; the table itself shows at most 500 rows after filtering.
+fetch('/api/aircraft?limit=5000')
     .then(r => r.json())
-    .then(data => {
+    .then(payload => {
+        const data = Array.isArray(payload) ? payload : (payload.aircraft || []);
         allAircraft = data;
-        document.getElementById('ac-count').textContent = data.length;
+        const total = Array.isArray(payload) ? data.length : (payload.total ?? data.length);
+        document.getElementById('ac-count').textContent = total.toLocaleString();
 
         // Populate country dropdown
         const countries = [...new Set(data.map(ac => ac.country).filter(Boolean))].sort();
