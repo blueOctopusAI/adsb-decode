@@ -475,6 +475,18 @@ pub async fn api_events(
 /// anomaly score is always 0" looks the same whether the baseline scorer
 /// is silently dormant (cache never refreshed) or working correctly
 /// (every observed position is in a high-density cell).
+///
+/// Feed-freshness fields, two of them on purpose:
+/// - `feed_age_seconds` — seconds since the newest *position* in the DB.
+/// - `newest_frame_at` / `frame_age_seconds` — the newest *frame* any
+///   receiver delivered to the ingest API (in-memory; null until the first
+///   batch after a hub restart).
+///
+/// Together they separate "no feed" from "no traffic": frames arriving but
+/// no positions is a quiet sky or a CPR gap; no frames at all is a dead
+/// receiver. From 2026-10-05 to 2026-10-29 both were null for 23 days and
+/// nothing distinguished that from a quiet night. `receivers_degraded`
+/// counts receivers that heartbeat without delivering frames.
 pub async fn api_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let stats = state.db.stats().await;
     let mut value = serde_json::to_value(&stats).unwrap_or(json!({}));
@@ -487,6 +499,18 @@ pub async fn api_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         obj.insert("baseline_last_refresh".into(), json!(last_refresh));
         obj.insert("baseline_cell_count".into(), json!(cell_count));
         obj.insert("baseline_total".into(), json!(total));
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let feed = super::ingest::feed_summary(now);
+        obj.insert("newest_frame_at".into(), json!(feed.newest_frame_at));
+        obj.insert(
+            "frame_age_seconds".into(),
+            json!(feed.newest_frame_at.map(|t| (now - t).max(0.0))),
+        );
+        obj.insert("receivers_degraded".into(), json!(feed.receivers_degraded));
     }
     Json(value)
 }
@@ -1087,10 +1111,7 @@ fn clientlog_str(v: Option<&Value>, max: usize) -> Option<String> {
 }
 
 /// POST /api/clientlog — client-error sink. Logs one [clientlog] line; no body.
-pub async fn api_clientlog(
-    headers: axum::http::HeaderMap,
-    body: String,
-) -> impl IntoResponse {
+pub async fn api_clientlog(headers: axum::http::HeaderMap, body: String) -> impl IntoResponse {
     // Byte cap (defense-in-depth; the 512 KB global DefaultBodyLimit also applies).
     if body.len() > CLIENTLOG_MAX_BODY {
         return StatusCode::PAYLOAD_TOO_LARGE;
@@ -2911,9 +2932,53 @@ mod consumer_contract_tests {
                 "receivers",
                 "captures",
                 "feed_age_seconds",
+                // Newest *frame* (not position) so a consumer can tell
+                // "no feed" from "no traffic" — the 2026-10-05 silent-receiver gap.
+                "newest_frame_at",
+                "frame_age_seconds",
+                "receivers_degraded",
             ],
             "/api/stats",
         );
+    }
+
+    /// `/api/stats.newest_frame_at` must follow the ingest API: null before
+    /// any batch, a number after one. Pins that the field is wired to real
+    /// ingest evidence rather than being a constant.
+    #[tokio::test]
+    async fn contract_api_stats_newest_frame_at_tracks_ingest() {
+        let (state, _dir) = contract_state();
+        let before = crate::web::ingest::feed_summary(0.0).newest_frame_at;
+
+        let app = crate::web::build_router(state.clone(), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/frames")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"receiver":"stats-contract-rx","frames":[{"hex":"8D4840D6202CC371C32CE0576098"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let json = get_json(state, "/api/stats").await;
+        let newest = json["newest_frame_at"]
+            .as_f64()
+            .expect("newest_frame_at must be a number after an ingest batch");
+        assert!(before.is_none_or(|b| newest >= b));
+        let age = json["frame_age_seconds"]
+            .as_f64()
+            .expect("frame_age_seconds must be a number after an ingest batch");
+        assert!(
+            age < 60.0,
+            "fresh batch should have a small frame age, got {age}"
+        );
+        assert!(json["receivers_degraded"].as_u64().is_some());
     }
 }
 
@@ -3356,6 +3421,42 @@ mod pages_tests {
             assert!(
                 body_js.contains(needle),
                 "map.js missing feed-staleness hook {needle}"
+            );
+        }
+    }
+
+    /// Receiver health has three states on the wire (`status`:
+    /// online/degraded/offline). Both the receivers page and the map must
+    /// read `status`/`degraded` rather than the legacy `online` boolean
+    /// alone — otherwise a heartbeating-but-silent receiver renders green
+    /// again, which is exactly how the 2026-10-05 outage hid for 23 days.
+    #[tokio::test]
+    async fn page_receivers_and_map_render_degraded_state() {
+        let (state, _dir) = empty_state();
+        let (status_html, _ct, body_html) = fetch(state.clone(), "/receivers").await;
+        assert_eq!(status_html, StatusCode::OK);
+        for needle in [
+            "receiverHealth",
+            "DEGRADED",
+            "rx-degraded",
+            "frames_age_seconds",
+        ] {
+            assert!(
+                body_html.contains(needle),
+                "receivers page missing degraded-state hook {needle}"
+            );
+        }
+
+        let (status_js, _ct_js, body_js) = fetch(state, "/assets/map.js").await;
+        assert_eq!(status_js, StatusCode::OK);
+        for needle in [
+            "receiverHealth",
+            "receiverIconDegraded",
+            "frames_age_seconds",
+        ] {
+            assert!(
+                body_js.contains(needle),
+                "map.js missing degraded-state hook {needle}"
             );
         }
     }

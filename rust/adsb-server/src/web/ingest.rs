@@ -65,6 +65,112 @@ struct ReceiverStatus {
     uptime_sec: f64,
     active_aircraft: usize,
     online: bool,
+    /// When the hub first saw this receiver. The frame-stall clock starts
+    /// here, so a receiver that never delivers a frame reads degraded one
+    /// window after it appears — not "online" forever.
+    first_seen: f64,
+    /// Last time the hub had evidence frames were flowing: a non-empty
+    /// `/api/v1/frames` batch, or a heartbeat whose `frames_captured` moved.
+    /// None until the first such evidence.
+    last_frames_at: Option<f64>,
+}
+
+impl ReceiverStatus {
+    fn new(name: &str, lat: Option<f64>, lon: Option<f64>, frames_captured: u64, now: f64) -> Self {
+        Self {
+            name: name.to_string(),
+            lat,
+            lon,
+            last_heartbeat: now,
+            frames_captured,
+            frames_sent: 0,
+            uptime_sec: 0.0,
+            active_aircraft: 0,
+            online: true,
+            first_seen: now,
+            last_frames_at: None,
+        }
+    }
+
+    /// Reference point for the stall clock: last frame evidence, else first sight.
+    fn stall_reference(&self) -> f64 {
+        self.last_frames_at.unwrap_or(self.first_seen)
+    }
+
+    fn health(&self, now: f64) -> ReceiverHealth {
+        classify_health(now, self.last_heartbeat, self.stall_reference())
+    }
+}
+
+/// Heartbeats older than this mean the agent itself is gone.
+pub const HEARTBEAT_TIMEOUT_SECS: f64 = 120.0;
+
+/// Heartbeats arriving but no frame evidence for this long means the agent is
+/// up and its dongle is not. Mirrors the receiver-side watchdog default
+/// (`adsb-receiver --stall-timeout`, 600 s): a working receiver sees frames
+/// every second, so ten silent minutes is a dead device, not a quiet sky.
+///
+/// Why this exists: from 2026-10-05 to 2026-10-29 the blue-octopus receiver
+/// heartbeated for 23 days with `frames_captured: 0` and this endpoint said
+/// `online: true` the whole time. See `docs/incident-2026-10-05-silent-receiver.md`.
+pub const FRAME_STALL_SECS: f64 = 600.0;
+
+/// Three-way receiver health. `Online` is the only state that counts as healthy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverHealth {
+    /// Heartbeats fresh and frames flowing.
+    Online,
+    /// Heartbeats fresh, but no frame evidence within `FRAME_STALL_SECS`.
+    Degraded,
+    /// No heartbeat within `HEARTBEAT_TIMEOUT_SECS`.
+    Offline,
+}
+
+impl ReceiverHealth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReceiverHealth::Online => "online",
+            ReceiverHealth::Degraded => "degraded",
+            ReceiverHealth::Offline => "offline",
+        }
+    }
+}
+
+/// Pure classification so the thresholds are testable without the clock.
+pub fn classify_health(now: f64, last_heartbeat: f64, stall_reference: f64) -> ReceiverHealth {
+    if now - last_heartbeat >= HEARTBEAT_TIMEOUT_SECS {
+        ReceiverHealth::Offline
+    } else if now - stall_reference >= FRAME_STALL_SECS {
+        ReceiverHealth::Degraded
+    } else {
+        ReceiverHealth::Online
+    }
+}
+
+/// Hub-wide feed summary for `/api/stats`: the newest frame evidence across
+/// all receivers plus how many are degraded. In-memory only — after a hub
+/// restart `newest_frame_at` is None until the first batch lands.
+pub struct FeedSummary {
+    pub newest_frame_at: Option<f64>,
+    pub receivers_degraded: usize,
+}
+
+pub fn feed_summary(now: f64) -> FeedSummary {
+    let status = RECEIVER_STATUS.read().unwrap();
+    let newest_frame_at = status
+        .values()
+        .filter_map(|s| s.last_frames_at)
+        .fold(None, |acc: Option<f64>, t| {
+            Some(acc.map_or(t, |a| a.max(t)))
+        });
+    let receivers_degraded = status
+        .values()
+        .filter(|s| s.health(now) == ReceiverHealth::Degraded)
+        .count();
+    FeedSummary {
+        newest_frame_at,
+        receivers_degraded,
+    }
 }
 
 /// Collect only **non-stale** aircraft from all feeder trackers.
@@ -403,24 +509,20 @@ pub async fn api_ingest_frames(
 
     // Update receiver status
     {
+        let current = now();
         let mut status = RECEIVER_STATUS.write().unwrap();
         let entry = status
             .entry(body.receiver.clone())
-            .or_insert_with(|| ReceiverStatus {
-                name: body.receiver.clone(),
-                lat: body.lat,
-                lon: body.lon,
-                last_heartbeat: now(),
-                frames_captured: 0,
-                frames_sent: 0,
-                uptime_sec: 0.0,
-                active_aircraft: 0,
-                online: true,
-            });
-        entry.last_heartbeat = now();
+            .or_insert_with(|| ReceiverStatus::new(&body.receiver, body.lat, body.lon, 0, current));
+        entry.last_heartbeat = current;
         entry.lat = body.lat.or(entry.lat);
         entry.lon = body.lon.or(entry.lon);
         entry.active_aircraft = active_count;
+        // The agent only POSTs when its buffer is non-empty, so a batch is
+        // direct evidence the dongle is producing frames.
+        if !body.frames.is_empty() {
+            entry.last_frames_at = Some(current);
+        }
     }
 
     (
@@ -444,25 +546,31 @@ pub async fn api_heartbeat(
         return resp;
     }
 
+    let current = now();
     let mut status = RECEIVER_STATUS.write().unwrap();
-    let entry = status
-        .entry(body.receiver.clone())
-        .or_insert_with(|| ReceiverStatus {
-            name: body.receiver.clone(),
-            lat: body.lat,
-            lon: body.lon,
-            last_heartbeat: now(),
-            frames_captured: 0,
-            frames_sent: 0,
-            uptime_sec: 0.0,
-            active_aircraft: 0,
-            online: true,
-        });
+    // Seed a brand-new entry with the reported count so the first heartbeat
+    // after a hub restart isn't mistaken for the counter advancing.
+    let entry = status.entry(body.receiver.clone()).or_insert_with(|| {
+        ReceiverStatus::new(
+            &body.receiver,
+            body.lat,
+            body.lon,
+            body.frames_captured.unwrap_or(0),
+            current,
+        )
+    });
 
-    entry.last_heartbeat = now();
+    entry.last_heartbeat = current;
     entry.lat = body.lat.or(entry.lat);
     entry.lon = body.lon.or(entry.lon);
-    entry.frames_captured = body.frames_captured.unwrap_or(entry.frames_captured);
+    if let Some(frames_captured) = body.frames_captured {
+        // Only a *rising* counter is evidence of frames. A drop means the
+        // agent restarted (counter reset to 0) — not a frame.
+        if frames_captured > entry.frames_captured {
+            entry.last_frames_at = Some(current);
+        }
+        entry.frames_captured = frames_captured;
+    }
     entry.frames_sent = body.frames_sent.unwrap_or(entry.frames_sent);
     entry.uptime_sec = body.uptime_sec.unwrap_or(entry.uptime_sec);
     entry.online = true;
@@ -471,6 +579,13 @@ pub async fn api_heartbeat(
 }
 
 /// GET /api/v1/receivers — list all receivers with status.
+///
+/// `online` is true only when heartbeats are fresh **and** frames are
+/// flowing. A receiver whose agent heartbeats but whose dongle has gone
+/// silent reads `online: false, degraded: true, status: "degraded"` so no
+/// consumer — the dashboard, Splatlas, a monitor reading only `online` —
+/// can mistake it for healthy. `heartbeat_ok` keeps the old liveness signal
+/// for consumers that want the distinction.
 pub async fn api_receivers(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     let status = RECEIVER_STATUS.read().unwrap();
     let current = now();
@@ -478,7 +593,7 @@ pub async fn api_receivers(State(_state): State<Arc<AppState>>) -> impl IntoResp
     let receivers: Vec<Value> = status
         .values()
         .map(|s| {
-            let online = (current - s.last_heartbeat) < 120.0; // 2 min timeout
+            let health = s.health(current);
             json!({
                 "name": s.name,
                 "lat": s.lat,
@@ -488,7 +603,12 @@ pub async fn api_receivers(State(_state): State<Arc<AppState>>) -> impl IntoResp
                 "frames_sent": s.frames_sent,
                 "uptime_sec": s.uptime_sec,
                 "active_aircraft": s.active_aircraft,
-                "online": online,
+                "online": health == ReceiverHealth::Online,
+                "heartbeat_ok": health != ReceiverHealth::Offline,
+                "degraded": health == ReceiverHealth::Degraded,
+                "status": health.as_str(),
+                "last_frames_at": s.last_frames_at,
+                "frames_age_seconds": s.last_frames_at.map(|t| (current - t).max(0.0)),
             })
         })
         .collect();
@@ -704,6 +824,291 @@ mod tests {
             tle_cache: crate::tle_cache::TleCache::new(),
         });
         (state, dir)
+    }
+
+    // -----------------------------------------------------------------------
+    // Receiver health: heartbeats alone must not read as healthy
+    // (2026-10-05 silent-receiver incident).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_online_when_heartbeat_and_frames_fresh() {
+        let now = 1_000_000.0;
+        assert_eq!(
+            classify_health(now, now - 30.0, now - 2.0),
+            ReceiverHealth::Online
+        );
+    }
+
+    #[test]
+    fn classify_degraded_when_heartbeats_but_frames_stalled() {
+        let now = 1_000_000.0;
+        // Heartbeat 30 s ago, last frame evidence 10 min ago: the incident shape.
+        assert_eq!(
+            classify_health(now, now - 30.0, now - FRAME_STALL_SECS),
+            ReceiverHealth::Degraded
+        );
+        // Just inside the window is still online — a quiet 9 minutes is not a fault.
+        assert_eq!(
+            classify_health(now, now - 30.0, now - FRAME_STALL_SECS + 1.0),
+            ReceiverHealth::Online
+        );
+    }
+
+    #[test]
+    fn classify_offline_when_heartbeat_stale_regardless_of_frames() {
+        let now = 1_000_000.0;
+        assert_eq!(
+            classify_health(now, now - HEARTBEAT_TIMEOUT_SECS, now - 1.0),
+            ReceiverHealth::Offline
+        );
+        assert_eq!(
+            classify_health(now, now - 86_400.0, now - 86_400.0),
+            ReceiverHealth::Offline
+        );
+    }
+
+    #[test]
+    fn health_strings_match_dashboard_contract() {
+        assert_eq!(ReceiverHealth::Online.as_str(), "online");
+        assert_eq!(ReceiverHealth::Degraded.as_str(), "degraded");
+        assert_eq!(ReceiverHealth::Offline.as_str(), "offline");
+    }
+
+    /// Backdate a receiver's frame-evidence clock so a test can cross the
+    /// stall window without sleeping ten minutes.
+    fn backdate_frames(name: &str, seconds: f64) {
+        let mut status = RECEIVER_STATUS.write().unwrap();
+        let entry = status.get_mut(name).expect("receiver registered");
+        entry.first_seen -= seconds;
+        if let Some(t) = entry.last_frames_at.as_mut() {
+            *t -= seconds;
+        }
+    }
+
+    async fn post_heartbeat(state: Arc<AppState>, body: &str) {
+        let app = crate::web::build_router(state, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/heartbeat")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn post_frames(state: Arc<AppState>, body: &str) {
+        let app = crate::web::build_router(state, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/frames")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn get_receiver(state: Arc<AppState>, name: &str) -> Value {
+        let app = crate::web::build_router(state, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/receivers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        json.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("receiver {name} missing from /api/v1/receivers"))
+    }
+
+    #[tokio::test]
+    async fn receiver_heartbeating_with_stuck_frames_reads_degraded_not_online() {
+        // The incident: agent up, heartbeats every 30 s, frames_captured stuck at 0.
+        let (state, _dir) = test_state();
+        let name = "health-stuck-rx";
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":0,"uptime_sec":30}}"#),
+        )
+        .await;
+
+        // Within the window: online (benefit of the doubt while the clock runs).
+        let rx = get_receiver(state.clone(), name).await;
+        assert_eq!(rx["online"], true);
+        assert_eq!(rx["degraded"], false);
+        assert_eq!(rx["status"], "online");
+        assert!(rx["last_frames_at"].is_null(), "no frame evidence yet");
+
+        // Ten minutes later, still heartbeating, counter still 0.
+        backdate_frames(name, FRAME_STALL_SECS);
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":0,"uptime_sec":630}}"#),
+        )
+        .await;
+
+        let rx = get_receiver(state, name).await;
+        assert_eq!(rx["online"], false, "a silent dongle must not read online");
+        assert_eq!(rx["degraded"], true);
+        assert_eq!(rx["heartbeat_ok"], true, "the agent itself is alive");
+        assert_eq!(rx["status"], "degraded");
+    }
+
+    #[tokio::test]
+    async fn rising_frames_captured_counts_as_frame_evidence() {
+        let (state, _dir) = test_state();
+        let name = "health-rising-rx";
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":1000}}"#),
+        )
+        .await;
+        backdate_frames(name, FRAME_STALL_SECS);
+        let rx = get_receiver(state.clone(), name).await;
+        assert_eq!(rx["status"], "degraded");
+
+        // Counter moves: back to healthy.
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":1500}}"#),
+        )
+        .await;
+        let rx = get_receiver(state, name).await;
+        assert_eq!(rx["online"], true);
+        assert_eq!(rx["degraded"], false);
+        assert_eq!(rx["status"], "online");
+        let age = rx["frames_age_seconds"].as_f64().expect("age populated");
+        assert!(age < 60.0, "fresh evidence, got age {age}");
+    }
+
+    #[tokio::test]
+    async fn counter_reset_after_agent_restart_is_not_frame_evidence() {
+        let (state, _dir) = test_state();
+        let name = "health-reset-rx";
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":5000}}"#),
+        )
+        .await;
+        backdate_frames(name, FRAME_STALL_SECS);
+        // Agent restarted against a dead dongle: counter back to 0, no frames.
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":0,"uptime_sec":30}}"#),
+        )
+        .await;
+        let rx = get_receiver(state.clone(), name).await;
+        assert_eq!(
+            rx["status"], "degraded",
+            "a drop to 0 is a restart, not a frame"
+        );
+        assert_eq!(rx["frames_captured"], 0);
+
+        // First frames after the restart: counter rises from 0, healthy again.
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":40,"uptime_sec":60}}"#),
+        )
+        .await;
+        let rx = get_receiver(state, name).await;
+        assert_eq!(rx["status"], "online");
+    }
+
+    #[tokio::test]
+    async fn ingest_batch_counts_as_frame_evidence() {
+        let (state, _dir) = test_state();
+        let name = "health-batch-rx";
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":0}}"#),
+        )
+        .await;
+        backdate_frames(name, FRAME_STALL_SECS);
+        assert_eq!(
+            get_receiver(state.clone(), name).await["status"],
+            "degraded"
+        );
+
+        post_frames(
+            state.clone(),
+            &format!(
+                r#"{{"receiver":"{name}","frames":[{{"hex":"8D4840D6202CC371C32CE0576098"}}]}}"#
+            ),
+        )
+        .await;
+        let rx = get_receiver(state, name).await;
+        assert_eq!(rx["status"], "online");
+        assert!(rx["last_frames_at"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn stale_heartbeat_reads_offline_not_degraded() {
+        let (state, _dir) = test_state();
+        let name = "health-offline-rx";
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":10}}"#),
+        )
+        .await;
+        {
+            let mut status = RECEIVER_STATUS.write().unwrap();
+            status.get_mut(name).unwrap().last_heartbeat -= HEARTBEAT_TIMEOUT_SECS;
+        }
+        let rx = get_receiver(state, name).await;
+        assert_eq!(rx["online"], false);
+        assert_eq!(rx["heartbeat_ok"], false);
+        assert_eq!(rx["degraded"], false);
+        assert_eq!(rx["status"], "offline");
+    }
+
+    #[tokio::test]
+    async fn feed_summary_counts_degraded_and_newest_frame() {
+        let (state, _dir) = test_state();
+        let name = "health-summary-rx";
+        post_heartbeat(
+            state.clone(),
+            &format!(r#"{{"receiver":"{name}","frames_captured":0}}"#),
+        )
+        .await;
+        backdate_frames(name, FRAME_STALL_SECS);
+        let summary = feed_summary(now());
+        assert!(
+            summary.receivers_degraded >= 1,
+            "the stuck receiver should count"
+        );
+
+        post_frames(
+            state.clone(),
+            &format!(
+                r#"{{"receiver":"{name}","frames":[{{"hex":"8D4840D6202CC371C32CE0576098"}}]}}"#
+            ),
+        )
+        .await;
+        let current = now();
+        let summary = feed_summary(current);
+        let newest = summary.newest_frame_at.expect("a batch landed");
+        assert!(current - newest < 60.0);
     }
 
     #[tokio::test]

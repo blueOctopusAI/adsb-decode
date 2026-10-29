@@ -21,6 +21,10 @@ set -euo pipefail
 #   ADSB_DEVICE     RTL-SDR device index (default 0).
 #   ADSB_GAIN       RTL-SDR gain × 10 (default 400 = 40.0 dB).
 #   ADSB_PPM        RTL-SDR ppm correction (default 0).
+#   ADSB_STALL_TIMEOUT
+#                   Frame-stall watchdog window in seconds (default 600). The agent
+#                   exits so systemd restarts it when no frame has been captured for
+#                   this long — catches a dongle that re-enumerated silent. 0 disables.
 #   ADSB_AUTOSTART  Force service enable+start regardless of API_KEY (set to 1).
 #
 # Flags:
@@ -51,7 +55,7 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[x]${NC} $1" >&2; exit 1; }
 
 usage() {
-    sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,32p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -115,6 +119,7 @@ ADSB_LON="${ADSB_LON:-}"
 ADSB_DEVICE="${ADSB_DEVICE:-}"
 ADSB_GAIN="${ADSB_GAIN:-}"
 ADSB_PPM="${ADSB_PPM:-}"
+ADSB_STALL_TIMEOUT="${ADSB_STALL_TIMEOUT:-}"
 ADSB_AUTOSTART="${ADSB_AUTOSTART:-}"
 
 # Step 1: Install RTL-SDR drivers
@@ -174,6 +179,7 @@ build_env_file() {
     [ -n "$ADSB_DEVICE" ] && out+="ADSB_DEVICE=${ADSB_DEVICE}"$'\n'
     [ -n "$ADSB_GAIN" ]   && out+="ADSB_GAIN=${ADSB_GAIN}"$'\n'
     [ -n "$ADSB_PPM" ]    && out+="ADSB_PPM=${ADSB_PPM}"$'\n'
+    [ -n "$ADSB_STALL_TIMEOUT" ] && out+="ADSB_STALL_TIMEOUT=${ADSB_STALL_TIMEOUT}"$'\n'
     printf '%s' "$out"
 }
 

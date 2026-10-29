@@ -308,6 +308,16 @@ adsb-receiver --server https://adsb.blueoctopustechnology.com --name my-pi --api
 # See deploy/receiver-setup.sh for the full automated path
 ```
 
+**Frame-stall watchdog.** The agent is crash-only: it exits when `rtl_adsb` exits, and systemd restarts it. That does not cover a dongle that stays on the bus but goes silent — on 2026-10-05 a USB drop re-enumerated the dongle in a bad state and `rtl_adsb` ran for 23 days producing zero frames while heartbeats kept the hub reporting "online" (see [docs/incident-2026-10-05-silent-receiver.md](docs/incident-2026-10-05-silent-receiver.md)). The watchdog closes that gap: if `frames_captured` has not advanced for the stall window, the agent logs why and exits with status 2 so systemd restarts it and `rtl_adsb` reopens the device.
+
+| Flag | Env var | Default | Meaning |
+|------|---------|---------|---------|
+| `--stall-timeout SECS` | `ADSB_STALL_TIMEOUT` | `600` | Exit if no frame is captured for this many seconds. `0` disables. |
+
+The 10-minute default cannot be tripped by a quiet sky. `rtl_adsb` reports every Mode S frame it demodulates — DF11 all-call replies, DF4/DF5 surveillance replies, DF17 extended squitter — from every transponder within the radio horizon (~230 nm for an aircraft at FL350). A ridgeline receiver normally sees several frames per second, and the quietest hour of the night still carries transcontinental overflights; ten consecutive minutes without a single frame means the device is silent, not the airspace. Lower the window for a busy site that wants faster recovery; raise it (or set `0`) only for a receiver with a genuinely empty horizon.
+
+The hub applies the same window on its side: a receiver whose heartbeats arrive but whose frame count has not moved for 10 minutes is reported as `status: "degraded"` (with `online: false`) on `/api/v1/receivers` and drawn amber on the dashboard, and `/api/stats` exposes `newest_frame_at` / `frame_age_seconds` so a monitor can tell "no feed" from "no traffic".
+
 ## Why This Exists
 
 Two reasons:

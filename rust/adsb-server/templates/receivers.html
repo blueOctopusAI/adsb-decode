@@ -12,7 +12,9 @@
 }
 .rx-name { font-size: 16px; font-weight: bold; margin-bottom: 8px; }
 .rx-online { color: #00ff88; }
+.rx-degraded { color: #ffaa00; }
 .rx-offline { color: #ff4444; }
+.rx-hint { font-size: 11px; color: #ffaa00; margin: 4px 0 8px; }
 .rx-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
 .rx-label { color: #888; }
 .rx-value { color: #e0e0e0; }
@@ -63,13 +65,24 @@ function loadReceivers() {
         const bounds = [];
 
         feeders.forEach(rx => {
-            const status = rx.online ? '<span class="rx-online">ONLINE</span>' : '<span class="rx-offline">OFFLINE</span>';
+            // Three states, not two: a receiver whose agent heartbeats but whose
+            // dongle has gone silent is DEGRADED, never ONLINE (2026-10-05 incident).
+            const health = receiverHealth(rx);
+            const status = health === 'online' ? '<span class="rx-online">ONLINE</span>'
+                : health === 'degraded' ? '<span class="rx-degraded">DEGRADED</span>'
+                : '<span class="rx-offline">OFFLINE</span>';
+            const hint = health === 'degraded'
+                ? `<div class="rx-hint">Heartbeats arriving but no frames for ${formatAge(rx.frames_age_seconds)} — dongle silent?</div>`
+                : '';
             const heartbeat = rx.last_heartbeat ? new Date(rx.last_heartbeat * 1000).toLocaleTimeString() : 'Never';
+            const lastFrames = rx.last_frames_at ? new Date(rx.last_frames_at * 1000).toLocaleTimeString() : 'Never';
             const uptime = rx.uptime_sec ? formatUptime(rx.uptime_sec) : '-';
             cards.innerHTML += `<div class="rx-card">
                 <div class="rx-name">${esc(rx.name)} ${status}</div>
+                ${hint}
                 <div class="rx-row"><span class="rx-label">Location</span><span class="rx-value">${rx.lat ? rx.lat.toFixed(4) + ', ' + rx.lon.toFixed(4) : 'Unknown'}</span></div>
                 <div class="rx-row"><span class="rx-label">Last Heartbeat</span><span class="rx-value">${heartbeat}</span></div>
+                <div class="rx-row"><span class="rx-label">Last Frames</span><span class="rx-value">${lastFrames}</span></div>
                 <div class="rx-row"><span class="rx-label">Active Aircraft</span><span class="rx-value">${rx.active_aircraft || 0}</span></div>
                 <div class="rx-row"><span class="rx-label">Frames Captured</span><span class="rx-value">${(rx.frames_captured || 0).toLocaleString()}</span></div>
                 <div class="rx-row"><span class="rx-label">Uptime</span><span class="rx-value">${uptime}</span></div>
@@ -77,7 +90,7 @@ function loadReceivers() {
 
             if (rx.lat && rx.lon) {
                 bounds.push([rx.lat, rx.lon]);
-                const color = rx.online ? '#00ff88' : '#ff4444';
+                const color = health === 'online' ? '#00ff88' : health === 'degraded' ? '#ffaa00' : '#ff4444';
                 L.circleMarker([rx.lat, rx.lon], {
                     radius: 8, color: color, fillColor: color, fillOpacity: 0.8, weight: 1,
                 }).addTo(rxMap).bindTooltip(rx.name, { permanent: true, direction: 'right' });
@@ -94,6 +107,22 @@ function loadReceivers() {
             rxMap.setView([35.18, -83.38], 6);
         }
     });
+}
+
+// Server sends `status` ("online" | "degraded" | "offline"); older hubs only
+// send `online`, so fall back to that rather than render everything offline.
+function receiverHealth(rx) {
+    if (rx.status) return rx.status;
+    if (rx.degraded) return 'degraded';
+    return rx.online ? 'online' : 'offline';
+}
+
+function formatAge(sec) {
+    if (sec == null) return 'ever';
+    if (sec < 60) return Math.floor(sec) + 's';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm';
+    if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+    return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
 }
 
 function formatUptime(sec) {

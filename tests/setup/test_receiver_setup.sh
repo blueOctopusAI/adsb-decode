@@ -117,6 +117,13 @@ assert_contains "$out" "ADSB_GAIN=400" "ADSB_GAIN written"
 assert_contains "$out" "ADSB_PPM=2" "ADSB_PPM written"
 assert_contains "$out" "ADSB_DEVICE=1" "ADSB_DEVICE written"
 
+echo "=== test: ADSB_STALL_TIMEOUT passthrough (frame-stall watchdog) ==="
+assert_contains "$help_out" "ADSB_STALL_TIMEOUT" "help mentions ADSB_STALL_TIMEOUT"
+out=$(run_dryrun ADSB_API_KEY=k1)
+assert_not_contains "$out" "ADSB_STALL_TIMEOUT=" "ADSB_STALL_TIMEOUT omitted when unset (binary default applies)"
+out=$(run_dryrun ADSB_API_KEY=k1 ADSB_STALL_TIMEOUT=300)
+assert_contains "$out" "ADSB_STALL_TIMEOUT=300" "ADSB_STALL_TIMEOUT written when set"
+
 echo "=== test: file paths honor INSTALL_DIR / ENV_FILE / SERVICE_FILE overrides ==="
 out=$(run_dryrun INSTALL_DIR=/tmp/adsb-r ENV_FILE=/tmp/adsb.env SERVICE_FILE=/tmp/adsb.service ADSB_API_KEY=k1)
 assert_contains "$out" "/tmp/adsb-r" "INSTALL_DIR override honored"

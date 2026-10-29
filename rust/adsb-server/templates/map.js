@@ -696,6 +696,34 @@ const receiverIconOffline = L.divIcon({
     iconAnchor: [8, 8]
 });
 
+// Degraded: agent heartbeating, dongle silent (no frames for the stall window).
+const receiverIconDegraded = L.divIcon({
+    className: '',
+    html: `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="#ffaa00" stroke-width="2" opacity="0.9"/><circle cx="8" cy="8" r="2.5" fill="#ffaa00" opacity="0.9"/></svg>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8]
+});
+
+// Server sends `status` ("online" | "degraded" | "offline"); fall back to the
+// legacy boolean so an older hub still renders.
+function receiverHealth(rx) {
+    if (rx.status) return rx.status;
+    if (rx.degraded) return 'degraded';
+    return rx.online ? 'online' : 'offline';
+}
+
+function receiverColor(health) {
+    return health === 'online' ? '#00ff88' : health === 'degraded' ? '#ffaa00' : '#ff4444';
+}
+
+function formatFrameAge(sec) {
+    if (sec == null) return 'ever';
+    if (sec < 60) return Math.floor(sec) + 's';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm';
+    if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+    return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
+}
+
 function formatUptime(sec) {
     if (!sec || sec <= 0) return 'offline';
     if (sec < 3600) return Math.floor(sec / 60) + 'm';
@@ -708,9 +736,12 @@ function renderReceivers() {
     if (!receiverData || !document.getElementById('receiver-toggle').checked) return;
     receiverData.forEach(rx => {
         if (rx.lat == null || rx.lon == null) return;
-        const icon = rx.online ? receiverIcon : receiverIconOffline;
-        const statusColor = rx.online ? '#00ff88' : '#ff4444';
-        const statusText = rx.online ? 'Online' : 'Offline';
+        const health = receiverHealth(rx);
+        const icon = health === 'online' ? receiverIcon : health === 'degraded' ? receiverIconDegraded : receiverIconOffline;
+        const statusColor = receiverColor(health);
+        const statusText = health === 'online' ? 'Online'
+            : health === 'degraded' ? `Degraded — no frames for ${formatFrameAge(rx.frames_age_seconds)}`
+            : 'Offline';
         const popupContent = `<div class="ac-popup">
             <div class="popup-title" style="color:#00ff88;">${esc(rx.name || 'Receiver')}</div>
             <div class="popup-row"><span class="popup-label">Status</span><span class="popup-value" style="color:${statusColor};">${statusText}</span></div>
@@ -720,7 +751,7 @@ function renderReceivers() {
             <div class="popup-row"><span class="popup-label">Coords</span><span class="popup-value">${rx.lat.toFixed(4)}, ${rx.lon.toFixed(4)}</span></div>
         </div>`;
         L.marker([rx.lat, rx.lon], { icon, interactive: true })
-            .bindTooltip(esc(rx.name || 'Receiver') + (rx.online ? '' : ' (offline)'), { permanent: false, direction: 'right', className: 'dark-tooltip' })
+            .bindTooltip(esc(rx.name || 'Receiver') + (health === 'online' ? '' : ` (${health})`), { permanent: false, direction: 'right', className: 'dark-tooltip' })
             .bindPopup(popupContent, { maxWidth: 280 })
             .addTo(receiverLayer);
     });
@@ -928,7 +959,7 @@ let cesiumReceiverEntities = [];
 function svgUri(svg) { return 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" ' + svg.slice(4)); }
 const splatlasPinSvg3D = '<svg width="26" height="32" viewBox="0 0 26 32"><path d="M13 0 C6 0 0 6 0 13 C0 20 13 32 13 32 C13 32 26 20 26 13 C26 6 20 0 13 0 Z" fill="#ff914d" opacity="0.95" stroke="#0a0a0a" stroke-width="1"/><path d="M5 14 Q13 4 21 14" stroke="#0a0a0a" stroke-width="1.5" fill="none"/><circle cx="13" cy="14" r="1.8" fill="#0a0a0a"/></svg>';
 const receiverSitePinSvg3D = '<svg width="26" height="32" viewBox="0 0 26 32"><path d="M13 0 C6 0 0 6 0 13 C0 20 13 32 13 32 C13 32 26 20 26 13 C26 6 20 0 13 0 Z" fill="#4fc3f7" opacity="0.95" stroke="#0a0a0a" stroke-width="1"/><line x1="13" y1="18" x2="13" y2="10" stroke="#0a0a0a" stroke-width="1.6"/><circle cx="13" cy="9.5" r="1.7" fill="#0a0a0a"/><path d="M9.5 13 Q13 8.5 16.5 13" stroke="#0a0a0a" stroke-width="1.2" fill="none"/></svg>';
-function rxAntennaSvg3D(online) { const c = online ? '#00ff88' : '#666'; return `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="${c}" stroke-width="2"/><circle cx="8" cy="8" r="2.5" fill="${c}"/></svg>`; }
+function rxAntennaSvg3D(health) { const c = health === 'online' ? '#00ff88' : health === 'degraded' ? '#ffaa00' : '#666'; return `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="${c}" stroke-width="2"/><circle cx="8" cy="8" r="2.5" fill="${c}"/></svg>`; }
 function clearCesiumSplats() { cesiumSplatEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); }); cesiumSplatEntities = []; }
 function clearCesiumReceivers() { cesiumReceiverEntities.forEach(e => { if (cesiumViewer) cesiumViewer.entities.remove(e); }); cesiumReceiverEntities = []; }
 
@@ -984,17 +1015,18 @@ function renderReceivers3D() {
     try {
         receiverData.forEach(rx => {
             if (rx.lat == null || rx.lon == null) return;
+            const health = receiverHealth(rx);
             cesiumReceiverEntities.push(cesiumViewer.entities.add({
                 position: Cesium.Cartesian3.fromDegrees(rx.lon, rx.lat, 0),
                 billboard: {
-                    image: svgUri(rxAntennaSvg3D(rx.online)),
+                    image: svgUri(rxAntennaSvg3D(health)),
                     scale: 1.0, verticalOrigin: Cesium.VerticalOrigin.CENTER,
                     heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
                     disableDepthTestDistance: Number.POSITIVE_INFINITY,
                 },
                 label: {
                     text: rx.name || 'Receiver', font: '10px monospace',
-                    fillColor: Cesium.Color.fromCssColorString(rx.online ? '#00ff88' : '#888'),
+                    fillColor: Cesium.Color.fromCssColorString(health === 'online' ? '#00ff88' : health === 'degraded' ? '#ffaa00' : '#888'),
                     outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
                     style: Cesium.LabelStyle.FILL_AND_OUTLINE,
                     pixelOffset: new Cesium.Cartesian2(0, -14), scale: 0.8,

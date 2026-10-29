@@ -1,10 +1,33 @@
 use std::io::BufRead;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::stats::Stats;
+
+/// Shared handle to the running `rtl_adsb` child.
+///
+/// The capture thread owns the child's stdout and blocks reading it; the
+/// child itself lives here so another task (the frame-stall watchdog) can
+/// kill it. Killing closes stdout, the read loop sees EOF, the thread drops
+/// the channel sender, and the sender task flushes and exits — the same
+/// orderly path as a dongle unplug. Under systemd the whole cgroup is killed
+/// on exit anyway; this keeps a manual run from orphaning `rtl_adsb`.
+pub type ChildSlot = Arc<Mutex<Option<Child>>>;
+
+pub fn new_child_slot() -> ChildSlot {
+    Arc::new(Mutex::new(None))
+}
+
+/// Kill and reap the child in `slot`, if any. Idempotent.
+pub fn kill_child(slot: &ChildSlot) {
+    let child = slot.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
 
 /// Parse a line from rtl_adsb output.
 /// rtl_adsb outputs lines like: *8D4840D6202CC371C32CE0576098;
@@ -40,6 +63,7 @@ pub fn start_rtl_adsb(
     ppm: Option<i32>,
     tx: mpsc::Sender<String>,
     stats: Arc<Stats>,
+    child_slot: ChildSlot,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut cmd = Command::new("rtl_adsb");
@@ -66,6 +90,9 @@ pub fn start_rtl_adsb(
 
         let stdout = child.stdout.take().expect("failed to capture stdout");
         let reader = std::io::BufReader::new(stdout);
+        if let Ok(mut guard) = child_slot.lock() {
+            *guard = Some(child);
+        }
 
         for line in reader.lines() {
             match line {
@@ -85,8 +112,7 @@ pub fn start_rtl_adsb(
             }
         }
 
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_child(&child_slot);
         eprintln!("[capture] rtl_adsb process ended");
     })
 }
@@ -188,5 +214,40 @@ mod tests {
     fn test_parse_long_frame() {
         let long = format!("*{};", "A".repeat(28));
         assert_eq!(parse_rtl_adsb_line(&long), Some("A".repeat(28)));
+    }
+
+    #[test]
+    fn test_kill_child_on_empty_slot_is_noop() {
+        let slot = new_child_slot();
+        kill_child(&slot);
+        kill_child(&slot);
+        assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_kill_child_reaps_running_process() {
+        // Stand-in for a silent rtl_adsb: a process that never writes and
+        // never exits on its own.
+        let child = Command::new("sleep")
+            .arg("3600")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("sleep should be available");
+        let pid = child.id();
+        let slot = new_child_slot();
+        *slot.lock().unwrap() = Some(child);
+
+        kill_child(&slot);
+
+        assert!(slot.lock().unwrap().is_none(), "slot must be emptied");
+        // After kill+wait the pid is reaped; signalling it fails.
+        let alive = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(!alive, "child {pid} should have been killed and reaped");
     }
 }
