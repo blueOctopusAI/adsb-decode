@@ -1481,7 +1481,10 @@ impl Database {
 ///
 /// The CLI uses `Database` directly (synchronous, single connection).
 /// The web server uses `Arc<dyn AdsbDatabase>` for backend-agnostic access.
-#[allow(dead_code)]
+// `async_trait` expands each method to a `#[must_use]` fn returning a boxed
+// future, which newer clippy flags as `double_must_use`; that generated code
+// is not ours to change.
+#[allow(dead_code, clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait AdsbDatabase: Send + Sync {
     async fn stats(&self) -> DbStats;
