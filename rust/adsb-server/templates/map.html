@@ -57,7 +57,7 @@
 #panel-body { overflow-y: auto; }
 #panel-body.collapsed { display: none; }
 #controls-section { padding: 8px 12px; border-bottom: 1px solid #222; }
-.speed-label { font: 700 12px monospace; color: #9fe6ff; }
+.speed-label { font: 700 12px monospace; color: #ff8a8a; }
 #ac-list-section { padding: 4px 8px; overflow-y: auto; }
 #ac-list-section h3 { color: #00ff88; margin: 4px 0; font-size: 12px; }
 #ac-list-section table { width: 100%; }
@@ -344,8 +344,7 @@ tr.ac-anomaly-high td { background: rgba(255, 68, 68, 0.12); }
                 <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="military-highlight" checked> Military</label>
                 <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="receiver-toggle" checked> Receiver</label>
                 <label style="cursor:pointer;font-size:12px;"><input type="checkbox" id="range-toggle" checked> Range</label>
-                <label style="cursor:pointer;font-size:12px;" title="A line off each nose as long as the next minute of flight: longer means faster"><input type="checkbox" id="speed-lines-toggle"> Speed lines</label>
-                <label style="cursor:pointer;font-size:12px;" title="Print each plane's airspeed in knots at the tip of its speed line (turns the lines on)"><input type="checkbox" id="speed-labels-toggle"> Show speed</label>
+                <label style="cursor:pointer;font-size:12px;" title="A red line off each nose as long as the next minute of flight: longer means faster. Hover a plane or its line to read the knots."><input type="checkbox" id="speed-lines-toggle"> Speed lines</label>
             </div>
             <div style="margin-top:6px;">
                 <span style="font-size:11px;color:#888;">Trail:</span>
