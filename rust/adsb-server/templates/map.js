@@ -103,6 +103,30 @@ setMapStyle('dark');
 
 const markers = {};
 const trailLines = {};
+// Speed lines (opt-in): one line off each nose, as long as the next SPEED_LINE_SECONDS
+// of flight along the reported heading, so its length reads as airspeed. 2D map only.
+const speedLines = {};
+const SPEED_LINE_SECONDS = 60;
+let speedLinesEnabled = false;
+let lastPosData = [];
+function speedLineEnd(p) {
+    if (p.heading_deg == null || !(p.speed_kts > 1)) return null;
+    const d = p.speed_kts * 0.514444 * SPEED_LINE_SECONDS; // metres
+    const h = p.heading_deg * Math.PI / 180;
+    return [p.lat + (d * Math.cos(h)) / 111320, p.lon + (d * Math.sin(h)) / (111320 * Math.cos(p.lat * Math.PI / 180))];
+}
+function drawSpeedLine(key, p) {
+    const end = speedLinesEnabled && p && p.lat != null && p.lon != null ? speedLineEnd(p) : null;
+    if (!end) { if (speedLines[key]) { map.removeLayer(speedLines[key]); delete speedLines[key]; } return; }
+    const pts = [[p.lat, p.lon], end];
+    if (speedLines[key]) speedLines[key].setLatLngs(pts);
+    else speedLines[key] = L.polyline(pts, { color: '#9fe6ff', weight: 2, opacity: 0.9, interactive: false }).addTo(map);
+}
+function redrawSpeedLines() {
+    const live = new Set();
+    lastPosData.forEach((p) => { live.add(p.icao); drawSpeedLine(p.icao, p); });
+    Object.keys(speedLines).forEach((k) => { if (!live.has(k)) { map.removeLayer(speedLines[k]); delete speedLines[k]; } });
+}
 // mapCentered already declared at top of file (URL-param init block); the
 // historical re-declaration here moved into the init block above.
 
@@ -409,6 +433,7 @@ function updateMap() {
 function applyPositions(posData) {
     const trailData = cachedTrails;
     if (!Array.isArray(posData)) return;
+    lastPosData = posData;
     {
         document.getElementById('ac-count').textContent = posData.length;
         document.getElementById('so-aircraft').textContent = posData.length; updateEmptySky(posData.length);
@@ -433,6 +458,8 @@ function applyPositions(posData) {
                 markers[key].bindPopup(popupHtml(p, acType), { maxWidth: 280 });
                 markers[key].on('popupopen', () => loadAircraftPhoto(key));
             }
+
+            drawSpeedLine(key, p);
 
             const label = p.callsign || p.registration || p.icao;
             markers[key].bindTooltip(label, {
@@ -541,6 +568,10 @@ function applyPositions(posData) {
                 if (trailLines[key]) {
                     trailLines[key].forEach(seg => map.removeLayer(seg));
                     delete trailLines[key];
+                }
+                if (speedLines[key]) {
+                    map.removeLayer(speedLines[key]);
+                    delete speedLines[key];
                 }
                 if (militaryRings[key]) {
                     militaryLayer.removeLayer(militaryRings[key]);
@@ -1333,6 +1364,14 @@ trailToggle.addEventListener('change', function() {
     saveState();
 });
 
+// --- Speed lines toggle (off by default; remembered with the rest of the map state) ---
+const speedLinesToggle = document.getElementById('speed-lines-toggle');
+speedLinesToggle.addEventListener('change', function() {
+    speedLinesEnabled = this.checked;
+    redrawSpeedLines();
+    saveState();
+});
+
 // --- Trail duration slider ---
 const trailDurSteps = [5, 15, 30, 60, 120, 360, 720, 1440];
 const trailDurLabels = ['5m', '15m', '30m', '1h', '2h', '6h', '12h', '24h'];
@@ -1368,6 +1407,7 @@ function saveState() {
         predict: document.getElementById('predict-toggle').checked,
         predictDur: parseInt(predictDurSlider.value),
         rangeRings: document.getElementById('range-toggle').checked,
+        speedLines: document.getElementById('speed-lines-toggle').checked,
         airspace: document.getElementById('airspace-toggle').checked,
         vessels: document.getElementById('vessel-toggle').checked,
         weather: document.getElementById('weather-toggle').checked,
@@ -1421,6 +1461,10 @@ function restoreState() {
             predictDurSlider.value = s.predictDur;
             predictMinutes = predictDurSteps[s.predictDur];
             predictDurLabel.textContent = predictDurLabels[s.predictDur];
+        }
+        if (s.speedLines) {
+            document.getElementById('speed-lines-toggle').checked = true;
+            speedLinesEnabled = true;
         }
         if (s.rangeRings) {
             document.getElementById('range-toggle').checked = true;
