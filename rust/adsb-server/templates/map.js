@@ -109,6 +109,13 @@ const speedLines = {};
 const SPEED_LINE_SECONDS = 60;
 let speedLinesEnabled = false;
 let lastPosData = [];
+// The selected plane (popup open) always gets its line, with the knots printed at
+// the tip, whether or not the switch is on — so the number is obvious on a click.
+let speedFocus = null;
+let speedFocusLabel = null, speedFocusLabelKey = null;
+function clearSpeedFocusLabel() {
+    if (speedFocusLabel) { map.removeLayer(speedFocusLabel); speedFocusLabel = null; speedFocusLabelKey = null; }
+}
 function speedLineEnd(p) {
     if (p.heading_deg == null || !(p.speed_kts > 1)) return null;
     const d = p.speed_kts * 0.514444 * SPEED_LINE_SECONDS; // metres
@@ -116,11 +123,22 @@ function speedLineEnd(p) {
     return [p.lat + (d * Math.cos(h)) / 111320, p.lon + (d * Math.sin(h)) / (111320 * Math.cos(p.lat * Math.PI / 180))];
 }
 function drawSpeedLine(key, p) {
-    const end = speedLinesEnabled && p && p.lat != null && p.lon != null ? speedLineEnd(p) : null;
+    const focused = key === speedFocus;
+    const end = (speedLinesEnabled || focused) && p && p.lat != null && p.lon != null ? speedLineEnd(p) : null;
+    if (speedFocusLabelKey === key && (!end || !focused)) clearSpeedFocusLabel();
     if (!end) { if (speedLines[key]) { map.removeLayer(speedLines[key]); delete speedLines[key]; } return; }
     const pts = [[p.lat, p.lon], end];
     if (speedLines[key]) speedLines[key].setLatLngs(pts);
     else speedLines[key] = L.polyline(pts, { color: '#9fe6ff', weight: 2, opacity: 0.9, interactive: false }).addTo(map);
+    speedLines[key].setStyle({ weight: focused ? 3 : 2 });
+    if (focused) {
+        const text = `${Math.round(p.speed_kts)} kt`;
+        if (!speedFocusLabel) {
+            speedFocusLabel = L.tooltip({ permanent: true, direction: 'right', className: 'dark-tooltip speed-label', offset: [6, 0] })
+                .setLatLng(end).setContent(text).addTo(map);
+            speedFocusLabelKey = key;
+        } else { speedFocusLabel.setLatLng(end); speedFocusLabel.setContent(text); }
+    }
 }
 function redrawSpeedLines() {
     const live = new Set();
@@ -456,7 +474,17 @@ function applyPositions(posData) {
                     icon: acIcon(p.heading_deg, p.is_military, acType),
                 }).addTo(map);
                 markers[key].bindPopup(popupHtml(p, acType), { maxWidth: 280 });
-                markers[key].on('popupopen', () => loadAircraftPhoto(key));
+                markers[key].on('popupopen', () => {
+                    loadAircraftPhoto(key);
+                    const prev = speedFocus; speedFocus = key;
+                    if (prev && prev !== key) drawSpeedLine(prev, lastPosData.find((q) => q.icao === prev));
+                    drawSpeedLine(key, lastPosData.find((q) => q.icao === key));
+                });
+                markers[key].on('popupclose', () => {
+                    if (speedFocus !== key) return;
+                    speedFocus = null;
+                    drawSpeedLine(key, lastPosData.find((q) => q.icao === key));
+                });
             }
 
             drawSpeedLine(key, p);
@@ -573,6 +601,7 @@ function applyPositions(posData) {
                     map.removeLayer(speedLines[key]);
                     delete speedLines[key];
                 }
+                if (speedFocusLabelKey === key) clearSpeedFocusLabel();
                 if (militaryRings[key]) {
                     militaryLayer.removeLayer(militaryRings[key]);
                     delete militaryRings[key];

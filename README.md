@@ -239,7 +239,7 @@ Full-featured dark-themed dashboard at `http://127.0.0.1:8080`:
 - **Satellites** — Retired from the hub map on 2026-10-29; the orbital layer lives in Splatlas behind its own opt-in (`splatlas.live/?sats=1`). The server still serves TLEs at `/api/v1/tle/:group`.
 - **Splatlas integration** — Captured 3D Gaussian splat scenes (from [Splatlas](https://splatlas.live/)) appear as pulse-ring markers with concentric copper dome circles showing the observation airspace radius. Click a marker → one link opens the scene's canonical page on Splatlas (Parker Meadows → the guided park tour at `splatlas.live/parker-meadows`). The former Cybertruck receiver-site scan was retired from the public map on 2026-10-29.
 - **Weather radar** — Live precipitation overlay via RainViewer (free, key-less). 5-minute auto-refresh. Works on both 2D map and 3D globe.
-- **Speed lines** — Optional (off by default) line off each aircraft's nose as long as its next minute of flight, so length reads as airspeed; remembered with the map state
+- **Speed lines** — Optional (off by default) line off each aircraft's nose as long as its next minute of flight, so length reads as airspeed; remembered with the map state. The selected plane (popup open) always shows its line with the knots at the tip
 - **Map styles** — Dark (Esri dark gray canvas), Satellite, Topo, Streets (persisted in localStorage); CARTO styles were dropped when CARTO began requiring an API key
 - **Events dashboard** — Color-coded events with type filters, auto-enriched with aircraft type/owner from hexdb.io
 - **Query builder** — Preset queries (military, low altitude, fast) + custom filters with map visualization
