@@ -112,9 +112,12 @@ let lastPosData = [];
 // The selected plane (popup open) always gets its line, with the knots printed at
 // the tip, whether or not the switch is on — so the number is obvious on a click.
 let speedFocus = null;
-let speedFocusLabel = null, speedFocusLabelKey = null;
-function clearSpeedFocusLabel() {
-    if (speedFocusLabel) { map.removeLayer(speedFocusLabel); speedFocusLabel = null; speedFocusLabelKey = null; }
+// "Show speed" puts the knots at the tip of every line (one tooltip per aircraft);
+// the selected plane gets its tag regardless. Tags imply lines.
+let speedLabelsEnabled = false;
+const speedTags = {};
+function clearSpeedTag(key) {
+    if (speedTags[key]) { map.removeLayer(speedTags[key]); delete speedTags[key]; }
 }
 function speedLineEnd(p) {
     if (p.heading_deg == null || !(p.speed_kts > 1)) return null;
@@ -125,20 +128,18 @@ function speedLineEnd(p) {
 function drawSpeedLine(key, p) {
     const focused = key === speedFocus;
     const end = (speedLinesEnabled || focused) && p && p.lat != null && p.lon != null ? speedLineEnd(p) : null;
-    if (speedFocusLabelKey === key && (!end || !focused)) clearSpeedFocusLabel();
-    if (!end) { if (speedLines[key]) { map.removeLayer(speedLines[key]); delete speedLines[key]; } return; }
+    if (!end) { if (speedLines[key]) { map.removeLayer(speedLines[key]); delete speedLines[key]; } clearSpeedTag(key); return; }
     const pts = [[p.lat, p.lon], end];
     if (speedLines[key]) speedLines[key].setLatLngs(pts);
     else speedLines[key] = L.polyline(pts, { color: '#9fe6ff', weight: 2, opacity: 0.9, interactive: false }).addTo(map);
     speedLines[key].setStyle({ weight: focused ? 3 : 2 });
-    if (focused) {
+    if (speedLabelsEnabled || focused) {
         const text = `${Math.round(p.speed_kts)} kt`;
-        if (!speedFocusLabel) {
-            speedFocusLabel = L.tooltip({ permanent: true, direction: 'right', className: 'dark-tooltip speed-label', offset: [6, 0] })
+        if (!speedTags[key]) {
+            speedTags[key] = L.tooltip({ permanent: true, direction: 'right', className: 'dark-tooltip speed-label', offset: [6, 0] })
                 .setLatLng(end).setContent(text).addTo(map);
-            speedFocusLabelKey = key;
-        } else { speedFocusLabel.setLatLng(end); speedFocusLabel.setContent(text); }
-    }
+        } else { speedTags[key].setLatLng(end); speedTags[key].setContent(text); }
+    } else clearSpeedTag(key);
 }
 function redrawSpeedLines() {
     const live = new Set();
@@ -601,7 +602,7 @@ function applyPositions(posData) {
                     map.removeLayer(speedLines[key]);
                     delete speedLines[key];
                 }
-                if (speedFocusLabelKey === key) clearSpeedFocusLabel();
+                clearSpeedTag(key);
                 if (militaryRings[key]) {
                     militaryLayer.removeLayer(militaryRings[key]);
                     delete militaryRings[key];
@@ -1395,8 +1396,16 @@ trailToggle.addEventListener('change', function() {
 
 // --- Speed lines toggle (off by default; remembered with the rest of the map state) ---
 const speedLinesToggle = document.getElementById('speed-lines-toggle');
+const speedLabelsToggle = document.getElementById('speed-labels-toggle');
 speedLinesToggle.addEventListener('change', function() {
     speedLinesEnabled = this.checked;
+    if (!speedLinesEnabled && speedLabelsEnabled) { speedLabelsEnabled = false; speedLabelsToggle.checked = false; } // no line, no tag
+    redrawSpeedLines();
+    saveState();
+});
+speedLabelsToggle.addEventListener('change', function() {
+    speedLabelsEnabled = this.checked;
+    if (speedLabelsEnabled && !speedLinesEnabled) { speedLinesEnabled = true; speedLinesToggle.checked = true; } // the tag sits on the line
     redrawSpeedLines();
     saveState();
 });
@@ -1437,6 +1446,7 @@ function saveState() {
         predictDur: parseInt(predictDurSlider.value),
         rangeRings: document.getElementById('range-toggle').checked,
         speedLines: document.getElementById('speed-lines-toggle').checked,
+        speedLabels: document.getElementById('speed-labels-toggle').checked,
         airspace: document.getElementById('airspace-toggle').checked,
         vessels: document.getElementById('vessel-toggle').checked,
         weather: document.getElementById('weather-toggle').checked,
@@ -1491,9 +1501,13 @@ function restoreState() {
             predictMinutes = predictDurSteps[s.predictDur];
             predictDurLabel.textContent = predictDurLabels[s.predictDur];
         }
-        if (s.speedLines) {
+        if (s.speedLines || s.speedLabels) {
             document.getElementById('speed-lines-toggle').checked = true;
             speedLinesEnabled = true;
+        }
+        if (s.speedLabels) {
+            document.getElementById('speed-labels-toggle').checked = true;
+            speedLabelsEnabled = true;
         }
         if (s.rangeRings) {
             document.getElementById('range-toggle').checked = true;
